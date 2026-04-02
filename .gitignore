@@ -1,0 +1,22 @@
+# Build/packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
