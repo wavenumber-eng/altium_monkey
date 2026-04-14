@@ -1,0 +1,11 @@
+Output: XML-BOM
+Type  : BOM
+From  : Variant [[No Variations]] of Project [SB0040B.PrjPCB]
+   Generated File[XML-BOM-SB0040B.xml]
+   Generated File[XML-BOM-SB0040B.xsl]
+
+
+Files Generated   : 2
+Documents Printed : 0
+
+Finished Output Generation At 10:58:13 AM On 3/13/2026

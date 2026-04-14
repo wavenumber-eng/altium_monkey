@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:pcb_svg_enrichment_a0",
+  "title": "Altium Monkey PCB SVG enrichment a0",
+  "description": "Document-level metadata embedded in PCB SVG output.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source",
+    "board",
+    "view",
+    "layers",
+    "lookup",
+    "components"
+  ],
+  "properties": {
+    "schema": {
+      "const": "altium_monkey.pcb.svg.enrichment.a0"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "board": {
+      "$ref": "#/$defs/board"
+    },
+    "view": {
+      "$ref": "#/$defs/view"
+    },
+    "layers": {
+      "$ref": "#/$defs/layers"
+    },
+    "lookup": {
+      "$ref": "#/$defs/lookup"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    }
+  },
+  "$defs": {
+    "number_or_null": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "point_or_null": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    },
+    "integer_list": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "string_map": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "string_list_map": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "parameter_map": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pcbdoc_file"
+      ],
+      "properties": {
+        "pcbdoc_file": {
+          "type": "string"
+        }
+      }
+    },
+    "board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "centroid_mils",
+        "centroid_relative_to_origin_mils"
+      ],
+      "properties": {
+        "centroid_mils": {
+          "$ref": "#/$defs/point_or_null"
+        },
+        "centroid_relative_to_origin_mils": {
+          "$ref": "#/$defs/point_or_null"
+        }
+      }
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "included_layer_ids",
+        "includes_board_outline"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "included_layer_ids": {
+          "$ref": "#/$defs/integer_list"
+        },
+        "includes_board_outline": {
+          "type": "boolean"
+        }
+      }
+    },
+    "layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "all_layer_ids",
+        "layer_id_to_key",
+        "layer_id_to_name"
+      ],
+      "properties": {
+        "all_layer_ids": {
+          "$ref": "#/$defs/integer_list"
+        },
+        "layer_id_to_key": {
+          "$ref": "#/$defs/string_map"
+        },
+        "layer_id_to_name": {
+          "$ref": "#/$defs/string_map"
+        }
+      }
+    },
+    "lookup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "net_index_to_name",
+        "net_name_to_classes",
+        "component_index_to_designator",
+        "component_index_to_uid"
+      ],
+      "properties": {
+        "net_index_to_name": {
+          "$ref": "#/$defs/string_map"
+        },
+        "net_name_to_classes": {
+          "$ref": "#/$defs/string_list_map"
+        },
+        "component_index_to_designator": {
+          "$ref": "#/$defs/string_map"
+        },
+        "component_index_to_uid": {
+          "$ref": "#/$defs/string_map"
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "designator",
+        "unique_id",
+        "footprint",
+        "description",
+        "layer",
+        "x_mils",
+        "y_mils",
+        "rotation_deg",
+        "parameters"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "designator": {
+          "type": "string"
+        },
+        "unique_id": {
+          "type": "string"
+        },
+        "footprint": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "layer": {
+          "type": "string"
+        },
+        "x_mils": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "y_mils": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "rotation_deg": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameter_map"
+        }
+      }
+    }
+  }
+}

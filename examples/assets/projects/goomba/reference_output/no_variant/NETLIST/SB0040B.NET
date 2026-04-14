@@ -1,0 +1,283 @@
+Wire List
+
+<<< Component List >>>
+0.1µF                           C1             C0603_0.90MM_MD
+10µF                            C2             C_ALU_B
+10µF                            C3             C_ALU_B
+10µF                            C4             C_ALU_B
+4.7µF                           C5             C0805_1.50MM_MD
+10µF                            C6             C0805_1.25MM_MD
+10µF                            C7             C0805_1.25MM_MD
+10µF                            C8             C0805_1.25MM_MD
+10µF                            C9             C0805_1.25MM_MD
+0.1µF                           C10            C0603_0.90MM_MD
+0.1µF                           C11            C0603_0.90MM_MD
+10µF                            C12            C0805_1.25MM_MD
+0.1µF                           C13            C0603_0.90MM_MD
+0.1µF                           C14            C0603_0.90MM_MD
+10000pF                         C15            C0603_0.90MM_HD
+0.1µF                           C16            C0603_0.90MM_MD
+BAT1000-7-F                     D1             D_SOT-23-3_P
+PCB Fiducial                    FID1           Fiducial 1mm - 2mm
+PCB Fiducial                    FID2           Fiducial 1mm - 2mm
+1557808                         J1             1557808
+TC2030-CTL-NL                   J3             TC2030
+15µH 0.53A                      L1             L_NRH3012
+SB0041B                         PCB1           
+0                               R1             R0603_0.55MM_MD
+100                             R2             R0603_0.55MM_MD
+1k                              R3             R0603_0.55MM_MD
+1k                              R4             R0603_0.55MM_MD
+0                               R5             R0603_0.55MM_MD
+0                               R6             R0603_0.55MM_MD
+0                               R7             R0603_0.55MM_MD
+100k                            R8             R0603_0.55MM_MD
+1k                              R9             R0603_0.55MM_MD
+401 .01% +/0 10ppm/C            R10            R0603_0.55MM_MD
+1k                              R11            R0603_0.55MM_MD
+1k                              R12            R0603_0.55MM_MD
+1k                              R13            R0603_0.55MM_MD
+Wire Hole                       T1             SOLDER_HOLE
+Wire Hole                       T2             SOLDER_HOLE
+Wire Hole                       T3             SOLDER_HOLE
+Wire Hole                       T4             SOLDER_HOLE
+Wire Hole                       T5             SOLDER_HOLE
+Wire Hole                       T6             SOLDER_HOLE
+SMT_TEST                        TP1            SMT_TP - 35
+SMT_TEST                        TP2            SMT_TP - 35
+TPS560430X3FDBVR                U1             SOT95P245X145-6L
+SM712-02HTG                     U2             SOT-23
+SM712-02HTG                     U3             SOT-23
+ISL3176EIUZ-T                   U4             10 MSOP
+LPC804M101JDH20FP               U5             TSOP65P640X105-20N
+MAX31865AAP+                    U6             SOP65P780X200-20N
+MIC803-30D2VM3-TR               U7             SOT-23
+MCP9800A0T-M/OT                 U8             SOT23-5
+
+<<< Wire List >>>
+
+  NODE  REFERENCE  PIN #   PIN NAME       PIN TYPE    PART VALUE
+
+[00040] TXP_0
+        J1         1       1              PASSIVE     1557808
+        U3         1       IO             PASSIVE     SM712-02HTG
+        U4         6       Y              PASSIVE     ISL3176EIUZ-T
+
+[00039] TXN_0
+        J1         2       2              PASSIVE     1557808
+        U3         2       IO             PASSIVE     SM712-02HTG
+        U4         7       Z              PASSIVE     ISL3176EIUZ-T
+
+[00038] TXEN0
+        R4         1       1              PASSIVE     1k
+        U4         3       DE             PASSIVE     ISL3176EIUZ-T
+        U5         11      PIO0_15/ADC_8  PASSIVE     LPC804M101JDH20FP
+
+[00037] TX
+        U4         4       DI             PASSIVE     ISL3176EIUZ-T
+        U5         6       PIO0_4/ADC_11/TPASSIVE     LPC804M101JDH20FP
+
+[00036] TMP_CLK
+        U5         2       PIO0_17/ADC_9  PASSIVE     LPC804M101JDH20FP
+        U6         15      SCLK           PASSIVE     MAX31865AAP+
+
+[00035] TEMP_SDO
+        U5         20      PIO0_14/ADC_2/ PASSIVE     LPC804M101JDH20FP
+        U6         17      SDO            PASSIVE     MAX31865AAP+
+
+[00034] TEMP_SDI
+        U5         14      PIO0_8/ADC_5   PASSIVE     LPC804M101JDH20FP
+        U6         14      SDI            PASSIVE     MAX31865AAP+
+
+[00033] SWDIO
+        J3         2       SWDIO          PASSIVE     TC2030-CTL-NL
+        U5         8       SWDIO/PIO0_2/TMPASSIVE     LPC804M101JDH20FP
+
+[00032] SWDCLK
+        J3         4       SWDCLK         PASSIVE     TC2030-CTL-NL
+        U5         7       SWCLK/PIO0_3/TCPASSIVE     LPC804M101JDH20FP
+
+[00031] SDA
+        R11        2       2              PASSIVE     1k
+        U5         13      PIO0_9/ADC_4   PASSIVE     LPC804M101JDH20FP
+        U8         5       SDA            PASSIVE     MCP9800A0T-M/OT
+
+[00030] SCL
+        R12        2       2              PASSIVE     1k
+        U5         10      PIO0_10/ADC_7  PASSIVE     LPC804M101JDH20FP
+        U8         4       SCK            PASSIVE     MCP9800A0T-M/OT
+
+[00029] RXP_0
+        J1         3       3              PASSIVE     1557808
+        R2         1       1              PASSIVE     100
+        U2         2       IO             PASSIVE     SM712-02HTG
+        U4         9       A              PASSIVE     ISL3176EIUZ-T
+
+[00028] RXN_0
+        J1         6       6              PASSIVE     1557808
+        R2         2       2              PASSIVE     100
+        U2         1       IO             PASSIVE     SM712-02HTG
+        U4         8       B              PASSIVE     ISL3176EIUZ-T
+
+[00027] RXEN0
+        R3         2       2              PASSIVE     1k
+        U4         2       \R\E\          PASSIVE     ISL3176EIUZ-T
+        U5         12      PIO0_1/ADC_0/ACPASSIVE     LPC804M101JDH20FP
+
+[00026] RX
+        U4         1       RO             PASSIVE     ISL3176EIUZ-T
+        U5         19      PIO0_0/ACMP_I1 PASSIVE     LPC804M101JDH20FP
+
+[00025] R-
+        C15        1       1              PASSIVE     10000pF
+        R7         1       1              PASSIVE     0
+        T3         1       1              PASSIVE     Wire Hole
+        U6         11      RTDIN-         PASSIVE     MAX31865AAP+
+
+[00024] R+
+        C15        2       1              PASSIVE     10000pF
+        T2         1       1              PASSIVE     Wire Hole
+        U6         10      RTDIN+         PASSIVE     MAX31865AAP+
+
+[00023] nRESET
+        J3         3       RST            PASSIVE     TC2030-CTL-NL
+        R8         2       2              PASSIVE     100k
+        U5         5       RESET/PIO0_5   PASSIVE     LPC804M101JDH20FP
+        U7         2       \R\E\S\E\T\    PASSIVE     MIC803-30D2VM3-TR
+
+[00020] NetTP2_1
+        TP2        1       1              PASSIVE     SMT_TEST
+        U5         17      PIO0_7/ADC_1/A PASSIVE     LPC804M101JDH20FP
+
+[00019] NetTP1_1
+        TP1        1       1              PASSIVE     SMT_TEST
+        U5         9       PIO0_11/ADC_6/WPASSIVE     LPC804M101JDH20FP
+
+[00018] NetR13_2
+        R13        2       2              PASSIVE     1k
+        U8         3       ALERT          PASSIVE     MCP9800A0T-M/OT
+
+[00017] NetR10_2
+        R10        2       2              PASSIVE     401 .01% +/0 10ppm/C
+        U6         4       BIAS           PASSIVE     MAX31865AAP+
+        U6         5       REFIN+         PASSIVE     MAX31865AAP+
+
+[00016] NetR10_1
+        R10        1       1              PASSIVE     401 .01% +/0 10ppm/C
+        U6         6       REFIN-         PASSIVE     MAX31865AAP+
+        U6         7       ISENSOR        PASSIVE     MAX31865AAP+
+
+[00015] NetR5_1
+        R5         1       1              PASSIVE     0
+        R6         1       1              PASSIVE     0
+        U6         9       FORCE2         PASSIVE     MAX31865AAP+
+
+[00012] NetC6_2
+        C6         2       1              PASSIVE     10µF
+        C7         2       1              PASSIVE     10µF
+        L1         2       2              PASSIVE     15µH 0.53A
+        R1         1       1              PASSIVE     0
+        U1         3       FB             PASSIVE     TPS560430X3FDBVR
+
+[00011] NetC2_1
+        C2         1       1              PASSIVE     10µF
+        C3         1       1              PASSIVE     10µF
+        C4         1       1              PASSIVE     10µF
+        C5         2       1              PASSIVE     4.7µF
+        D1         3       K              PASSIVE     BAT1000-7-F
+        U1         4       EN             PASSIVE     TPS560430X3FDBVR
+        U1         5       VIN            PASSIVE     TPS560430X3FDBVR
+
+[00010] NetC1_2
+        C1         2       1              PASSIVE     0.1µF
+        U1         1       CB             PASSIVE     TPS560430X3FDBVR
+
+[00009] NetC1_1
+        C1         1       1              PASSIVE     0.1µF
+        L1         1       1              PASSIVE     15µH 0.53A
+        U1         6       SW             PASSIVE     TPS560430X3FDBVR
+
+[00008] nDRDY
+        U5         3       PIO0_13/ADC_10 PASSIVE     LPC804M101JDH20FP
+        U6         1       \D\R\D\Y\      PASSIVE     MAX31865AAP+
+
+[00007] nCS_TMP
+        U5         1       PIO0_16/ADC_3/APASSIVE     LPC804M101JDH20FP
+        U6         16      C\S\           PASSIVE     MAX31865AAP+
+
+[00006] GND
+        C2         2       1              PASSIVE     10µF
+        C3         2       1              PASSIVE     10µF
+        C4         2       1              PASSIVE     10µF
+        C5         1       1              PASSIVE     4.7µF
+        C6         1       1              PASSIVE     10µF
+        C7         1       1              PASSIVE     10µF
+        C8         1       1              PASSIVE     10µF
+        C9         1       1              PASSIVE     10µF
+        C10        1       1              PASSIVE     0.1µF
+        C11        1       1              PASSIVE     0.1µF
+        C12        1       1              PASSIVE     10µF
+        C13        1       1              PASSIVE     0.1µF
+        C14        1       1              PASSIVE     0.1µF
+        C16        1       1              PASSIVE     0.1µF
+        J1         7       7              PASSIVE     1557808
+        J1         8       8              PASSIVE     1557808
+        J3         5       GND            PASSIVE     TC2030-CTL-NL
+        R3         1       1              PASSIVE     1k
+        R5         2       2              PASSIVE     0
+        T6         1       1              PASSIVE     Wire Hole
+        U1         2       GND            PASSIVE     TPS560430X3FDBVR
+        U3         3       GND            PASSIVE     SM712-02HTG
+        U4         5       GND            PASSIVE     ISL3176EIUZ-T
+        U5         16      VSS            PASSIVE     LPC804M101JDH20FP
+        U6         13      GND2           PASSIVE     MAX31865AAP+
+        U6         18      DGND           PASSIVE     MAX31865AAP+
+        U6         19      GND            PASSIVE     MAX31865AAP+
+        U7         1       GND            PASSIVE     MIC803-30D2VM3-TR
+        U8         2       GND            PASSIVE     MCP9800A0T-M/OT
+
+[00005] F-
+        R7         2       2              PASSIVE     0
+        T4         1       1              PASSIVE     Wire Hole
+        U6         12      FORCE-         PASSIVE     MAX31865AAP+
+
+[00004] F+
+        R6         2       2              PASSIVE     0
+        T1         1       1              PASSIVE     Wire Hole
+        U6         8       FORCE+         PASSIVE     MAX31865AAP+
+
+[00003] BOOT_ENTRY
+        R9         2       2              PASSIVE     1k
+        T5         1       1              PASSIVE     Wire Hole
+        U5         4       PIO0_12        PASSIVE     LPC804M101JDH20FP
+
+[00002] +VIN
+        D1         1       A              PASSIVE     BAT1000-7-F
+        J1         4       4              PASSIVE     1557808
+        J1         5       5              PASSIVE     1557808
+
+[00001] +3V3
+        C8         2       1              PASSIVE     10µF
+        C9         2       1              PASSIVE     10µF
+        C10        2       1              PASSIVE     0.1µF
+        C11        2       1              PASSIVE     0.1µF
+        C12        2       1              PASSIVE     10µF
+        C13        2       1              PASSIVE     0.1µF
+        C14        2       1              PASSIVE     0.1µF
+        C16        2       1              PASSIVE     0.1µF
+        J3         1       VCC            PASSIVE     TC2030-CTL-NL
+        R1         2       2              PASSIVE     0
+        R4         2       2              PASSIVE     1k
+        R8         1       1              PASSIVE     100k
+        R9         1       1              PASSIVE     1k
+        R11        1       1              PASSIVE     1k
+        R12        1       1              PASSIVE     1k
+        R13        1       1              PASSIVE     1k
+        U4         10      VCC            PASSIVE     ISL3176EIUZ-T
+        U5         15      VDD            PASSIVE     LPC804M101JDH20FP
+        U5         18      VREFP          PASSIVE     LPC804M101JDH20FP
+        U6         2       DVDD           PASSIVE     MAX31865AAP+
+        U6         3       VDD            PASSIVE     MAX31865AAP+
+        U7         3       VCC            PASSIVE     MIC803-30D2VM3-TR
+        U8         1       VDD            PASSIVE     MCP9800A0T-M/OT
+

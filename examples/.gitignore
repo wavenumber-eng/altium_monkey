@@ -1,0 +1,5 @@
+# Altium local autosave/history artifacts
+**/History/
+**/__Previews/
+**/Project Logs for */
+*.Zip

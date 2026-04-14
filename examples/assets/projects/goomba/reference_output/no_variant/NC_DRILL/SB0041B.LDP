@@ -1,0 +1,3 @@
+Layer Pairs Export File for PCB: C:\eli\wn_pcb-sch\tools\test_cases\altium\common\real_world_pcbdoc\sb0040-m12-rtd__PCB-REV-B\input\SB0041B.PCBDOC
+LayersSetName=Top_Bot_Plated_Thru_Holes|DrillFile=sb0041b-plated.txt|DrillLayers=gtl,gbl
+LayersSetName=Top_Bot_NonPlated_Thru_Holes|DrillFile=sb0041b-nonplated.txt|DrillLayers=gtl,gbl

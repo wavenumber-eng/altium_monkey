@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:netlist_a0",
+  "title": "Altium Monkey netlist a0",
+  "description": "Compiled schematic connectivity emitted by Netlist.to_json().",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generator",
+    "components",
+    "nets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "altium_monkey.netlist.a0"
+    },
+    "generator": {
+      "const": "altium_monkey"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    },
+    "nets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/net"
+      }
+    }
+  },
+  "$defs": {
+    "string_list": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "parameter_map": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "designator",
+        "value",
+        "footprint",
+        "library_ref",
+        "description",
+        "parameters"
+      ],
+      "properties": {
+        "designator": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "footprint": {
+          "type": "string"
+        },
+        "library_ref": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameter_map"
+        }
+      }
+    },
+    "net": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "name",
+        "auto_named",
+        "source_sheets",
+        "terminals",
+        "graphical",
+        "aliases"
+      ],
+      "properties": {
+        "uid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "auto_named": {
+          "type": "boolean"
+        },
+        "source_sheets": {
+          "$ref": "#/$defs/string_list"
+        },
+        "terminals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/terminal"
+          }
+        },
+        "graphical": {
+          "$ref": "#/$defs/graphical"
+        },
+        "aliases": {
+          "$ref": "#/$defs/string_list"
+        },
+        "hierarchy_paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_path"
+          }
+        }
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "designator",
+        "pin",
+        "pin_name",
+        "pin_type"
+      ],
+      "properties": {
+        "designator": {
+          "type": "string"
+        },
+        "pin": {
+          "type": "string"
+        },
+        "pin_name": {
+          "type": "string"
+        },
+        "pin_type": {
+          "type": "string"
+        }
+      }
+    },
+    "graphical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wires",
+        "junctions",
+        "labels",
+        "power_ports",
+        "ports",
+        "sheet_entries",
+        "pins"
+      ],
+      "properties": {
+        "wires": {
+          "$ref": "#/$defs/string_list"
+        },
+        "junctions": {
+          "$ref": "#/$defs/string_list"
+        },
+        "labels": {
+          "$ref": "#/$defs/string_list"
+        },
+        "power_ports": {
+          "$ref": "#/$defs/string_list"
+        },
+        "ports": {
+          "$ref": "#/$defs/string_list"
+        },
+        "sheet_entries": {
+          "$ref": "#/$defs/string_list"
+        },
+        "pins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graphical_pin"
+          }
+        }
+      }
+    },
+    "graphical_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "designator",
+        "pin",
+        "svg_id"
+      ],
+      "properties": {
+        "designator": {
+          "type": "string"
+        },
+        "pin": {
+          "type": "string"
+        },
+        "svg_id": {
+          "type": "string"
+        }
+      }
+    },
+    "hierarchy_path": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/hierarchy_level"
+      }
+    },
+    "hierarchy_level": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sheet_symbol_uid",
+        "child_filename"
+      ],
+      "properties": {
+        "sheet_symbol_uid": {
+          "type": "string"
+        },
+        "child_filename": {
+          "type": "string"
+        },
+        "designator": {
+          "type": "string"
+        },
+        "channel_name": {
+          "type": "string"
+        },
+        "channel_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repeat_value": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,1172 @@
+manifest_version = 1
+
+[[examples]]
+id = "hello_schdoc"
+title = "Create a SchDoc hello world"
+summary = "Generate a SchDoc programmatically, place text, and insert a monkey image."
+areas = ["schdoc"]
+status = "ready"
+entrypoint = "hello_schdoc/hello_schdoc.py"
+doc = "hello_schdoc/README.md"
+inputs = []
+assets = ["hello_schdoc/assets/monkey.png"]
+outputs = ["hello_schdoc/output/hello_schdoc.SchDoc"]
+requires_extra = []
+tags = ["hello-world", "generation", "image", "schematic"]
+
+[[examples]]
+id = "schdoc_add_embedded_image"
+title = "Add an embedded image to an existing SchDoc"
+summary = "Load a blank schematic, create one detached embedded image, add it to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_embedded_image/schdoc_add_embedded_image.py"
+doc = "schdoc_add_embedded_image/README.md"
+inputs = ["schdoc_add_embedded_image/input/blank.SchDoc"]
+assets = ["schdoc_add_embedded_image/assets/monkey.png"]
+outputs = ["schdoc_add_embedded_image/output/blank_with_embedded_image.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "image", "embedded-image", "storage"]
+
+[[examples]]
+id = "schdoc_add_bus_and_bus_entry"
+title = "Add a bus and bus entries to an existing SchDoc"
+summary = "Load a blank schematic, create one detached bus plus several detached bus entries, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_bus_and_bus_entry/schdoc_add_bus_and_bus_entry.py"
+doc = "schdoc_add_bus_and_bus_entry/README.md"
+inputs = ["schdoc_add_bus_and_bus_entry/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_bus_and_bus_entry/output/blank_with_bus_and_entries.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "bus", "bus-entry", "connectivity"]
+
+[[examples]]
+id = "schdoc_add_wire_and_net_label"
+title = "Add wires and net labels to an existing SchDoc"
+summary = "Load a blank schematic, create one detached wire path plus one matching detached net label, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_wire_and_net_label/schdoc_add_wire_and_net_label.py"
+doc = "schdoc_add_wire_and_net_label/README.md"
+inputs = ["schdoc_add_wire_and_net_label/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_wire_and_net_label/output/blank_with_wires_and_net_labels.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "wire", "net-label", "connectivity"]
+
+[[examples]]
+id = "schdoc_add_harness_connector"
+title = "Add a harness connector group to an existing SchDoc"
+summary = "Load a blank schematic, create a connector-owned harness group plus matching port and signal harness, and save the modified SchDoc."
+areas = ["schdoc", "mutation", "harness"]
+status = "ready"
+entrypoint = "schdoc_add_harness_connector/schdoc_add_harness_connector.py"
+doc = "schdoc_add_harness_connector/README.md"
+inputs = ["schdoc_add_harness_connector/input/blank.SchDoc"]
+assets = [
+  "schdoc_add_harness_connector/output/harness_example_ref.SchDoc",
+  "schdoc_add_harness_connector/output/harness_example_ref.Harness",
+]
+outputs = [
+  "schdoc_add_harness_connector/output/harness_example.SchDoc",
+  "schdoc_add_harness_connector/output/harness_example.Harness",
+]
+requires_extra = []
+tags = ["schdoc", "mutation", "harness", "connector", "ownership"]
+
+[[examples]]
+id = "schdoc_add_off_sheet_connector"
+title = "Add an off-sheet connector to an existing SchDoc"
+summary = "Load a blank schematic, create detached left and right off-sheet connectors, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_off_sheet_connector/schdoc_add_off_sheet_connector.py"
+doc = "schdoc_add_off_sheet_connector/README.md"
+inputs = ["schdoc_add_off_sheet_connector/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_off_sheet_connector/output/blank_with_off_sheet_connector.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "off-sheet-connector", "connectivity"]
+
+[[examples]]
+id = "schdoc_add_generic_no_erc"
+title = "Add generic No ERC directives to an existing SchDoc"
+summary = "Load a blank schematic, create detached generic No ERC directives with different native symbols and orientations, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_generic_no_erc/schdoc_add_generic_no_erc.py"
+doc = "schdoc_add_generic_no_erc/README.md"
+inputs = ["schdoc_add_generic_no_erc/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_generic_no_erc/output/blank_with_no_ercs.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "directive", "no-erc", "orientation"]
+
+[[examples]]
+id = "schdoc_add_parameter_set"
+title = "Add parameter-set directives to an existing SchDoc"
+summary = "Load a blank schematic, create detached parameter-set directives with child parameters through owner links, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_parameter_set/schdoc_add_parameter_set.py"
+doc = "schdoc_add_parameter_set/README.md"
+inputs = ["schdoc_add_parameter_set/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_parameter_set/output/blank_with_parameter_sets.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "directive", "parameter-set"]
+
+[[examples]]
+id = "schdoc_add_differential_pair"
+title = "Add differential-pair directives to an existing SchDoc"
+summary = "Load a blank schematic, create detached differential-pair directives with hidden child parameters through owner links, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_differential_pair/schdoc_add_differential_pair.py"
+doc = "schdoc_add_differential_pair/README.md"
+inputs = ["schdoc_add_differential_pair/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_differential_pair/output/blank_with_differential_pairs.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "directive", "differential-pair"]
+
+[[examples]]
+id = "schdoc_add_blanket"
+title = "Add blanket directives to an existing SchDoc"
+summary = "Load a blank schematic, create detached blanket directives with different border styles, fill states, and collapse states, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_blanket/schdoc_add_blanket.py"
+doc = "schdoc_add_blanket/README.md"
+inputs = ["schdoc_add_blanket/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_blanket/output/blank_with_blankets.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "directive", "blanket", "polygon"]
+
+[[examples]]
+id = "schdoc_add_compile_mask"
+title = "Add compile-mask directives to an existing SchDoc"
+summary = "Load a blank schematic, create detached compile-mask directives with different bounds, border widths, fill colors, and collapse states, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_compile_mask/schdoc_add_compile_mask.py"
+doc = "schdoc_add_compile_mask/README.md"
+inputs = ["schdoc_add_compile_mask/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_compile_mask/output/blank_with_compile_masks.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "directive", "compile-mask", "rectangle"]
+
+[[examples]]
+id = "schdoc_add_power_port"
+title = "Add power ports to an existing SchDoc"
+summary = "Load a blank schematic, create detached built-in power-port symbols with several styles, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_power_port/schdoc_add_power_port.py"
+doc = "schdoc_add_power_port/README.md"
+inputs = ["schdoc_add_power_port/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_power_port/output/blank_with_power_ports.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "power-port", "connectivity"]
+
+[[examples]]
+id = "schdoc_add_port"
+title = "Add ports to an existing SchDoc"
+summary = "Load a blank schematic, create detached hierarchical ports with several styles and I/O types, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_port/schdoc_add_port.py"
+doc = "schdoc_add_port/README.md"
+inputs = ["schdoc_add_port/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_port/output/blank_with_ports.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "port", "connectivity", "hierarchy"]
+
+[[examples]]
+id = "schdoc_add_arc_and_full_circle"
+title = "Add an arc and a full circle to an existing SchDoc"
+summary = "Load a blank schematic, create one detached arc plus one detached full circle, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_arc_and_full_circle/schdoc_add_arc_and_full_circle.py"
+doc = "schdoc_add_arc_and_full_circle/README.md"
+inputs = ["schdoc_add_arc_and_full_circle/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_arc_and_full_circle/output/blank_with_arc_and_full_circle.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "arc", "full-circle", "drawing-tools"]
+
+[[examples]]
+id = "schdoc_add_elliptical_arc_and_ellipse"
+title = "Add an elliptical arc and ellipse to an existing SchDoc"
+summary = "Load a blank schematic, create detached ellipses plus detached elliptical arcs, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_elliptical_arc_and_ellipse/schdoc_add_elliptical_arc_and_ellipse.py"
+doc = "schdoc_add_elliptical_arc_and_ellipse/README.md"
+inputs = ["schdoc_add_elliptical_arc_and_ellipse/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_elliptical_arc_and_ellipse/output/blank_with_elliptical_arc_and_ellipse.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "elliptical-arc", "ellipse", "drawing-tools"]
+
+[[examples]]
+id = "schdoc_add_line"
+title = "Add line segments to an existing SchDoc"
+summary = "Load a blank schematic, create detached plain line segments, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_line/schdoc_add_line.py"
+doc = "schdoc_add_line/README.md"
+inputs = ["schdoc_add_line/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_line/output/blank_with_lines.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "line", "drawing-tools"]
+
+[[examples]]
+id = "schdoc_add_rectangle_and_rounded_rectangle"
+title = "Add rectangles and rounded rectangles to an existing SchDoc"
+summary = "Load a blank schematic, create detached rectangles plus detached rounded rectangles, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_rectangle_and_rounded_rectangle/schdoc_add_rectangle_and_rounded_rectangle.py"
+doc = "schdoc_add_rectangle_and_rounded_rectangle/README.md"
+inputs = ["schdoc_add_rectangle_and_rounded_rectangle/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_rectangle_and_rounded_rectangle/output/blank_with_rectangles.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "rectangle", "rounded-rectangle", "drawing-tools"]
+
+[[examples]]
+id = "schdoc_add_polyline"
+title = "Add polylines to an existing SchDoc"
+summary = "Load a blank schematic, create detached polylines with endpoint markers, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_polyline/schdoc_add_polyline.py"
+doc = "schdoc_add_polyline/README.md"
+inputs = ["schdoc_add_polyline/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_polyline/output/blank_with_polylines.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "polyline", "drawing-tools", "line-endings"]
+
+[[examples]]
+id = "schdoc_add_polygon"
+title = "Add polygons to an existing SchDoc"
+summary = "Load a blank schematic, create detached polygons with different point counts and fill modes, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_polygon/schdoc_add_polygon.py"
+doc = "schdoc_add_polygon/README.md"
+inputs = ["schdoc_add_polygon/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_polygon/output/blank_with_polygons.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "polygon", "drawing-tools", "fill"]
+
+[[examples]]
+id = "schdoc_add_bezier"
+title = "Add bezier curves to an existing SchDoc"
+summary = "Load a blank schematic, create detached bezier curves with single and chained segments, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_bezier/schdoc_add_bezier.py"
+doc = "schdoc_add_bezier/README.md"
+inputs = ["schdoc_add_bezier/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_bezier/output/blank_with_beziers.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "bezier", "drawing-tools", "curves"]
+
+[[examples]]
+id = "hello_pcbdoc"
+title = "Create a PcbDoc hello example"
+summary = "Generate a PcbDoc programmatically, create a rectangular board outline from explicit polygon vertices, place top silkscreen text, and save the board."
+areas = ["pcbdoc"]
+status = "ready"
+entrypoint = "hello_pcbdoc/hello_pcbdoc.py"
+doc = "hello_pcbdoc/README.md"
+inputs = []
+assets = []
+outputs = ["hello_pcbdoc/output/hello_pcbdoc.PcbDoc"]
+requires_extra = []
+tags = ["hello-world", "generation", "board-outline", "polygon", "silkscreen", "pcb"]
+
+[[examples]]
+id = "pcbdoc_stats"
+title = "Print PcbDoc board statistics"
+summary = "Load the loz-old-man project with AltiumDesign, open its PcbDoc, and print board outline, drill, slot, primitive-width, and resolved layer-stack statistics."
+areas = ["pcbdoc", "design"]
+status = "ready"
+entrypoint = "pcbdoc_stats/pcbdoc_stats.py"
+doc = "pcbdoc_stats/README.md"
+inputs = []
+assets = [
+  "assets/projects/loz-old-man/loz-old-man.PrjPcb",
+  "assets/projects/loz-old-man/SB0037A.PcbDoc",
+]
+outputs = [
+  "pcbdoc_stats/output/pcbdoc_stats.json",
+  "pcbdoc_stats/output/pcbdoc_stats.txt",
+]
+requires_extra = []
+tags = ["pcbdoc", "project", "statistics", "board-outline", "drills", "slots", "layer-stack"]
+
+[[examples]]
+id = "pcbdoc_bom"
+title = "Generate a BOM from PcbDoc components"
+summary = "Load the RT Super C1 project with AltiumDesign, iterate resolved PcbDoc components, and write all-component plus no-BOM-filtered BOM JSON."
+areas = ["pcbdoc", "bom", "design"]
+status = "ready"
+entrypoint = "pcbdoc_bom/pcbdoc_bom.py"
+doc = "pcbdoc_bom/README.md"
+inputs = []
+assets = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+]
+outputs = [
+  "pcbdoc_bom/output/pcbdoc_components.json",
+  "pcbdoc_bom/output/pcbdoc_bom.json",
+]
+requires_extra = []
+tags = ["pcbdoc", "project", "bom", "components", "parameters", "placement"]
+
+[[examples]]
+id = "pcbdoc_svg"
+title = "Render PcbDoc layers to SVG"
+summary = "Load the RT Super C1 project with AltiumDesign, open its PcbDoc, and write one SVG per visible PCB layer plus a separate board-outline SVG."
+areas = ["pcbdoc", "svg", "design"]
+status = "ready"
+entrypoint = "pcbdoc_svg/pcbdoc_svg.py"
+doc = "pcbdoc_svg/README.md"
+inputs = []
+assets = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+]
+outputs = [
+  "pcbdoc_svg/output/board_outline.svg",
+  "pcbdoc_svg/output/layers/",
+  "pcbdoc_svg/output/pcbdoc_svg_manifest.json",
+]
+requires_extra = []
+tags = ["pcbdoc", "svg", "rendering", "project", "layers", "board-outline"]
+
+[[examples]]
+id = "pcbdoc_netclass_svg"
+title = "Render net-class-highlighted PcbDoc SVG review pages"
+summary = "Load the RT Super C1 project with AltiumDesign, render routed copper layers for each PCB net class, recolor SVG primitives from embedded net-class metadata, and write inline HTML review pages."
+areas = ["pcbdoc", "svg", "design"]
+status = "ready"
+entrypoint = "pcbdoc_netclass_svg/pcbdoc_netclass_svg.py"
+doc = "pcbdoc_netclass_svg/README.md"
+inputs = []
+assets = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+]
+outputs = [
+  "pcbdoc_netclass_svg/output/html/",
+  "pcbdoc_netclass_svg/output/svgs/",
+  "pcbdoc_netclass_svg/output/pcbdoc_netclass_svg_manifest.json",
+]
+requires_extra = []
+tags = ["pcbdoc", "svg", "rendering", "project", "net-class", "html", "enrichment"]
+
+[[examples]]
+id = "pcbdoc_extract_pcblib"
+title = "Extract PcbLib footprints from a PcbDoc"
+summary = "Load the RT Super C1 project with AltiumDesign, extract placed PCB footprints to a combined PcbLib, and split them into one-footprint PcbLib files."
+areas = ["pcbdoc", "pcblib", "design"]
+status = "ready"
+entrypoint = "pcbdoc_extract_pcblib/pcbdoc_extract_pcblib.py"
+doc = "pcbdoc_extract_pcblib/README.md"
+inputs = []
+assets = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+]
+outputs = [
+  "pcbdoc_extract_pcblib/output/combined/RT_SUPER_C1_extracted.PcbLib",
+  "pcbdoc_extract_pcblib/output/split/",
+  "pcbdoc_extract_pcblib/output/pcblib_extraction_manifest.json",
+]
+requires_extra = []
+tags = ["pcbdoc", "pcblib", "project", "footprint", "extraction", "split-library"]
+
+[[examples]]
+id = "pcbdoc_extract_embedded_fonts"
+title = "Extract embedded PcbDoc fonts"
+summary = "Load the RT Super C1 project with AltiumDesign, open its PcbDoc, and write embedded TrueType fonts to disk."
+areas = ["pcbdoc", "design"]
+status = "ready"
+entrypoint = "pcbdoc_extract_embedded_fonts/pcbdoc_extract_embedded_fonts.py"
+doc = "pcbdoc_extract_embedded_fonts/README.md"
+inputs = []
+assets = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+]
+outputs = [
+  "pcbdoc_extract_embedded_fonts/output/embedded_fonts/",
+  "pcbdoc_extract_embedded_fonts/output/fonts.json",
+]
+requires_extra = []
+tags = ["pcbdoc", "project", "font", "embedded-asset", "extraction"]
+
+[[examples]]
+id = "pcbdoc_extract_embedded_3d_models"
+title = "Extract embedded PcbDoc 3D models"
+summary = "Load the RT Super C1 project with AltiumDesign, open its PcbDoc, and write embedded STEP model payloads to disk."
+areas = ["pcbdoc", "design", "3d"]
+status = "ready"
+entrypoint = "pcbdoc_extract_embedded_3d_models/pcbdoc_extract_embedded_3d_models.py"
+doc = "pcbdoc_extract_embedded_3d_models/README.md"
+inputs = []
+assets = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+]
+outputs = [
+  "pcbdoc_extract_embedded_3d_models/output/embedded_3d_models/",
+  "pcbdoc_extract_embedded_3d_models/output/models.json",
+]
+requires_extra = []
+tags = ["pcbdoc", "project", "3d", "embedded-model", "step", "extraction"]
+
+[[examples]]
+id = "pcbdoc_add_text"
+title = "Add PCB text primitives"
+summary = "Load a blank PcbDoc, add stroke text, TrueType text, inverted text, mirrored text, and barcode text variants, and save the board."
+areas = ["pcbdoc", "mutation"]
+status = "ready"
+entrypoint = "pcbdoc_add_text/pcbdoc_add_text.py"
+doc = "pcbdoc_add_text/README.md"
+inputs = ["assets/pcbdoc/blank.PcbDoc"]
+assets = []
+outputs = ["pcbdoc_add_text/output/pcbdoc_add_text.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "mutation", "text", "truetype", "barcode", "inverted-text"]
+
+[[examples]]
+id = "pcbdoc_add_track"
+title = "Add PCB tracks"
+summary = "Load a blank PcbDoc, add tracks on copper, overlay, and mechanical layers with several widths and net assignments, and save the board."
+areas = ["pcbdoc", "mutation"]
+status = "ready"
+entrypoint = "pcbdoc_add_track/pcbdoc_add_track.py"
+doc = "pcbdoc_add_track/README.md"
+inputs = ["assets/pcbdoc/blank.PcbDoc"]
+assets = []
+outputs = ["pcbdoc_add_track/output/pcbdoc_add_track.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "mutation", "track", "routing", "nets"]
+
+[[examples]]
+id = "pcbdoc_add_arc"
+title = "Add PCB arcs"
+summary = "Load a blank PcbDoc, add full-circle and partial arc primitives on multiple layers, and save the board."
+areas = ["pcbdoc", "mutation"]
+status = "ready"
+entrypoint = "pcbdoc_add_arc/pcbdoc_add_arc.py"
+doc = "pcbdoc_add_arc/README.md"
+inputs = ["assets/pcbdoc/blank.PcbDoc"]
+assets = []
+outputs = ["pcbdoc_add_arc/output/pcbdoc_add_arc.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "mutation", "arc", "full-circle", "routing"]
+
+[[examples]]
+id = "pcbdoc_add_pad"
+title = "Add PCB pads"
+summary = "Load a blank PcbDoc, add SMT pads, through-hole pads, and a non-plated through hole with explicit zero mask expansions, and save the board."
+areas = ["pcbdoc", "mutation"]
+status = "ready"
+entrypoint = "pcbdoc_add_pad/pcbdoc_add_pad.py"
+doc = "pcbdoc_add_pad/README.md"
+inputs = ["assets/pcbdoc/blank.PcbDoc"]
+assets = []
+outputs = ["pcbdoc_add_pad/output/pcbdoc_add_pad.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "mutation", "pad", "smt", "through-hole", "npth", "mask-expansion"]
+
+[[examples]]
+id = "pcbdoc_add_filled_region"
+title = "Add filled PCB regions"
+summary = "Load a blank PcbDoc, add copper regions, a region with a hole, and a keepout region, and save the board."
+areas = ["pcbdoc", "mutation"]
+status = "ready"
+entrypoint = "pcbdoc_add_filled_region/pcbdoc_add_filled_region.py"
+doc = "pcbdoc_add_filled_region/README.md"
+inputs = ["assets/pcbdoc/blank.PcbDoc"]
+assets = []
+outputs = ["pcbdoc_add_filled_region/output/pcbdoc_add_filled_region.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "mutation", "region", "filled-region", "keepout"]
+
+[[examples]]
+id = "pcbdoc_insert_footprint_from_pcblib"
+title = "Insert PcbLib footprints into a PcbDoc"
+summary = "Create a PcbDoc, place resistor footprints from an existing PcbLib, assign component parameters and pad nets, and save the board."
+areas = ["pcbdoc", "pcblib"]
+status = "ready"
+entrypoint = "pcbdoc_insert_footprint_from_pcblib/pcbdoc_insert_footprint_from_pcblib.py"
+doc = "pcbdoc_insert_footprint_from_pcblib/README.md"
+inputs = ["assets/pcblib/RT_SUPER_C1.PcbLib"]
+assets = []
+outputs = ["pcbdoc_insert_footprint_from_pcblib/output/pcbdoc_insert_footprint_from_pcblib.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "pcblib", "footprint", "component", "placement", "parameters", "nets"]
+
+[[examples]]
+id = "pcbdoc_insert_nets_route"
+title = "Insert footprints and route PCB nets"
+summary = "Create a PcbDoc, insert connector and resistor footprints from PcbLib assets, assign pad nets, and add routed tracks plus a via."
+areas = ["pcbdoc", "pcblib"]
+status = "ready"
+entrypoint = "pcbdoc_insert_nets_route/pcbdoc_insert_nets_route.py"
+doc = "pcbdoc_insert_nets_route/README.md"
+inputs = [
+  "assets/pcbdoc/blank.PcbDoc",
+  "assets/pcblib/03R-JWPF-VSLE-S.PcbLib",
+  "assets/pcblib/R0603_0.55MM_MD.PcbLib",
+]
+assets = []
+outputs = ["pcbdoc_insert_nets_route/output/pcbdoc_insert_nets_route.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "pcblib", "footprint", "routing", "nets", "tracks", "vias"]
+
+[[examples]]
+id = "pcbdoc_add_free_3d_extruded"
+title = "Add a free extruded 3D body to a PcbDoc"
+summary = "Create a PcbDoc and add a board-level generic extruded 3D body from a polygon projection."
+areas = ["pcbdoc", "3d"]
+status = "ready"
+entrypoint = "pcbdoc_add_free_3d_extruded/pcbdoc_add_free_3d_extruded.py"
+doc = "pcbdoc_add_free_3d_extruded/README.md"
+inputs = ["assets/pcbdoc/blank.PcbDoc"]
+assets = []
+outputs = ["pcbdoc_add_free_3d_extruded/output/pcbdoc_add_free_3d_extruded.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "3d", "component-body", "extruded", "generation"]
+
+[[examples]]
+id = "pcbdoc_add_free_3d_step"
+title = "Add a free embedded STEP 3D body to a PcbDoc"
+summary = "Create a PcbDoc, embed a STEP model from disk, infer its projection, and add it as a free board-level 3D body."
+areas = ["pcbdoc", "3d"]
+status = "ready"
+entrypoint = "pcbdoc_add_free_3d_step/pcbdoc_add_free_3d_step.py"
+doc = "pcbdoc_add_free_3d_step/README.md"
+inputs = ["assets/pcbdoc/blank.PcbDoc"]
+assets = ["assets/3d/RESC1608X06N.step"]
+outputs = ["pcbdoc_add_free_3d_step/output/pcbdoc_add_free_3d_step.PcbDoc"]
+requires_extra = []
+tags = ["pcbdoc", "3d", "component-body", "embedded-model", "step", "generation"]
+
+[[examples]]
+id = "hello_schlib"
+title = "Create a SchLib hello example"
+summary = "Create a simple 4-pin IC symbol in a SchLib to demonstrate the basic mechanics of programmatic symbol generation."
+areas = ["schlib"]
+status = "ready"
+entrypoint = "hello_schlib/hello_schlib.py"
+doc = "hello_schlib/README.md"
+inputs = []
+assets = []
+outputs = ["hello_schlib/output/hello_schlib.SchLib"]
+requires_extra = []
+tags = ["hello-world", "generation", "library", "symbol"]
+
+[[examples]]
+id = "schdoc_insert_dblib_style"
+title = "Insert DBLib-style components from a SchLib symbol"
+summary = "Place generic resistor symbols from R_2P.Schlib, inject DB-resolved parameters and footprint implementations, and write a project containing the SchDoc and PcbLib."
+areas = ["schdoc", "schlib", "mutation"]
+status = "ready"
+entrypoint = "schdoc_insert_dblib_style/schdoc_insert_dblib_style.py"
+doc = "schdoc_insert_dblib_style/README.md"
+inputs = [
+  "assets/schdoc/blank.SchDoc",
+  "assets/schlib/R_2P.Schlib",
+  "assets/pcblib/R0603_0.55MM_MD.PcbLib",
+]
+assets = []
+outputs = [
+  "schdoc_insert_dblib_style/output/schdoc_insert_dblib_style.SchDoc",
+  "schdoc_insert_dblib_style/output/R0603_0.55MM_MD.PcbLib",
+  "schdoc_insert_dblib_style/output/schdoc_insert_dblib_style.PrjPcb",
+]
+requires_extra = []
+tags = ["schdoc", "schlib", "component", "dblib-style", "parameters", "footprint", "prjpcb"]
+
+[[examples]]
+id = "hello_pcblib"
+title = "Create a hello PcbLib"
+summary = "Create a real 0603 resistor footprint from scratch and embed a STEP model from disk through the public PcbLib API."
+areas = ["pcblib"]
+status = "ready"
+entrypoint = "hello_pcblib/hello_pcblib.py"
+doc = "hello_pcblib/README.md"
+inputs = []
+assets = ["assets/3d/RESC1608X06N.step"]
+outputs = [
+  "hello_pcblib/output/hello_pcblib.PcbLib",
+]
+requires_extra = []
+tags = ["hello-world", "generation", "library", "footprint", "embedded-model", "step"]
+
+[[examples]]
+id = "pcblib_add_free_3d_extruded"
+title = "Add a free extruded 3D body to a PcbLib footprint"
+summary = "Create a PcbLib with one sample footprint, add pads and outline tracks, then add a generic extruded 3D body to the footprint."
+areas = ["pcblib", "3d"]
+status = "ready"
+entrypoint = "pcblib_add_free_3d_extruded/pcblib_add_free_3d_extruded.py"
+doc = "pcblib_add_free_3d_extruded/README.md"
+inputs = []
+assets = []
+outputs = ["pcblib_add_free_3d_extruded/output/pcblib_add_free_3d_extruded.PcbLib"]
+requires_extra = []
+tags = ["pcblib", "3d", "component-body", "extruded", "generation", "footprint"]
+
+[[examples]]
+id = "pcblib_extract_3d_models"
+title = "Extract embedded PcbLib 3D models"
+summary = "Load an existing PcbLib and extract its embedded STEP model payloads to files."
+areas = ["pcblib"]
+status = "ready"
+entrypoint = "pcblib_extract_3d_models/pcblib_extract_3d_models.py"
+doc = "pcblib_extract_3d_models/README.md"
+inputs = ["assets/pcblib/R0603_0.55MM_MD.PcbLib"]
+assets = []
+outputs = [
+  "pcblib_extract_3d_models/output/extracted_models/",
+  "pcblib_extract_3d_models/output/models.json",
+]
+requires_extra = []
+tags = ["extraction", "library", "footprint", "embedded-model", "step"]
+
+[[examples]]
+id = "pcblib_footprint_svg"
+title = "Render PcbLib footprints to SVG"
+summary = "Load an existing PcbLib, iterate its footprints, and write composed plus per-layer SVG files for each footprint."
+areas = ["pcblib", "svg"]
+status = "ready"
+entrypoint = "pcblib_footprint_svg/pcblib_footprint_svg.py"
+doc = "pcblib_footprint_svg/README.md"
+inputs = ["assets/pcblib/R0603_0.55MM_MD.PcbLib"]
+assets = []
+outputs = [
+  "pcblib_footprint_svg/output/footprints/",
+  "pcblib_footprint_svg/output/layers/",
+  "pcblib_footprint_svg/output/pcblib_footprint_svg_manifest.json",
+]
+requires_extra = []
+tags = ["library", "footprint", "svg", "rendering", "layers"]
+
+[[examples]]
+id = "pcblib_split"
+title = "Split a multi-footprint PcbLib"
+summary = "Load an existing PcbLib and split it into one PcbLib file per footprint."
+areas = ["pcblib"]
+status = "ready"
+entrypoint = "pcblib_split/pcblib_split.py"
+doc = "pcblib_split/README.md"
+inputs = ["assets/pcblib/RT_SUPER_C1.PcbLib"]
+assets = []
+outputs = [
+  "pcblib_split/output/split/",
+  "pcblib_split/output/pcblib_split_manifest.json",
+]
+requires_extra = []
+tags = ["library", "footprint", "split"]
+
+[[examples]]
+id = "pcblib_find_footprint"
+title = "Find footprints across PcbLib files"
+summary = "Scan a folder of PcbLib files, build a library-to-footprint index, print all discovered footprints, and demonstrate fuzzy footprint search."
+areas = ["pcblib"]
+status = "ready"
+entrypoint = "pcblib_find_footprint/pcblib_find_footprint.py"
+doc = "pcblib_find_footprint/README.md"
+inputs = []
+assets = ["assets/pcblib/"]
+outputs = [
+  "pcblib_find_footprint/output/footprint_index.json",
+]
+requires_extra = []
+tags = ["library", "footprint", "search", "index", "fuzzy-match"]
+
+[[examples]]
+id = "pcblib_synthesize_power_resistor_lib"
+title = "Synthesize power-resistor PcbLibs with generated STEP models"
+summary = "Generate SQP20 through-hole resistor footprints, synthesize value-specific STEP models with dot-matrix markings, embed the models, and save one PcbLib per part."
+areas = ["pcblib", "3d"]
+status = "ready"
+entrypoint = "pcblib_synthesize_power_resistor_lib/pcblib_synthesize_power_resistor_lib.py"
+doc = "pcblib_synthesize_power_resistor_lib/README.md"
+inputs = []
+assets = []
+outputs = [
+  "pcblib_synthesize_power_resistor_lib/output/pcblib/",
+  "pcblib_synthesize_power_resistor_lib/output/step_models/",
+  "pcblib_synthesize_power_resistor_lib/output/synthesis_manifest.json",
+]
+requires_extra = []
+tags = ["generation", "library", "footprint", "through-hole", "embedded-model", "step", "cadquery"]
+
+[[examples]]
+id = "hello_altium_design"
+title = "Load an existing project with AltiumDesign"
+summary = "Load an existing PrjPcb, print variants and document paths, and write summary, BOM, design JSON, netlist, and wirelist artifacts."
+areas = ["design", "prjpcb", "netlist", "bom", "pnp"]
+status = "ready"
+entrypoint = "hello_altium_design/hello_altium_design.py"
+doc = "hello_altium_design/README.md"
+inputs = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.SchDoc",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+]
+assets = []
+outputs = [
+  "hello_altium_design/output/project_summary.json",
+  "hello_altium_design/output/altium_design.json",
+  "hello_altium_design/output/netlist.json",
+  "hello_altium_design/output/wirelist.txt",
+  "hello_altium_design/output/bom_all.json",
+  "hello_altium_design/output/variant_boms/",
+]
+requires_extra = []
+tags = ["project", "design", "variants", "netlist", "bom", "pnp"]
+
+[[examples]]
+id = "pcbdoc_pick_n_place"
+title = "Export pick-and-place data from an Altium project"
+summary = "Load an existing PrjPcb with AltiumDesign, read the design JSON PNP block, and write all-placement plus no-BOM-filtered JSON files."
+areas = ["design", "pnp", "pcbdoc"]
+status = "ready"
+entrypoint = "pcbdoc_pick_n_place/pcbdoc_pick_n_place.py"
+doc = "pcbdoc_pick_n_place/README.md"
+inputs = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.SchDoc",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+]
+assets = []
+outputs = [
+  "pcbdoc_pick_n_place/output/altium_design.json",
+  "pcbdoc_pick_n_place/output/pick_and_place.json",
+  "pcbdoc_pick_n_place/output/pick_and_place_exclude_no_bom.json",
+]
+requires_extra = []
+tags = ["project", "design", "pnp", "pick-and-place", "no-bom", "json"]
+
+[[examples]]
+id = "schdoc_add_note"
+title = "Add a note to an existing SchDoc"
+summary = "Load an existing schematic, create one detached note, add it to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_note/schdoc_add_note.py"
+doc = "schdoc_add_note/README.md"
+inputs = ["schdoc_add_note/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_note/output/blank_with_note.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "note", "blank-template"]
+
+[[examples]]
+id = "schdoc_add_text_frame"
+title = "Add text frames to an existing SchDoc"
+summary = "Load a blank schematic, create several detached text frames with different alignments, border widths, and fonts, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_text_frame/schdoc_add_text_frame.py"
+doc = "schdoc_add_text_frame/README.md"
+inputs = ["schdoc_add_text_frame/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_text_frame/output/blank_with_text_frames.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "text-frame", "font", "geometry"]
+
+[[examples]]
+id = "schdoc_add_text_string"
+title = "Add text strings to an existing SchDoc"
+summary = "Load a blank schematic, create several detached text strings with different justifications, orientations, and fonts, add them to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_add_text_string/schdoc_add_text_string.py"
+doc = "schdoc_add_text_string/README.md"
+inputs = ["schdoc_add_text_string/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_text_string/output/blank_with_text_strings.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "text-string", "font", "geometry"]
+
+[[examples]]
+id = "schdoc_note_command"
+title = "Mutate and delete existing notes in a SchDoc"
+summary = "Open a schematic with existing notes, change one note font in place, delete another note, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_note_command/schdoc_note_command.py"
+doc = "schdoc_note_command/README.md"
+inputs = ["schdoc_note_command/input/note_commands_input.SchDoc"]
+assets = []
+outputs = ["schdoc_note_command/output/note_commands_output.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "notes", "delete", "font"]
+
+[[examples]]
+id = "schdoc_move_note"
+title = "Move an existing note in a SchDoc"
+summary = "Open a schematic with one note, move it through the public bounds helper, and save the modified SchDoc."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_move_note/schdoc_move_note.py"
+doc = "schdoc_move_note/README.md"
+inputs = ["schdoc_move_note/input/note_move_input.SchDoc"]
+assets = []
+outputs = ["schdoc_move_note/output/note_move_output.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "note", "geometry", "move"]
+
+[[examples]]
+id = "schdoc_add_sheet_symbol"
+title = "Add sheet symbols to an existing SchDoc"
+summary = "Load a blank schematic, create detached sheet symbols with detached entries and labels, add the top-level groups to the document, and save the modified SchDoc."
+areas = ["schdoc", "mutation", "hierarchy"]
+status = "ready"
+entrypoint = "schdoc_add_sheet_symbol/schdoc_add_sheet_symbol.py"
+doc = "schdoc_add_sheet_symbol/README.md"
+inputs = ["schdoc_add_sheet_symbol/input/blank.SchDoc"]
+assets = []
+outputs = ["schdoc_add_sheet_symbol/output/blank_with_sheet_symbols.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "sheet-symbol", "sheet-entry", "hierarchy"]
+
+[[examples]]
+id = "schdoc_mutate_harness_connector"
+title = "Mutate an existing harness connector group in a SchDoc"
+summary = "Build a baseline harness connector group, mutate entry text, colors, fonts, signal harnesses, and the type label, then save the result."
+areas = ["schdoc", "mutation", "harness"]
+status = "ready"
+entrypoint = "schdoc_mutate_harness_connector/schdoc_mutate_harness_connector.py"
+doc = "schdoc_mutate_harness_connector/README.md"
+inputs = []
+assets = []
+outputs = [
+  "schdoc_mutate_harness_connector/output/harness_mutation_input.SchDoc",
+  "schdoc_mutate_harness_connector/output/harness_mutation_input.Harness",
+  "schdoc_mutate_harness_connector/output/harness_mutation_output.SchDoc",
+  "schdoc_mutate_harness_connector/output/harness_mutation_output.Harness",
+]
+requires_extra = []
+tags = ["schdoc", "mutation", "harness", "connector", "ownership"]
+
+[[examples]]
+id = "schdoc_mutate_sheet_symbol"
+title = "Mutate an existing sheet symbol group in a SchDoc"
+summary = "Open a schematic with one existing sheet symbol group, rename and reorder entries, replace the name and file labels, add and remove entries, and save the modified SchDoc."
+areas = ["schdoc", "mutation", "hierarchy"]
+status = "ready"
+entrypoint = "schdoc_mutate_sheet_symbol/schdoc_mutate_sheet_symbol.py"
+doc = "schdoc_mutate_sheet_symbol/README.md"
+inputs = ["schdoc_mutate_sheet_symbol/input/sheet_symbol_input.SchDoc"]
+assets = []
+outputs = ["schdoc_mutate_sheet_symbol/output/sheet_symbol_output.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "sheet-symbol", "sheet-entry", "hierarchy"]
+
+[[examples]]
+id = "schdoc_clear_template"
+title = "Clear template graphics from an existing SchDoc"
+summary = "Open a schematic with embedded template graphics, remove the template record and template-owned objects, clear sheet template metadata, and save the modified SchDoc."
+areas = ["schdoc", "mutation", "template"]
+status = "ready"
+entrypoint = "schdoc_clear_template/schdoc_clear_template.py"
+doc = "schdoc_clear_template/README.md"
+inputs = []
+assets = ["assets/projects/bunny_brain/bunny_brain_D.SchDoc"]
+outputs = ["schdoc_clear_template/output/bunny_brain_D_without_template.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "template", "title-block"]
+
+[[examples]]
+id = "schdoc_apply_template"
+title = "Apply a SchDot template to an existing SchDoc"
+summary = "Open a schematic, clear its existing template graphics, apply a SchDot template from shared assets, and save the modified SchDoc."
+areas = ["schdoc", "mutation", "template"]
+status = "ready"
+entrypoint = "schdoc_apply_template/schdoc_apply_template.py"
+doc = "schdoc_apply_template/README.md"
+inputs = []
+assets = [
+  "assets/projects/bunny_brain/bunny_brain_D.SchDoc",
+  "assets/templates/Wavenumber__ANSI_D.SchDot",
+]
+outputs = ["schdoc_apply_template/output/bunny_brain_D_with_applied_template.SchDoc"]
+requires_extra = []
+tags = ["schdoc", "mutation", "template", "schdot", "title-block"]
+
+[[examples]]
+id = "schdoc_extract_template"
+title = "Extract an embedded SchDoc template to SchDot"
+summary = "Open a schematic with an embedded template, extract the template graphics back to a standalone SchDot, and save the extracted template."
+areas = ["schdoc", "mutation", "template"]
+status = "ready"
+entrypoint = "schdoc_extract_template/schdoc_extract_template.py"
+doc = "schdoc_extract_template/README.md"
+inputs = []
+assets = [
+  "assets/projects/m2_emmc/m2_emmc.SchDoc",
+]
+outputs = [
+  "schdoc_extract_template/output/m2_emmc_extracted_template.SchDot",
+]
+requires_extra = []
+tags = ["schdoc", "mutation", "template", "schdot", "title-block", "extract"]
+
+[[examples]]
+id = "schdoc_apply_dynamic_template"
+title = "Apply a generated title-block template"
+summary = "Build title-block graphics from Python, keep Altium parameter expressions in the generated text frames, write project parameters and variant context to PrjPcb, and apply the template to blank ANSI B and D schematics."
+areas = ["schdoc", "mutation", "template"]
+status = "ready"
+entrypoint = "schdoc_apply_dynamic_template/schdoc_apply_dynamic_template.py"
+doc = "schdoc_apply_dynamic_template/README.md"
+inputs = ["assets/schdoc/blank.SchDoc"]
+assets = ["schdoc_apply_dynamic_template/assets/logo.png"]
+outputs = [
+  "schdoc_apply_dynamic_template/output/blank_with_dynamic_ansi_B.SchDoc",
+  "schdoc_apply_dynamic_template/output/blank_with_dynamic_ansi_D.SchDoc",
+  "schdoc_apply_dynamic_template/output/schdoc_apply_dynamic_template.PrjPcb",
+]
+requires_extra = []
+tags = ["schdoc", "mutation", "template", "dynamic-template", "title-block", "schdot"]
+
+[[examples]]
+id = "prjpcb_make_project"
+title = "Create a complete PrjPcb project"
+summary = "Generate a D-size SchDoc with a dynamic title block, synthesize a simple PcbDoc, create an enabled OutJob, and write a PrjPcb with project parameters and variant A."
+areas = ["prjpcb", "schdoc", "pcbdoc", "outjob"]
+status = "ready"
+entrypoint = "prjpcb_make_project/prjpcb_make_project.py"
+doc = "prjpcb_make_project/README.md"
+inputs = ["assets/schdoc/blank.SchDoc"]
+assets = ["prjpcb_make_project/assets/logo.png"]
+outputs = [
+  "prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.PrjPcb",
+  "prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.SchDoc",
+  "prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.PcbDoc",
+  "prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.OutJob",
+  "prjpcb_make_project/output/prjpcb_make_project/outputs/",
+  "prjpcb_make_project/output/prjpcb_make_project/project_manifest.json",
+]
+requires_extra = []
+tags = ["project", "prjpcb", "generation", "dynamic-template", "outjob", "variant"]
+
+[[examples]]
+id = "outjob_runner"
+title = "Run an Altium OutJob from Python"
+summary = "Stage a working copy of the RT Super C1 project, resolve its associated OutJob through prj.outjob(), and optionally launch Altium Designer to run it."
+areas = ["outjob", "prjpcb", "automation"]
+status = "ready"
+entrypoint = "outjob_runner/outjob_runner.py"
+doc = "outjob_runner/README.md"
+inputs = []
+assets = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PrjPcb",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.SchDoc",
+  "assets/projects/rt_super_c1/RT_SUPER_C1.PCBdoc",
+  "assets/projects/rt_super_c1/reference_gen.OutJob",
+  "assets/schlib/RT_SUPER_C1.SCHLIB",
+]
+outputs = ["outjob_runner/output/outjob_runner_summary.json"]
+requires_extra = ["altium_designer_for_run_mode"]
+tags = ["project", "outjob", "runner", "automation", "altium-launcher"]
+
+[[examples]]
+id = "schdoc_extract_images"
+title = "Extract embedded images from a SchDoc"
+summary = "Open a schematic, find embedded IMAGE records, write each embedded payload using a detected native extension, and save a JSON extraction manifest."
+areas = ["schdoc", "asset-extraction", "image"]
+status = "ready"
+entrypoint = "schdoc_extract_images/schdoc_extract_images.py"
+doc = "schdoc_extract_images/README.md"
+inputs = []
+assets = ["assets/projects/hydroscope/TOP_LEVEL.SchDoc"]
+outputs = [
+  "schdoc_extract_images/output/extracted_images",
+  "schdoc_extract_images/output/image_manifest.json",
+]
+requires_extra = []
+tags = ["schdoc", "image", "embedded-image", "asset-extraction"]
+
+[[examples]]
+id = "schdoc_extract_schlib"
+title = "Extract SchLibs from a SchDoc"
+summary = "Extract placed component symbols from a schematic as a combined SchLib, split DBLib-ready SchLibs with metadata/model records stripped, and split SchLibs with parameters and implementations preserved."
+areas = ["schdoc", "schlib", "asset-extraction"]
+status = "ready"
+entrypoint = "schdoc_extract_schlib/schdoc_extract_schlib.py"
+doc = "schdoc_extract_schlib/README.md"
+inputs = []
+assets = ["assets/projects/rt_super_c1/RT_SUPER_C1.SchDoc"]
+outputs = [
+  "schdoc_extract_schlib/output/combined/RT_SUPER_C1.SchLib",
+  "schdoc_extract_schlib/output/split_dblib_ready",
+  "schdoc_extract_schlib/output/split_preserved",
+  "schdoc_extract_schlib/output/schlib_extraction_manifest.json",
+]
+requires_extra = []
+tags = ["schdoc", "schlib", "component", "symbol-extraction", "dblib"]
+
+[[examples]]
+id = "schlib_find_symbol"
+title = "Find symbols across SchLib files"
+summary = "Scan a folder of SchLib files, build a library-to-symbol index, print all discovered symbols, and demonstrate fuzzy symbol search."
+areas = ["schlib"]
+status = "ready"
+entrypoint = "schlib_find_symbol/schlib_find_symbol.py"
+doc = "schlib_find_symbol/README.md"
+inputs = []
+assets = ["assets/schlib/"]
+outputs = ["schlib_find_symbol/output/symbol_index.json"]
+requires_extra = []
+tags = ["schlib", "symbol", "search", "index", "fuzzy-match"]
+
+[[examples]]
+id = "schlib_split"
+title = "Split a multi-symbol SchLib"
+summary = "Load an existing SchLib and split it into one SchLib file per symbol."
+areas = ["schlib"]
+status = "ready"
+entrypoint = "schlib_split/schlib_split.py"
+doc = "schlib_split/README.md"
+inputs = ["assets/schlib/RT_SUPER_C1.SCHLIB"]
+assets = []
+outputs = [
+  "schlib_split/output/split/",
+  "schlib_split/output/schlib_split_manifest.json",
+]
+requires_extra = []
+tags = ["schlib", "symbol", "split"]
+
+[[examples]]
+id = "schlib_merge"
+title = "Merge SchLib files"
+summary = "Scan a folder of SchLib files, merge all symbols into one combined SchLib, and write a merge manifest."
+areas = ["schlib"]
+status = "ready"
+entrypoint = "schlib_merge/schlib_merge.py"
+doc = "schlib_merge/README.md"
+inputs = []
+assets = ["assets/schlib/"]
+outputs = [
+  "schlib_merge/output/merged/merged_schlib_assets.SchLib",
+  "schlib_merge/output/schlib_merge_manifest.json",
+]
+requires_extra = []
+tags = ["schlib", "symbol", "merge", "library"]
+
+[[examples]]
+id = "intlib_extract_sources"
+title = "Extract source libraries from an IntLib"
+summary = "Open an Altium integrated library, extract its embedded SchLib and PcbLib source files, and write an extraction manifest."
+areas = ["intlib", "schlib", "pcblib"]
+status = "ready"
+entrypoint = "intlib_extract_sources/intlib_extract_sources.py"
+doc = "intlib_extract_sources/README.md"
+inputs = []
+assets = ["assets/projects/rt_super_c1/RT_SUPER_C1.IntLib"]
+outputs = [
+  "intlib_extract_sources/output/extracted_sources/",
+  "intlib_extract_sources/output/split_sources/",
+  "intlib_extract_sources/output/intlib_extract_sources_manifest.json",
+]
+requires_extra = []
+tags = ["intlib", "library", "source-extraction", "schlib", "pcblib"]
+
+[[examples]]
+id = "schdoc_clean"
+title = "Clean and normalize project schematics"
+summary = "Open every Hydroscope schematic, iterate through components and sheet-level records, normalize fonts, colors, fills, and line widths, and save cleaned SchDoc copies."
+areas = ["schdoc", "mutation"]
+status = "ready"
+entrypoint = "schdoc_clean/schdoc_clean.py"
+doc = "schdoc_clean/README.md"
+inputs = []
+assets = [
+  "assets/projects/hydroscope/CPU.SchDoc",
+  "assets/projects/hydroscope/POWER_SUPPLY.SchDoc",
+  "assets/projects/hydroscope/TOP_LEVEL.SchDoc",
+  "assets/projects/hydroscope/US_IF.SchDoc",
+]
+outputs = [
+  "schdoc_clean/output/hydroscope_clean/CPU.SchDoc",
+  "schdoc_clean/output/hydroscope_clean/Hydroscope.PrjPcb",
+  "schdoc_clean/output/hydroscope_clean/POWER_SUPPLY.SchDoc",
+  "schdoc_clean/output/hydroscope_clean/TOP_LEVEL.SchDoc",
+  "schdoc_clean/output/hydroscope_clean/US_IF.SchDoc",
+  "schdoc_clean/output/clean_manifest.json",
+]
+requires_extra = []
+tags = ["schdoc", "mutation", "clean", "normalize", "project"]
+
+[[examples]]
+id = "schdoc_svg"
+title = "Render project schematics to SVG"
+summary = "Open the Hydroscope PrjPcb, pass project parameters into the schematic SVG renderer, and write one SVG per schematic page."
+areas = ["schdoc", "svg", "prjpcb"]
+status = "ready"
+entrypoint = "schdoc_svg/schdoc_svg.py"
+doc = "schdoc_svg/README.md"
+inputs = []
+assets = [
+  "assets/projects/hydroscope/Hydroscope.PrjPcb",
+  "assets/projects/hydroscope/CPU.SchDoc",
+  "assets/projects/hydroscope/POWER_SUPPLY.SchDoc",
+  "assets/projects/hydroscope/TOP_LEVEL.SchDoc",
+  "assets/projects/hydroscope/US_IF.SchDoc",
+]
+outputs = [
+  "schdoc_svg/output/CPU.svg",
+  "schdoc_svg/output/POWER_SUPPLY.svg",
+  "schdoc_svg/output/TOP_LEVEL.svg",
+  "schdoc_svg/output/US_IF.svg",
+  "schdoc_svg/output/svg_manifest.json",
+]
+requires_extra = []
+tags = ["schdoc", "svg", "rendering", "project", "parameters"]
+
+[[examples]]
+id = "schlib_svg"
+title = "Extract and render SchLib symbols to SVG"
+summary = "Extract a combined SchLib from the RT Super C1 schematic, iterate every symbol and symbol part, render each part to SVG, and write a manifest of generated symbol artwork."
+areas = ["schdoc", "schlib", "svg"]
+status = "ready"
+entrypoint = "schlib_svg/schlib_svg.py"
+doc = "schlib_svg/README.md"
+inputs = []
+assets = [
+  "assets/projects/rt_super_c1/RT_SUPER_C1.SchDoc",
+]
+outputs = [
+  "schlib_svg/output/combined/RT_SUPER_C1.SchLib",
+  "schlib_svg/output/symbol_svgs",
+  "schlib_svg/output/schlib_svg_manifest.json",
+]
+requires_extra = []
+tags = ["schdoc", "schlib", "svg", "rendering", "symbol-extraction", "multipart"]

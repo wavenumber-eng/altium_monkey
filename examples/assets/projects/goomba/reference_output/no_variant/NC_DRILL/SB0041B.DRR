@@ -1,0 +1,20 @@
+----------------------------------------------------------------------------------------------------------------------------------
+NCDrill File Report For: SB0041B.PCBDOC   3/13/2026  10:58:10 AM
+----------------------------------------------------------------------------------------------------------------------------------
+
+Layer Pair : Top Layer to Bottom Layer
+ASCII Plated RoundHoles File : SB0041B-Plated.TXT
+ASCII Non-Plated RoundHoles File : SB0041B-NonPlated.TXT
+
+Tool       Hole Size               Hole Tolerance               Hole Type       Hole Count   Plated         Tool Travel
+----------------------------------------------------------------------------------------------------------------------------------
+T1      0.305mm (12mil)                                           Round             65        PTH        242.53mm (9.55inch)
+T2      1mm (39mil)                                               Round             8         PTH        17.62mm (0.69inch)
+T3      1.016mm (40mil)                                           Round             6         PTH        52.50mm (2.07inch)
+T4      1.4mm (55mil)                                             Round             3         PTH        18.91mm (0.74inch)
+T5      0.889mm (35mil)                                           Round             3         NPTH       7.21mm (0.28inch)
+T6      2.362mm (93mil)                                           Round             4         NPTH       11.43mm (0.45inch)
+----------------------------------------------------------------------------------------------------------------------------------
+Totals                                                                              89
+
+Total Processing Time (hh:mm:ss) : 00:00:00

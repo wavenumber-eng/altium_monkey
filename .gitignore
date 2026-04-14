@@ -9,6 +9,9 @@ __pycache__/
 *.py[cod]
 *.pyo
 
+# Example run artifacts
+examples/**/output/
+
 # Virtual environments
 .venv/
 venv/

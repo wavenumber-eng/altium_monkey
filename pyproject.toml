@@ -1,24 +1,57 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "altium-monkey"
-version = "0.0.1"
-description = "The most comprehensive toolkit for Altium file manipulation you will ever find."
+dynamic = ["version"]
+description = "A toolkit for manipulating Altium files"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
-requires-python = ">=3.10"
+license-files = ["LICENSE"]
+requires-python = ">=3.11,<3.13"
 authors = [
     { name = "Eli Hughes", email = "ehughes@wavenumber.net" },
 ]
+dependencies = [
+    "numpy==2.2.3",
+    "pillow==11.2.1",
+    "freetype-py",
+    "uharfbuzz",
+    "cadquery",
+]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+examples = []
+release = [
+    "build>=1.2",
+    "pytest>=8.0",
+    "twine>=5.0",
+]
+test = [
+    "pytest>=8.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/wavenumber-eng/altium_monkey"
 Repository = "https://github.com/wavenumber-eng/altium_monkey"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/py/altium_monkey/**",
+    "README.md",
+    "LICENSE",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/py/altium_monkey"]
+
+[tool.hatch.version]
+path = "src/py/altium_monkey/_version.py"

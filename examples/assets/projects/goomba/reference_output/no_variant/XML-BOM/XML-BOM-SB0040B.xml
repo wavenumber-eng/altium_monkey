@@ -1,0 +1,83 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="XML-BOM-SB0040B.xsl"?>
+<!DOCTYPE GRID[
+  <!ELEMENT GRID (BANDS, COLUMNS, ROWS*)>
+  <!ATTLIST GRID ExportVersion CDATA #REQUIRED>
+  <!ELEMENT BANDS (BAND*)>
+  <!ELEMENT BAND EMPTY>
+  <!ATTLIST BAND Index CDATA #REQUIRED>
+  <!ATTLIST BAND Caption CDATA #IMPLIED>
+  <!ELEMENT COLUMNS (COLUMN*)>
+  <!ELEMENT COLUMN EMPTY>
+  <!ATTLIST COLUMN Name CDATA #REQUIRED>
+  <!ATTLIST COLUMN Caption CDATA #IMPLIED>
+  <!ATTLIST COLUMN Index CDATA #REQUIRED>
+  <!ATTLIST COLUMN BandIndex CDATA #REQUIRED>
+  <!ATTLIST COLUMN RowIndex CDATA #REQUIRED>
+  <!ATTLIST COLUMN ColIndex CDATA #REQUIRED>
+  <!ATTLIST COLUMN Width CDATA #IMPLIED>
+  <!ELEMENT GROUP (GROUP*, ROW*)>
+  <!ATTLIST GROUP GroupText CDATA #IMPLIED>
+  <!ELEMENT ROWS (ROW*)>
+  <!ELEMENT ROW EMPTY>
+  <!ATTLIST ROW Comment CDATA #IMPLIED>
+  <!ATTLIST ROW Description CDATA #IMPLIED>
+  <!ATTLIST ROW LibRef CDATA #IMPLIED>
+  <!ATTLIST ROW Quantity CDATA #IMPLIED>
+  <!ATTLIST ROW Designator CDATA #IMPLIED>
+]>
+<GRID ExportVersion="1.0">
+  <BANDS>
+    <BAND Index="0" Caption="" />
+  </BANDS>
+  <COLUMNS>
+    <COLUMN Name="Comment" Caption="Comment" Index="0" BandIndex="0" RowIndex="0" ColIndex="0" Width="120" />
+    <COLUMN Name="Description" Caption="Description" Index="1" BandIndex="0" RowIndex="0" ColIndex="1" Width="120" />
+    <COLUMN Name="LibRef" Caption="LibRef" Index="2" BandIndex="0" RowIndex="0" ColIndex="2" Width="120" />
+    <COLUMN Name="Quantity" Caption="Quantity" Index="3" BandIndex="0" RowIndex="0" ColIndex="3" Width="120" />
+    <COLUMN Name="Designator" Caption="Designator" Index="4" BandIndex="0" RowIndex="0" ColIndex="4" Width="100" />
+  </COLUMNS>
+  <ROWS>
+    <ROW Comment="0" Description="RES 0.0 OHM 1/10W JUMP 0603 SMD" LibRef="ERJ-3GEY0R00V" Quantity="1" Designator="R1" />
+    <ROW Comment="0" Description="RES 0.0 OHM 1/10W JUMP 0603 SMD" LibRef="ERJ-3GEY0R00V" Quantity="1" Designator="R5" />
+    <ROW Comment="0" Description="RES 0.0 OHM 1/10W JUMP 0603 SMD" LibRef="ERJ-3GEY0R00V" Quantity="1" Designator="R6" />
+    <ROW Comment="0" Description="RES 0.0 OHM 1/10W JUMP 0603 SMD" LibRef="ERJ-3GEY0R00V" Quantity="1" Designator="R7" />
+    <ROW Comment="0.1µF" Description="CAP CER 0.1UF 50V X7R 0603" LibRef="CGA3E2X7R1H104K080AE" Quantity="1" Designator="C1" />
+    <ROW Comment="0.1µF" Description="CAP CER 0.1UF 50V X7R 0603" LibRef="CGA3E2X7R1H104K080AE" Quantity="1" Designator="C10" />
+    <ROW Comment="0.1µF" Description="CAP CER 0.1UF 50V X7R 0603" LibRef="CGA3E2X7R1H104K080AE" Quantity="1" Designator="C11" />
+    <ROW Comment="0.1µF" Description="CAP CER 0.1UF 50V X7R 0603" LibRef="CGA3E2X7R1H104K080AE" Quantity="1" Designator="C13" />
+    <ROW Comment="0.1µF" Description="CAP CER 0.1UF 50V X7R 0603" LibRef="CGA3E2X7R1H104K080AE" Quantity="1" Designator="C14" />
+    <ROW Comment="0.1µF" Description="CAP CER 0.1UF 50V X7R 0603" LibRef="CGA3E2X7R1H104K080AE" Quantity="1" Designator="C16" />
+    <ROW Comment="1k" Description="RES 1K OHM 1/10W 1% 0603 SMD" LibRef="ERJ-3EKF1001V" Quantity="1" Designator="R3" />
+    <ROW Comment="1k" Description="RES 1K OHM 1/10W 1% 0603 SMD" LibRef="ERJ-3EKF1001V" Quantity="1" Designator="R4" />
+    <ROW Comment="1k" Description="RES 1K OHM 1/10W 1% 0603 SMD" LibRef="ERJ-3EKF1001V" Quantity="1" Designator="R9" />
+    <ROW Comment="1k" Description="RES 1K OHM 1/10W 1% 0603 SMD" LibRef="ERJ-3EKF1001V" Quantity="1" Designator="R11" />
+    <ROW Comment="1k" Description="RES 1K OHM 1/10W 1% 0603 SMD" LibRef="ERJ-3EKF1001V" Quantity="1" Designator="R12" />
+    <ROW Comment="1k" Description="RES 1K OHM 1/10W 1% 0603 SMD" LibRef="ERJ-3EKF1001V" Quantity="1" Designator="R13" />
+    <ROW Comment="4.7µF" Description="CAP CER 4.7UF 35V X7R 0805" LibRef="CGA4J1X7R1V475K125AE" Quantity="1" Designator="C5" />
+    <ROW Comment="10µF" Description="CAP ALUM 10UF 35V 20% SMD" LibRef="EEE-FK1V100UR" Quantity="1" Designator="C2" />
+    <ROW Comment="10µF" Description="CAP ALUM 10UF 35V 20% SMD" LibRef="EEE-FK1V100UR" Quantity="1" Designator="C3" />
+    <ROW Comment="10µF" Description="CAP ALUM 10UF 35V 20% SMD" LibRef="EEE-FK1V100UR" Quantity="1" Designator="C4" />
+    <ROW Comment="10µF" Description="CAP CER 10UF 6.3V X7R 0805" LibRef="CGA4J1X7R0J106K125AD" Quantity="1" Designator="C6" />
+    <ROW Comment="10µF" Description="CAP CER 10UF 6.3V X7R 0805" LibRef="CGA4J1X7R0J106K125AD" Quantity="1" Designator="C7" />
+    <ROW Comment="10µF" Description="CAP CER 10UF 6.3V X7R 0805" LibRef="CGA4J1X7R0J106K125AD" Quantity="1" Designator="C8" />
+    <ROW Comment="10µF" Description="CAP CER 10UF 6.3V X7R 0805" LibRef="CGA4J1X7R0J106K125AD" Quantity="1" Designator="C9" />
+    <ROW Comment="10µF" Description="CAP CER 10UF 6.3V X7R 0805" LibRef="CGA4J1X7R0J106K125AD" Quantity="1" Designator="C12" />
+    <ROW Comment="15µH 0.53A" Description="Inductor 15µH 0.53A" LibRef="NRH3012T150MN" Quantity="1" Designator="L1" />
+    <ROW Comment="100" Description="RES 100 OHM 1/10W 1% 0603 SMD" LibRef="ERJ-3EKF1000V" Quantity="1" Designator="R2" />
+    <ROW Comment="100k" Description="RES 100K OHM 1/10W 1% 0603 SMD" LibRef="ERJ-3EKF1003V" Quantity="1" Designator="R8" />
+    <ROW Comment="401 .01% +/0 10ppm/C" Description="402 ±0.1% 0.15W Chip Resistor 0603 (1608 Metric) Anti-Sulfur, Automotive AEC-Q200 Thin Film" LibRef="" Quantity="1" Designator="R10" />
+    <ROW Comment="10000pF" Description="CAP CER 10000PF 50V X7R 0603" LibRef="AC0603KPX7R9BB103" Quantity="1" Designator="C15" />
+    <ROW Comment="1557808" Description="Circular Metric Connectors SACC-CI-M12FS -8CON-L180-THR" LibRef="1557808" Quantity="1" Designator="J1" />
+    <ROW Comment="BAT1000-7-F" Description="DIODE SCHOTTKY 40V 1A SOT23" LibRef="BAT1000-7-F" Quantity="1" Designator="D1" />
+    <ROW Comment="ISL3176EIUZ-T" Description="IC TXRX RS422/485 20MBPS 10MSOP" LibRef="" Quantity="1" Designator="U4" />
+    <ROW Comment="LPC804M101JDH20FP" Description="MCU 32-bit ARM Cortex M0+ RISC 32KB Flash 3.3V 20-Pin TSSOP Tube" LibRef="" Quantity="1" Designator="U5" />
+    <ROW Comment="MAX31865AAP+" Description="Temp Monitoring System (Sensor)  External Sensor SPI Output 20-SSOP" LibRef="" Quantity="1" Designator="U6" />
+    <ROW Comment="MCP9800A0T-M/OT" Description="SENSOR TEMP I2C/SMBUS SOT23-5" LibRef="" Quantity="1" Designator="U8" />
+    <ROW Comment="MIC803-30D2VM3-TR" Description="3-Pin Microprocessor Supervisor Circuit w/ Open-Drain Reset Output, 3 SOT-23 - T/R" LibRef="" Quantity="1" Designator="U7" />
+    <ROW Comment="SB0041B" Description="SB0041 PCB Revision B" LibRef="" Quantity="1" Designator="PCB1" />
+    <ROW Comment="SM712-02HTG" Description="LITTELFUSE - SM712-02HTG - ESD Protection Device, 31 V, SOT-23, 3 Pins, 12 V, 600 W, SPA SM712 Series" LibRef="" Quantity="1" Designator="U2" />
+    <ROW Comment="SM712-02HTG" Description="LITTELFUSE - SM712-02HTG - ESD Protection Device, 31 V, SOT-23, 3 Pins, 12 V, 600 W, SPA SM712 Series" LibRef="" Quantity="1" Designator="U3" />
+    <ROW Comment="TPS560430X3FDBVR" Description="Buck Switching Regulator IC Positive PWM 3.3V 1 Output 600mA SOT-23-6" LibRef="" Quantity="1" Designator="U1" />
+  </ROWS>
+</GRID>

@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:design_a0",
+  "title": "Altium Monkey design a0",
+  "description": "Full Altium design analysis emitted by AltiumDesign.to_json().",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generator",
+    "project",
+    "variants",
+    "options",
+    "sheets",
+    "components",
+    "nets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "altium_monkey.design.a0"
+    },
+    "generator": {
+      "const": "altium_monkey"
+    },
+    "project": {
+      "$ref": "#/$defs/project"
+    },
+    "variants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variant"
+      }
+    },
+    "options": {
+      "$ref": "#/$defs/options"
+    },
+    "sheets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sheet"
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    },
+    "pnp": {
+      "$ref": "#/$defs/pnp"
+    },
+    "nets": {
+      "type": "array",
+      "items": {
+        "$ref": "netlist_a0.schema.json#/$defs/net"
+      }
+    },
+    "indexes": {
+      "$ref": "#/$defs/indexes"
+    }
+  },
+  "$defs": {
+    "string_or_null": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "integer_or_null": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "parameter_map": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "string_list": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "string_list_map": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/string_list"
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "filename",
+        "parameters"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "filename": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameter_map"
+        }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "dnp"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "dnp": {
+          "$ref": "#/$defs/string_list"
+        }
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "net_identifier_scope",
+        "allow_ports_to_name_nets",
+        "allow_sheet_entries_to_name_nets",
+        "allow_single_pin_nets",
+        "append_sheet_numbers_to_local_nets",
+        "power_port_names_take_priority",
+        "higher_level_names_take_priority",
+        "auto_sheet_numbering"
+      ],
+      "properties": {
+        "net_identifier_scope": {
+          "type": "string"
+        },
+        "allow_ports_to_name_nets": {
+          "type": "boolean"
+        },
+        "allow_sheet_entries_to_name_nets": {
+          "type": "boolean"
+        },
+        "allow_single_pin_nets": {
+          "type": "boolean"
+        },
+        "append_sheet_numbers_to_local_nets": {
+          "type": "boolean"
+        },
+        "power_port_names_take_priority": {
+          "type": "boolean"
+        },
+        "higher_level_names_take_priority": {
+          "type": "boolean"
+        },
+        "auto_sheet_numbering": {
+          "type": "boolean"
+        }
+      }
+    },
+    "sheet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sheet_number"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string"
+        },
+        "sheet_number": {
+          "type": "integer"
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "designator",
+        "svg_id",
+        "value",
+        "footprint",
+        "library_ref",
+        "description",
+        "hierarchy",
+        "classification",
+        "parameters"
+      ],
+      "properties": {
+        "designator": {
+          "type": "string"
+        },
+        "svg_id": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "footprint": {
+          "type": "string"
+        },
+        "library_ref": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "hierarchy": {
+          "$ref": "#/$defs/component_hierarchy"
+        },
+        "classification": {
+          "$ref": "#/$defs/component_classification"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameter_map"
+        }
+      }
+    },
+    "component_hierarchy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_designator",
+        "channel",
+        "channel_index",
+        "sheet"
+      ],
+      "properties": {
+        "base_designator": {
+          "type": "string"
+        },
+        "channel": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "channel_index": {
+          "$ref": "#/$defs/integer_or_null"
+        },
+        "sheet": {
+          "type": "string"
+        }
+      }
+    },
+    "component_classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prefix",
+        "type",
+        "pin_count"
+      ],
+      "properties": {
+        "prefix": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "passive_2pin",
+            "ic",
+            "connector",
+            "transistor",
+            "transformer",
+            "crystal",
+            "fuse",
+            "switch",
+            "relay",
+            "test_point",
+            "fiducial",
+            "mounting_hole",
+            "unknown"
+          ]
+        },
+        "pin_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "pnp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "units",
+        "source_pcbdoc",
+        "placements"
+      ],
+      "properties": {
+        "units": {
+          "const": "mm"
+        },
+        "source_pcbdoc": {
+          "type": "string"
+        },
+        "placements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pnp_placement"
+          }
+        }
+      }
+    },
+    "pnp_placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "designator",
+        "comment",
+        "layer",
+        "footprint",
+        "center_x",
+        "center_y",
+        "rotation",
+        "description",
+        "parameters"
+      ],
+      "properties": {
+        "designator": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "layer": {
+          "type": "string"
+        },
+        "footprint": {
+          "type": "string"
+        },
+        "center_x": {
+          "type": "number"
+        },
+        "center_y": {
+          "type": "number"
+        },
+        "rotation": {
+          "type": "number"
+        },
+        "description": {
+          "type": "string"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameter_map"
+        }
+      }
+    },
+    "indexes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "svg_to_component",
+        "component_to_nets",
+        "net_to_components"
+      ],
+      "properties": {
+        "svg_to_component": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "component_to_nets": {
+          "$ref": "#/$defs/string_list_map"
+        },
+        "net_to_components": {
+          "$ref": "#/$defs/string_list_map"
+        }
+      }
+    }
+  }
+}

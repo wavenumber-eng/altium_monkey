@@ -1,0 +1,53 @@
+Altium Designer Pick and Place Locations
+C:\eli\wn_pcb-sch\tools\test_cases\altium\common\real_world_pcbdoc\sb0040-m12-rtd__PCB-REV-B\reference_output\no_variant\PNP-METRIC\Pick Place for SB0041B.csv
+
+========================================================================================================================
+File Design Information:
+
+Date:       13/03/26
+Time:       10:58
+Revision:   Not in VersionControl
+Variant:    No variations
+Units used: mm
+
+"Designator","Comment","Layer","Footprint","Center-X(mm)","Center-Y(mm)","Rotation","Description"
+"R7","0","TopLayer","R0603_0.55MM_MD","-44.0690","19.1770","180","RES 0.0 OHM 1/10W JUMP 0603 SMD"
+"R10","401 .01% +/0 10ppm/C","TopLayer","R0603_0.55MM_MD","-40.6400","17.9070","360","402 ±0.1% 0.15W Chip Resistor 0603 (1608 Metric) Anti-Sulfur, Automotive AEC-Q200 Thin Film"
+"R6","0","TopLayer","R0603_0.55MM_MD","-36.8300","19.0500","90","RES 0.0 OHM 1/10W JUMP 0603 SMD"
+"R5","0","TopLayer","R0603_0.55MM_MD","-34.5440","17.3990","360","RES 0.0 OHM 1/10W JUMP 0603 SMD"
+"U7","MIC803-30D2VM3-TR","TopLayer","SOT-23","-24.3730","23.8150","0","3-Pin Microprocessor Supervisor Circuit w/ Open-Drain Reset Output, 3 SOT-23 - T/R"
+"R1","0","TopLayer","R0603_0.55MM_MD","-35.8394","5.8166","180","RES 0.0 OHM 1/10W JUMP 0603 SMD"
+"U8","MCP9800A0T-M/OT","TopLayer","SOT23-5","-33.8000","23.8150","0","SENSOR TEMP I2C/SMBUS SOT23-5"
+"R13","1k","TopLayer","R0603_0.55MM_MD","-34.1630","21.2598","180","RES 1K OHM 1/10W 1% 0603 SMD"
+"R12","1k","TopLayer","R0603_0.55MM_MD","-30.2260","22.8600","180","RES 1K OHM 1/10W 1% 0603 SMD"
+"R11","1k","TopLayer","R0603_0.55MM_MD","-30.2260","24.7650","180","RES 1K OHM 1/10W 1% 0603 SMD"
+"C16","0.1µF","TopLayer","C0603_0.90MM_MD","-27.5590","23.7490","90","CAP CER 0.1UF 50V X7R 0603"
+"C12","10µF","TopLayer","C0805_1.25MM_MD","-36.1950","11.1760","90","CAP CER 10UF 6.3V X7R 0805"
+"C9","10µF","TopLayer","C0805_1.25MM_MD","-30.5054","16.5862","360","CAP CER 10UF 6.3V X7R 0805"
+"C8","10µF","TopLayer","C0805_1.25MM_MD","-36.9570","3.5306","90","CAP CER 10UF 6.3V X7R 0805"
+"C7","10µF","TopLayer","C0805_1.25MM_MD","-34.6710","3.5052","90","CAP CER 10UF 6.3V X7R 0805"
+"C6","10µF","TopLayer","C0805_1.25MM_MD","-32.4104","3.5052","90","CAP CER 10UF 6.3V X7R 0805"
+"L1","15µH 0.53A","TopLayer","L_NRH3012","-28.8290","1.7780","180","Inductor 15µH 0.53A"
+"C4","10µF","TopLayer","C_ALU_B","-12.1920","2.0320","270","CAP ALUM 10UF 35V 20% SMD"
+"C3","10µF","TopLayer","C_ALU_B","-22.3520","2.0320","270","CAP ALUM 10UF 35V 20% SMD"
+"C2","10µF","TopLayer","C_ALU_B","-17.2720","2.0320","270","CAP ALUM 10UF 35V 20% SMD"
+"U1","TPS560430X3FDBVR","TopLayer","SOT95P245X145-6L","-28.8036","5.4102","360","Buck Switching Regulator IC Positive PWM 3.3V 1 Output 600mA SOT-23-6"
+"J1","1557808","TopLayer","1557808","-10.1600","12.4500","180","Circular Metric Connectors SACC-CI-M12FS -8CON-L180-THR"
+"D1","BAT1000-7-F","TopLayer","D_SOT-23-3_P","-7.8740","2.4130","270","DIODE SCHOTTKY 40V 1A SOT23"
+"C5","4.7µF","TopLayer","C0805_1.50MM_MD","-25.6794","6.2992","270","CAP CER 4.7UF 35V X7R 0805"
+"C1","0.1µF","TopLayer","C0603_0.90MM_MD","-28.6512","8.7376","180","CAP CER 0.1UF 50V X7R 0603"
+"U5","LPC804M101JDH20FP","TopLayer","TSOP65P640X105-20N","-24.1300","18.1610","180","MCU 32-bit ARM Cortex M0+ RISC 32KB Flash 3.3V 20-Pin TSSOP Tube"
+"C11","0.1µF","TopLayer","C0603_0.90MM_MD","-30.3784","19.3548","360","CAP CER 0.1UF 50V X7R 0603"
+"U6","MAX31865AAP+","TopLayer","SOP65P780X200-20N","-41.4020","11.9380","270","Temp Monitoring System (Sensor)  External Sensor SPI Output 20-SSOP"
+"R9","1k","TopLayer","R0603_0.55MM_MD","-20.7010","25.1460","360","RES 1K OHM 1/10W 1% 0603 SMD"
+"C15","10000pF","TopLayer","C0603_0.90MM_HD","-40.6398","19.9390","360","CAP CER 10000PF 50V X7R 0603"
+"C14","0.1µF","TopLayer","C0603_0.90MM_MD","-35.4330","15.3670","180","CAP CER 0.1UF 50V X7R 0603"
+"C13","0.1µF","TopLayer","C0603_0.90MM_MD","-35.4330","13.8430","180","CAP CER 0.1UF 50V X7R 0603"
+"U4","ISL3176EIUZ-T","TopLayer","10_MSOP","-28.5750","11.4300","360","IC TXRX RS422/485 20MBPS 10MSOP"
+"U3","SM712-02HTG","TopLayer","SOT-23","-20.0660","8.6360","180","LITTELFUSE - SM712-02HTG - ESD Protection Device, 31 V, SOT-23, 3 Pins, 12 V, 600 W, SPA SM712 Series"
+"U2","SM712-02HTG","TopLayer","SOT-23","-20.1422","12.5476","180","LITTELFUSE - SM712-02HTG - ESD Protection Device, 31 V, SOT-23, 3 Pins, 12 V, 600 W, SPA SM712 Series"
+"R4","1k","TopLayer","R0603_0.55MM_MD","-32.2834","8.3566","270","RES 1K OHM 1/10W 1% 0603 SMD"
+"R3","1k","TopLayer","R0603_0.55MM_MD","-33.9598","8.3312","90","RES 1K OHM 1/10W 1% 0603 SMD"
+"R2","100","TopLayer","R0603_0.55MM_MD","-23.3680","12.4460","270","RES 100 OHM 1/10W 1% 0603 SMD"
+"R8","100k","TopLayer","R0603_0.55MM_MD","-20.7010","23.3680","360","RES 100K OHM 1/10W 1% 0603 SMD"
+"C10","0.1µF","TopLayer","C0603_0.90MM_MD","-27.2034","13.7922","360","CAP CER 0.1UF 50V X7R 0603"
