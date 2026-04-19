@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,7 +17,9 @@ from altium_monkey import (
     SchHorizontalAlign,
     SchPointMils,
     SchRectMils,
+    SheetStyle,
     make_sch_embedded_image,
+    make_sch_parameter,
     make_sch_polyline,
     make_sch_text_frame,
     make_sch_text_string,
@@ -27,12 +30,10 @@ from altium_monkey.altium_prjpcb import AltiumPrjPcb
 
 SAMPLE_DIR = Path(__file__).resolve().parent
 EXAMPLES_DIR = SAMPLE_DIR.parent
-ASSETS_DIR = EXAMPLES_DIR / "assets"
 
-INPUT_SCHDOC = ASSETS_DIR / "schdoc" / "blank.SchDoc"
 TITLE_BLOCK_IMAGE = SAMPLE_DIR / "assets" / "logo.png"
 
-PROJECT_NAME = "prjpcb_make_project"
+PROJECT_NAME = "ultra-monkey"
 VARIANT_NAME = "A"
 
 OUTPUT_DIR = SAMPLE_DIR / "output"
@@ -44,20 +45,27 @@ PCBDOC_NAME = f"{PROJECT_NAME}.PcbDoc"
 OUTJOB_NAME = f"{PROJECT_NAME}.OutJob"
 PRJPCB_NAME = f"{PROJECT_NAME}.PrjPcb"
 
-ANSI_D_SHEET_STYLE = 8
 ANSI_D_BORDER_CLEARANCE_MILS = 300
 TITLE_BLOCK_WIDTH_MILS = 5200
 TITLE_BLOCK_HEIGHT_MILS = 1200
+TITLE_BLOCK_COLUMN_UNIT_MILS = 100
+TITLE_BLOCK_ROW_HEIGHT_MILS = 300
+TITLE_BLOCK_COLUMN_UNITS = (12, 14, 13, 7, 6)
+TITLE_BLOCK_ROW_COUNT = 4
+TITLE_BLOCK_VALUE_X_MARGIN_MILS = 30
 
 BOARD_WIDTH_MILS = 4000.0
 BOARD_HEIGHT_MILS = 2500.0
 
 PROJECT_PARAMETERS = {
-    "PROJECT_TITLE": "Generated Project Example",
-    "PCB_PART_NUMBER": "WN-PRJPCB-001",
-    "PCB_CODENAME": "prjpcb-make-project",
+    "PROJECT_TITLE": "ULTRA-MONKEY",
+    "CCA_PART_NUMBER": "10078",
+    "CCA_CODENAME": "ULTRA-MONKEY CCA",
+    "CCA_MIXDOWN": "A",
+    "PCB_PART_NUMBER": "10079",
+    "PCB_CODENAME": "ULTRAMONKEY",
     "PCB_MIXDOWN": "A",
-    "STATUS": "Draft",
+    "STATUS": "DRAFT",
     "ENGINEER": "altium-monkey",
     "SCH_DATE": "2026-04-13",
     "SheetNumber": "1",
@@ -97,39 +105,126 @@ def add_polyline(
     )
 
 
-def add_label(
+@dataclass(frozen=True)
+class TitleBlockCellStyle:
+    label_font: SchFontSpec
+    value_font: SchFontSpec
+    label_color: ColorValue
+    value_color: ColorValue | None = None
+    value_alignment: SchHorizontalAlign = SchHorizontalAlign.LEFT
+    label_left_margin_mils: int = 20
+    label_bottom_margin_mils: int = 200
+    value_left_margin_mils: int = TITLE_BLOCK_VALUE_X_MARGIN_MILS
+    value_right_margin_mils: int = TITLE_BLOCK_VALUE_X_MARGIN_MILS
+    value_bottom_margin_mils: int = 20
+    value_top_margin_mils: int = 140
+
+
+@dataclass(frozen=True)
+class TitleBlockGrid:
+    left_mils: float
+    bottom_mils: float
+    column_unit_mils: int
+    column_units: tuple[int, ...]
+    row_height_mils: int
+    row_count: int
+
+    @property
+    def width_mils(self) -> int:
+        return sum(self.column_units) * self.column_unit_mils
+
+    @property
+    def height_mils(self) -> int:
+        return self.row_count * self.row_height_mils
+
+    @property
+    def right_mils(self) -> float:
+        return self.left_mils + self.width_mils
+
+    @property
+    def top_mils(self) -> float:
+        return self.bottom_mils + self.height_mils
+
+    def x_at_column(self, column: int) -> float:
+        return self.left_mils + sum(self.column_units[:column]) * self.column_unit_mils
+
+    def y_at_row(self, row: int) -> float:
+        return self.top_mils - row * self.row_height_mils
+
+    def cell_rect(
+        self,
+        *,
+        row: int,
+        column: int,
+        row_span: int = 1,
+        column_span: int = 1,
+    ) -> tuple[float, float, float, float]:
+        left = self.x_at_column(column)
+        right = self.x_at_column(column + column_span)
+        top = self.y_at_row(row)
+        bottom = self.y_at_row(row + row_span)
+        return left, bottom, right, top
+
+
+TITLE_BLOCK_CELL_STYLE = TitleBlockCellStyle(
+    label_font=SchFontSpec(name="Arial", size=8, bold=True),
+    value_font=SchFontSpec(name="Arial", size=12, bold=True),
+    label_color=ColorValue.from_hex("#434343"),
+)
+
+TITLE_BLOCK_PROJECT_CELL_STYLE = TitleBlockCellStyle(
+    label_font=SchFontSpec(name="Arial", size=8, bold=True),
+    value_font=SchFontSpec(name="Arial", size=14, bold=True),
+    label_color=ColorValue.from_hex("#434343"),
+)
+
+
+def add_title_block_cell(
     records: list[object],
+    grid: TitleBlockGrid,
     *,
-    text: str,
-    x_mils: float,
-    y_mils: float,
+    row: int,
+    column: int,
+    label: str,
+    value: str,
+    row_span: int = 1,
+    column_span: int = 1,
+    style: TitleBlockCellStyle = TITLE_BLOCK_CELL_STYLE,
+    value_alignment: SchHorizontalAlign | None = None,
 ) -> None:
+    left, bottom, right, top = grid.cell_rect(
+        row=row,
+        column=column,
+        row_span=row_span,
+        column_span=column_span,
+    )
     records.append(
         make_sch_text_string(
-            text=text,
-            location_mils=point(x_mils, y_mils),
-            font=SchFontSpec(name="Arial", size=8, bold=True, italic=True),
-            color=ColorValue.from_hex("#434343"),
+            text=label,
+            location_mils=point(
+                left + style.label_left_margin_mils,
+                bottom + style.label_bottom_margin_mils,
+            ),
+            font=style.label_font,
+            color=style.label_color,
         )
     )
-
-
-def add_value_frame(
-    records: list[object],
-    *,
-    text: str,
-    left_mils: float,
-    bottom_mils: float,
-    right_mils: float,
-    top_mils: float,
-    font_size: int = 12,
-) -> None:
     records.append(
         make_sch_text_frame(
-            bounds_mils=rect(left_mils, bottom_mils, right_mils, top_mils),
-            text=text,
-            font=SchFontSpec(name="Arial", size=font_size, bold=True),
-            alignment=SchHorizontalAlign.LEFT,
+            bounds_mils=rect(
+                left + style.value_left_margin_mils,
+                bottom + style.value_bottom_margin_mils,
+                right - style.value_right_margin_mils,
+                top - style.value_top_margin_mils,
+            ),
+            text=value,
+            font=style.value_font,
+            text_color=style.value_color,
+            alignment=(
+                style.value_alignment
+                if value_alignment is None
+                else value_alignment
+            ),
             line_width=LineWidth.SMALLEST,
             text_margin_mils=0,
             show_border=False,
@@ -140,9 +235,44 @@ def add_value_frame(
     )
 
 
+def add_title_block_grid(records: list[object], grid: TitleBlockGrid) -> None:
+    add_polyline(
+        records,
+        [
+            (grid.left_mils, grid.bottom_mils),
+            (grid.right_mils, grid.bottom_mils),
+            (grid.right_mils, grid.top_mils),
+        ],
+    )
+    add_polyline(
+        records,
+        [
+            (grid.right_mils, grid.top_mils),
+            (grid.left_mils, grid.top_mils),
+            (grid.left_mils, grid.bottom_mils),
+        ],
+    )
+
+    logo_right = grid.x_at_column(1)
+    add_polyline(records, [(logo_right, grid.bottom_mils), (logo_right, grid.top_mils)])
+    for row in range(1, grid.row_count):
+        y = grid.y_at_row(row)
+        add_polyline(records, [(logo_right, y), (grid.right_mils, y)])
+
+    y_row_1 = grid.y_at_row(1)
+    y_row_3 = grid.y_at_row(3)
+    x_col_2 = grid.x_at_column(2)
+    x_col_3 = grid.x_at_column(3)
+    x_col_4 = grid.x_at_column(4)
+    add_polyline(records, [(x_col_2, y_row_3), (x_col_2, y_row_1)])
+    add_polyline(records, [(x_col_3, grid.bottom_mils), (x_col_3, y_row_3)])
+    add_polyline(records, [(x_col_3, y_row_1), (x_col_3, grid.top_mils)])
+    add_polyline(records, [(x_col_4, grid.bottom_mils), (x_col_4, y_row_1)])
+
+
 def set_ansi_d_sheet(schdoc: AltiumSchDoc) -> None:
     sheet = schdoc.sheet
-    sheet.sheet_style = ANSI_D_SHEET_STYLE
+    sheet.sheet_style = SheetStyle.D
     sheet.use_custom_sheet = False
     sheet.border_on = True
     sheet.title_block_on = False
@@ -169,45 +299,49 @@ def make_title_block(
     """
     if not title_block_image.is_file():
         raise FileNotFoundError(f"Title-block image not found: {title_block_image}")
-    if TITLE_BLOCK_WIDTH_MILS + right_offset_mils > sheet_width_mils:
+    title_block_width_mils = (
+        sum(TITLE_BLOCK_COLUMN_UNITS) * TITLE_BLOCK_COLUMN_UNIT_MILS
+    )
+    title_block_height_mils = TITLE_BLOCK_ROW_COUNT * TITLE_BLOCK_ROW_HEIGHT_MILS
+    if title_block_width_mils != TITLE_BLOCK_WIDTH_MILS:
+        raise ValueError("title block column units do not match the configured width")
+    if title_block_height_mils != TITLE_BLOCK_HEIGHT_MILS:
+        raise ValueError("title block row count does not match the configured height")
+    if title_block_width_mils + right_offset_mils > sheet_width_mils:
         raise ValueError("title block is too wide for the selected sheet")
-    if TITLE_BLOCK_HEIGHT_MILS + bottom_offset_mils > sheet_height_mils:
+    if title_block_height_mils + bottom_offset_mils > sheet_height_mils:
         raise ValueError("title block is too tall for the selected sheet")
 
     right = sheet_width_mils - right_offset_mils
-    left = right - TITLE_BLOCK_WIDTH_MILS
+    left = right - title_block_width_mils
     bottom = bottom_offset_mils
-    top = bottom + TITLE_BLOCK_HEIGHT_MILS
-
-    logo_right = left + 1200
-    col_2 = logo_right + 1900
-    col_3 = col_2 + 900
-    row_1 = bottom + 300
-    row_2 = bottom + 600
-    row_3 = bottom + 900
-    label_offset_mils = 115
-    value_top_margin_mils = 140
+    grid = TitleBlockGrid(
+        left_mils=left,
+        bottom_mils=bottom,
+        column_unit_mils=TITLE_BLOCK_COLUMN_UNIT_MILS,
+        column_units=TITLE_BLOCK_COLUMN_UNITS,
+        row_height_mils=TITLE_BLOCK_ROW_HEIGHT_MILS,
+        row_count=TITLE_BLOCK_ROW_COUNT,
+    )
 
     records: list[object] = []
-    add_polyline(records, [(left, bottom), (right, bottom), (right, top)])
-    add_polyline(records, [(right, top), (left, top), (left, bottom)])
-    add_polyline(records, [(logo_right, bottom), (logo_right, top)])
-    add_polyline(records, [(logo_right, row_1), (right, row_1)])
-    add_polyline(records, [(logo_right, row_2), (right, row_2)])
-    add_polyline(records, [(logo_right, row_3), (right, row_3)])
-    add_polyline(records, [(col_2, bottom), (col_2, row_3)])
-    add_polyline(records, [(col_3, bottom), (col_3, row_2)])
+    add_title_block_grid(records, grid)
 
     logo_size = 900
-    logo_left = left + (logo_right - left - logo_size) / 2
-    logo_bottom = bottom + (TITLE_BLOCK_HEIGHT_MILS - logo_size) / 2
+    logo_left, logo_bottom, logo_right, logo_top = grid.cell_rect(
+        row=0,
+        column=0,
+        row_span=TITLE_BLOCK_ROW_COUNT,
+    )
+    logo_image_left = logo_left + (logo_right - logo_left - logo_size) / 2
+    logo_image_bottom = logo_bottom + (logo_top - logo_bottom - logo_size) / 2
     records.append(
         make_sch_embedded_image(
             bounds_mils=rect(
-                logo_left,
-                logo_bottom,
-                logo_left + logo_size,
-                logo_bottom + logo_size,
+                logo_image_left,
+                logo_image_bottom,
+                logo_image_left + logo_size,
+                logo_image_bottom + logo_size,
             ),
             source_path=title_block_image,
             filename=title_block_image.name,
@@ -215,112 +349,104 @@ def make_title_block(
         )
     )
 
-    add_label(
+    add_title_block_cell(
         records,
-        text="Project",
-        x_mils=logo_right + 20,
-        y_mils=row_3 + label_offset_mils,
+        grid,
+        row=0,
+        column=1,
+        column_span=2,
+        label="PAGE TITLE",
+        value='="Schematic Page"',
+        style=TITLE_BLOCK_PROJECT_CELL_STYLE,
     )
-    add_label(
+    add_title_block_cell(
         records,
-        text="Part Number",
-        x_mils=logo_right + 20,
-        y_mils=row_2 + label_offset_mils,
+        grid,
+        row=0,
+        column=3,
+        column_span=2,
+        label="STATUS",
+        value="=STATUS",
+        style=TITLE_BLOCK_PROJECT_CELL_STYLE,
     )
-    add_label(
-        records, text="Codename", x_mils=col_2 + 20, y_mils=row_2 + label_offset_mils
-    )
-    add_label(
-        records, text="Mixdown", x_mils=col_3 + 20, y_mils=row_2 + label_offset_mils
-    )
-    add_label(
-        records, text="Status", x_mils=logo_right + 20, y_mils=row_1 + label_offset_mils
-    )
-    add_label(
-        records, text="Engineer", x_mils=col_2 + 20, y_mils=row_1 + label_offset_mils
-    )
-    add_label(
-        records, text="Variant", x_mils=col_3 + 20, y_mils=row_1 + label_offset_mils
-    )
-    add_label(
-        records, text="Date", x_mils=logo_right + 20, y_mils=bottom + label_offset_mils
-    )
-    add_label(
-        records, text="Page", x_mils=col_2 + 20, y_mils=bottom + label_offset_mils
-    )
-
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=PROJECT_TITLE",
-        left_mils=logo_right + 30,
-        bottom_mils=row_3 + 20,
-        right_mils=right - 30,
-        top_mils=top - value_top_margin_mils,
-        font_size=14,
+        grid,
+        row=1,
+        column=1,
+        label="CCA PART NUMBER",
+        value="=CCA_PART_NUMBER",
     )
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=PCB_PART_NUMBER",
-        left_mils=logo_right + 30,
-        bottom_mils=row_2 + 20,
-        right_mils=col_2 - 30,
-        top_mils=row_3 - value_top_margin_mils,
+        grid,
+        row=1,
+        column=2,
+        column_span=2,
+        label="CCA CODENAME",
+        value="=CCA_CODENAME",
     )
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=PCB_CODENAME",
-        left_mils=col_2 + 30,
-        bottom_mils=row_2 + 20,
-        right_mils=col_3 - 30,
-        top_mils=row_3 - value_top_margin_mils,
+        grid,
+        row=1,
+        column=4,
+        label="CCA MIXDOWN",
+        value="=CCA_MIXDOWN",
+        value_alignment=SchHorizontalAlign.CENTER,
     )
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=PCB_MIXDOWN",
-        left_mils=col_3 + 30,
-        bottom_mils=row_2 + 20,
-        right_mils=right - 30,
-        top_mils=row_3 - value_top_margin_mils,
+        grid,
+        row=2,
+        column=1,
+        label="PCB PART NUMBER",
+        value="=PCB_PART_NUMBER",
     )
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=STATUS",
-        left_mils=logo_right + 30,
-        bottom_mils=row_1 + 20,
-        right_mils=col_2 - 30,
-        top_mils=row_2 - value_top_margin_mils,
+        grid,
+        row=2,
+        column=2,
+        column_span=2,
+        label="PCB CODENAME",
+        value="=PCB_CODENAME",
     )
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=ENGINEER",
-        left_mils=col_2 + 30,
-        bottom_mils=row_1 + 20,
-        right_mils=col_3 - 30,
-        top_mils=row_2 - value_top_margin_mils,
+        grid,
+        row=2,
+        column=4,
+        label="PCB MIXDOWN",
+        value="=PCB_MIXDOWN",
+        value_alignment=SchHorizontalAlign.CENTER,
     )
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=VariantName",
-        left_mils=col_3 + 30,
-        bottom_mils=row_1 + 20,
-        right_mils=right - 30,
-        top_mils=row_2 - value_top_margin_mils,
+        grid,
+        row=3,
+        column=1,
+        column_span=2,
+        label="ENGINEER",
+        value="=ENGINEER",
     )
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=SCH_DATE",
-        left_mils=logo_right + 30,
-        bottom_mils=bottom + 20,
-        right_mils=col_2 - 30,
-        top_mils=row_1 - value_top_margin_mils,
+        grid,
+        row=3,
+        column=3,
+        label="DATE",
+        value="=SCH_DATE",
+        value_alignment=SchHorizontalAlign.CENTER,
     )
-    add_value_frame(
+    add_title_block_cell(
         records,
-        text="=SheetNumber of =SheetTotal",
-        left_mils=col_2 + 30,
-        bottom_mils=bottom + 20,
-        right_mils=right - 30,
-        top_mils=row_1 - value_top_margin_mils,
+        grid,
+        row=3,
+        column=4,
+        label="PAGE NUMBER",
+        value="=SheetNumber of =SheetTotal",
+        value_alignment=SchHorizontalAlign.CENTER,
     )
     return records
 
@@ -346,11 +472,20 @@ def build_dynamic_template(temp_dir: Path) -> Path:
 
 def build_schdoc(project_dir: Path, temp_dir: Path) -> Path:
     template_path = build_dynamic_template(temp_dir)
-    schdoc = AltiumSchDoc(INPUT_SCHDOC)
-    set_ansi_d_sheet(schdoc)
+    schdoc = AltiumSchDoc()
     schdoc.apply_template(
         template_path,
         template_filename=template_path.name,
+        apply_visual_sheet_settings=True,
+    )
+    schdoc.add_object(
+        make_sch_parameter(
+            location_mils=point(0, 0),
+            name="Schematic Page",
+            text=PROJECT_NAME + " Top Level",
+            font=SchFontSpec(name="Arial", size=10),
+            hidden=True,
+        )
     )
     schdoc.add_object(
         make_sch_text_string(
@@ -412,11 +547,6 @@ def build_outjob(project_dir: Path, schdoc_path: Path, pcbdoc_path: Path) -> Pat
     )
 
     outjob.add_schematic_print(schdoc_path.name, enabled_medium=publish_medium)
-    outjob.add_pcb_drawing(
-        pcbdoc_path.name,
-        enabled_medium=publish_medium,
-        name="PCB Drawing",
-    )
     outjob.add_gerber(pcbdoc_path.name, enabled_medium=generated_medium)
     outjob.add_gerber_x2(pcbdoc_path.name, enabled_medium=generated_medium)
     outjob.add_nc_drill(pcbdoc_path.name, enabled_medium=generated_medium)
@@ -467,7 +597,6 @@ def write_manifest(
             "file": outjob_path.name,
             "enabled_outputs": [
                 "Schematic Print",
-                "PCB Drawing",
                 "Gerber",
                 "Gerber X2",
                 "NC Drill",

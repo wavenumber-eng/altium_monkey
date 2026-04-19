@@ -120,7 +120,12 @@ from .altium_record_sch__cross_sheet_connector import AltiumSchCrossSheetConnect
 from .altium_record_sch__power_port import AltiumSchPowerPort
 from .altium_record_sch__rectangle import AltiumSchRectangle
 from .altium_record_sch__rounded_rectangle import AltiumSchRoundedRectangle
-from .altium_record_sch__sheet import AltiumSchSheet
+from .altium_record_sch__sheet import (
+    AltiumSchSheet,
+    DocumentBorderStyle,
+    SheetStyle,
+    WorkspaceOrientation,
+)
 from .altium_record_sch__sheet_entry import (
     AltiumSchSheetEntry,
     SchSheetEntryArrowKind,
@@ -289,6 +294,7 @@ __all__ = [
     "PortStyle",
     "Rotation90",
     "SchHorizontalAlign",
+    "SheetStyle",
     "SymbolLineWidth",
     "StdLogicState",
     "BusTextStyle",
@@ -296,6 +302,8 @@ __all__ = [
     "TextOrientation",
     "ParameterSetStyle",
     "PowerObjectStyle",
+    "DocumentBorderStyle",
+    "WorkspaceOrientation",
     "ComponentKind",
     "NoErcSymbol",
     "ReadOnlyState",

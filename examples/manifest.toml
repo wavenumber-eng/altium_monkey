@@ -941,7 +941,7 @@ tags = ["schdoc", "mutation", "template", "schdot", "title-block", "extract"]
 [[examples]]
 id = "schdoc_apply_dynamic_template"
 title = "Apply a generated title-block template"
-summary = "Build title-block graphics from Python, keep Altium parameter expressions in the generated text frames, write project parameters and variant context to PrjPcb, and apply the template to blank ANSI B and D schematics."
+summary = "Build generated ANSI B and D SchDot title-block templates, apply them with visual sheet settings, and write project parameters plus variant context to PrjPcb."
 areas = ["schdoc", "mutation", "template"]
 status = "ready"
 entrypoint = "schdoc_apply_dynamic_template/schdoc_apply_dynamic_template.py"
@@ -959,20 +959,20 @@ tags = ["schdoc", "mutation", "template", "dynamic-template", "title-block", "sc
 [[examples]]
 id = "prjpcb_make_project"
 title = "Create a complete PrjPcb project"
-summary = "Generate a D-size SchDoc with a dynamic title block, synthesize a simple PcbDoc, create an enabled OutJob, and write a PrjPcb with project parameters and variant A."
+summary = "Generate a D-size SchDoc from a dynamic template, synthesize a simple PcbDoc, create a schematic-PDF plus fabrication OutJob, and write a PrjPcb with project parameters and variant A."
 areas = ["prjpcb", "schdoc", "pcbdoc", "outjob"]
 status = "ready"
 entrypoint = "prjpcb_make_project/prjpcb_make_project.py"
 doc = "prjpcb_make_project/README.md"
-inputs = ["assets/schdoc/blank.SchDoc"]
+inputs = ["prjpcb_make_project/assets/logo.png"]
 assets = ["prjpcb_make_project/assets/logo.png"]
 outputs = [
-  "prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.PrjPcb",
-  "prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.SchDoc",
-  "prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.PcbDoc",
-  "prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.OutJob",
-  "prjpcb_make_project/output/prjpcb_make_project/outputs/",
-  "prjpcb_make_project/output/prjpcb_make_project/project_manifest.json",
+  "prjpcb_make_project/output/ultra-monkey/ultra-monkey.PrjPcb",
+  "prjpcb_make_project/output/ultra-monkey/ultra-monkey.SchDoc",
+  "prjpcb_make_project/output/ultra-monkey/ultra-monkey.PcbDoc",
+  "prjpcb_make_project/output/ultra-monkey/ultra-monkey.OutJob",
+  "prjpcb_make_project/output/ultra-monkey/outputs/",
+  "prjpcb_make_project/output/ultra-monkey/project_manifest.json",
 ]
 requires_extra = []
 tags = ["project", "prjpcb", "generation", "dynamic-template", "outjob", "variant"]

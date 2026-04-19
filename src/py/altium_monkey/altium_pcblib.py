@@ -1209,9 +1209,8 @@ def _sanitize_ole_name(name: str) -> str:
     Replace OLE-illegal characters (``\\``, ``/``, ``:``, ``!``, ``*``) with
     underscore.
 
-        OLE/CFB directory entries cannot contain path separator characters.
-        Older Altium storage names use '_' for these characters. This matches
-        the OLE storage-name sanitization used for PcbLib streams.
+        OLE/CFB directory entries cannot contain path separator characters, so
+        PcbLib model stream names replace these characters with '_'.
     """
     result = name
     for ch in ("\\", "/", ":", "!", "*"):

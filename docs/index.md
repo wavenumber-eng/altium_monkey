@@ -32,7 +32,7 @@ The docs are intended to be:
 Near-term focus:
 
 1. keep the release/export flow simple
-2. ship a first small example set
+2. keep the example set current with the public API
 3. keep the public Markdown documentation accurate and easy to scan
 
 Domain guides:

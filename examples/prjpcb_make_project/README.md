@@ -2,21 +2,23 @@
 
 Create a complete Altium project folder from Python.
 
-This example combines the schematic dynamic-template pattern with the simple
+This example combines a dynamically created schematic template with the simple
 PCB authoring pattern. It writes one D-size schematic, one rectangular PCB, one
-OutJob with enabled documentation and fabrication outputs, and one `.PrjPcb`
-that references all generated files.
+OutJob with schematic PDF and fabrication outputs, and one `.PrjPcb`
+that references all generated files. The generated schematic inherits its sheet
+context from the generated `.SchDot` template when the template is applied.
 
-The title block keeps Altium parameter expressions such as `=PROJECT_TITLE`,
-`=PCB_PART_NUMBER`, and `=VariantName` in the schematic. Those values are
-provided by project parameters and by a project variant named `A`; they are not
-written as schematic document parameters.
+The title block keeps Altium parameter expressions such as
+`="Schematic Page"`, `=CCA_PART_NUMBER`, `=CCA_CODENAME`, `=CCA_MIXDOWN`,
+`=PCB_PART_NUMBER`, `=PCB_CODENAME`, and `=PCB_MIXDOWN` in the schematic. The
+schematic page value is provided by a document parameter. The part values are
+provided by project parameters.
 
 ## What It Shows
 
-1. Creating a D-size SchDoc with a generated title-block template.
+1. Creating a generated D-size title-block template and applying it to a SchDoc.
 2. Creating a PcbDoc with a rectangular board outline and lower-left origin.
-3. Creating an OutJob with enabled schematic, PCB drawing, fabrication, BOM, and STEP outputs.
+3. Creating an OutJob with schematic PDF, fabrication, BOM, and STEP outputs.
 4. Creating a PrjPcb, adding project parameters, adding variant `A`, and adding the generated SchDoc, PcbDoc, and OutJob.
 5. Keeping the OutJob output base inside the generated project folder under `outputs/`.
 
@@ -30,10 +32,9 @@ uv run python examples\prjpcb_make_project\prjpcb_make_project.py
 
 ## Inputs
 
-The example uses:
+The example uses one input image:
 
 ```text
-examples/assets/schdoc/blank.SchDoc
 examples/prjpcb_make_project/assets/logo.png
 ```
 
@@ -42,12 +43,12 @@ examples/prjpcb_make_project/assets/logo.png
 The script writes a self-contained project folder:
 
 ```text
-examples/prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.PrjPcb
-examples/prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.SchDoc
-examples/prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.PcbDoc
-examples/prjpcb_make_project/output/prjpcb_make_project/prjpcb_make_project.OutJob
-examples/prjpcb_make_project/output/prjpcb_make_project/outputs/
-examples/prjpcb_make_project/output/prjpcb_make_project/project_manifest.json
+examples/prjpcb_make_project/output/ultra-monkey/ultra-monkey.PrjPcb
+examples/prjpcb_make_project/output/ultra-monkey/ultra-monkey.SchDoc
+examples/prjpcb_make_project/output/ultra-monkey/ultra-monkey.PcbDoc
+examples/prjpcb_make_project/output/ultra-monkey/ultra-monkey.OutJob
+examples/prjpcb_make_project/output/ultra-monkey/outputs/
+examples/prjpcb_make_project/output/ultra-monkey/project_manifest.json
 ```
 
 Open the generated `.PrjPcb` in Altium to inspect the project documents and run

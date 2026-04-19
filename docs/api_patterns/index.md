@@ -157,7 +157,8 @@ Stable public patterns:
 
 - `AltiumSchDoc.from_file(...)`, `schdoc.add_object(...)`,
   `schdoc.remove_object(...)`, `schdoc.add_component_from_library(...)`,
-  and `schdoc.save(...)`.
+  `schdoc.clear_template()`, `schdoc.apply_template(...)`,
+  `schdoc.extract_template(...)`, and `schdoc.save(...)`.
 - `make_sch_*` factory functions, schematic enums, `SchPointMils`,
   `SchRectMils`, `SchFontSpec`, and `ColorValue`.
 - `AltiumSchLib`, `AltiumSymbol`, symbol helper methods, `split(...)`,

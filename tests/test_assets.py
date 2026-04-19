@@ -294,6 +294,47 @@ def test_asset_example_runs_and_writes_declared_outputs(
         )
 
 
+def test_schdoc_apply_dynamic_template_inherits_template_sheet_context(
+    check_examples_root: Path,
+) -> None:
+    example = next(
+        item
+        for item in _load_examples()
+        if item["id"] == "schdoc_apply_dynamic_template"
+    )
+    result = _run_example_entrypoint(example, check_examples_root)
+    assert result.returncode == 0, result.stderr
+
+    from altium_monkey import AltiumSchDoc, SheetStyle
+
+    output_root = check_examples_root / "schdoc_apply_dynamic_template" / "output"
+    expected_sheet_styles = {
+        "B": SheetStyle.B,
+        "D": SheetStyle.D,
+    }
+    for sheet_size, sheet_style in expected_sheet_styles.items():
+        schdoc = AltiumSchDoc(
+            output_root / f"blank_with_dynamic_ansi_{sheet_size}.SchDoc"
+        )
+        assert schdoc.sheet is not None
+        assert schdoc.sheet.sheet_style == int(sheet_style)
+        assert schdoc.sheet.use_custom_sheet is False
+        assert schdoc.sheet.border_on is True
+        assert schdoc.sheet.title_block_on is False
+        assert schdoc.sheet.reference_zones_on is True
+        assert schdoc.sheet.reference_zone_style == 1
+        assert schdoc.sheet.custom_x_zones == 0
+        assert schdoc.sheet.custom_y_zones == 0
+        assert (
+            schdoc.sheet.template_filename
+            == f"dynamic_title_block_ansi_{sheet_size}.SchDot"
+        )
+        system_font = schdoc.font_manager.get_font_info(schdoc.sheet.system_font)
+        assert system_font is not None
+        assert system_font["name"] == "Arial"
+        assert system_font["size"] == 10
+
+
 def test_prjpcb_make_project_writes_project_container(
     check_examples_root: Path,
 ) -> None:
@@ -303,36 +344,61 @@ def test_prjpcb_make_project_writes_project_container(
     result = _run_example_entrypoint(example, check_examples_root)
     assert result.returncode == 0, result.stderr
 
+    from altium_monkey import AltiumSchDoc, SheetStyle
     from altium_monkey.altium_outjob import AltiumOutJob
     from altium_monkey.altium_prjpcb import AltiumPrjPcb
 
     project_root = (
-        check_examples_root / "prjpcb_make_project" / "output" / "prjpcb_make_project"
+        check_examples_root / "prjpcb_make_project" / "output" / "ultra-monkey"
     )
-    project_path = project_root / "prjpcb_make_project.PrjPcb"
-    schdoc_path = project_root / "prjpcb_make_project.SchDoc"
-    pcbdoc_path = project_root / "prjpcb_make_project.PcbDoc"
-    outjob_path = project_root / "prjpcb_make_project.OutJob"
+    project_path = project_root / "ultra-monkey.PrjPcb"
+    schdoc_path = project_root / "ultra-monkey.SchDoc"
+    pcbdoc_path = project_root / "ultra-monkey.PcbDoc"
+    outjob_path = project_root / "ultra-monkey.OutJob"
 
     for path in (project_path, schdoc_path, pcbdoc_path, outjob_path):
         assert path.exists(), path
 
+    schdoc = AltiumSchDoc(schdoc_path)
+    assert schdoc.sheet is not None
+    assert schdoc.sheet.sheet_style == int(SheetStyle.D)
+    assert schdoc.sheet.use_custom_sheet is False
+    assert schdoc.sheet.border_on is True
+    assert schdoc.sheet.title_block_on is False
+    assert schdoc.sheet.reference_zones_on is True
+    assert schdoc.sheet.reference_zone_style == 1
+    assert schdoc.sheet.template_filename == "generated_ansi_d_title_block.SchDot"
+    system_font = schdoc.font_manager.get_font_info(schdoc.sheet.system_font)
+    assert system_font is not None
+    assert system_font["name"] == "Arial"
+    assert system_font["size"] == 10
+
     project = AltiumPrjPcb(project_path)
-    assert project.get_parameter("PROJECT_TITLE") == "Generated Project Example"
-    assert project.get_parameter("PCB_PART_NUMBER") == "WN-PRJPCB-001"
+    assert project.get_parameter("PROJECT_TITLE") == "ULTRA-MONKEY"
+    assert project.get_parameter("CCA_PART_NUMBER") == "10078"
+    assert project.get_parameter("PCB_PART_NUMBER") == "10079"
     assert project.get_current_variant() == "A"
     assert "A" in project.variants
 
     document_names = {Path(doc["path"]).name for doc in project.documents}
     assert {
-        "prjpcb_make_project.SchDoc",
-        "prjpcb_make_project.PcbDoc",
-        "prjpcb_make_project.OutJob",
+        "ultra-monkey.SchDoc",
+        "ultra-monkey.PcbDoc",
+        "ultra-monkey.OutJob",
     }.issubset(document_names)
 
     assert project.get_outjob_paths() == [outjob_path.resolve()]
 
     outjob = AltiumOutJob.from_outjob(outjob_path)
+    outputs = outjob.get_output_types()
+    documentation_outputs = [
+        output for output in outputs if output["category"] == "Documentation"
+    ]
+    assert [output["type"] for output in documentation_outputs] == [
+        "Schematic Print"
+    ]
+    assert "PCBDrawing" not in {output["type"] for output in outputs}
+
     output_group = outjob.config["OutputGroup1"]
     assert output_group.get("VariantName") == "A"
     output_count = 0
@@ -344,7 +410,7 @@ def test_prjpcb_make_project_writes_project_container(
             enabled_count += 1
         index += 1
 
-    assert output_count >= 11
+    assert output_count >= 10
     assert enabled_count == output_count
     assert outjob.config.get(
         "GeneratedFilesSettings", "RelativeOutputPath1"

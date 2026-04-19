@@ -3799,10 +3799,10 @@ def _has_trivial_outer_only_npht_tail(pad: Any) -> bool:
     """
     True when NPTH SubRecord 6 only mirrors outer-copper geometry.
 
-        Older Altium footprints sometimes store a single legacy full-stack entry
-        on NPTH pads even though IPC emission remains outer-layer-only. Treat that
-        as an outer-only hint only when every stored size simply mirrors the
-        default copper geometry already present on the pad.
+        Some footprints store a single legacy full-stack entry on NPTH pads
+        even though IPC emission remains outer-layer-only. Treat that as an
+        outer-only hint only when every stored size simply mirrors the default
+        copper geometry already present on the pad.
     """
     entries = getattr(pad, "full_stack_layer_entries", None) or []
     if not entries:

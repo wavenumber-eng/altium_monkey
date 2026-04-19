@@ -10,7 +10,8 @@ The generated title block uses Altium parameter expressions such as
 frames. The example does not write those values as SchDoc document parameters.
 Instead, it writes them as project parameters in the generated `.PrjPcb` and
 sets the current project variant to `A` for `=VariantName` substitution. The
-generated documents use Arial 10 as the document system font.
+generated documents inherit their sheet size, border and zone settings, and
+Arial 10 document system font from the generated `.SchDot` template.
 
 Run from the package root:
 
@@ -41,8 +42,11 @@ template_doc = build_dynamic_template_doc(
 template_doc.save(dynamic_template_path)
 
 schdoc = AltiumSchDoc(INPUT_SCHDOC)
-set_ansi_sheet(schdoc, "D")
-schdoc.apply_template(dynamic_template_path)
+schdoc.apply_template(
+    dynamic_template_path,
+    template_filename="dynamic_title_block_ansi_D.SchDot",
+    apply_visual_sheet_settings=True,
+)
 schdoc.save(output_path)
 
 project = AltiumPrjPcb.create_minimal(PROJECT_NAME)

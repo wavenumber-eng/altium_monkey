@@ -58,6 +58,33 @@ components.
 Use `schdoc.add_component_from_library(...)` for normal component insertion from
 SchLib.
 
+## Templates
+
+Use `clear_template()`, `apply_template(...)`, and `extract_template(...)` for
+schematic title blocks and border graphics stored as Altium `.SchDot`
+templates.
+
+By default, `apply_template(...)` applies template-owned drawing objects,
+embedded images, fonts, missing template parameters, and template metadata. It
+does not change the target sheet size or page setup unless requested.
+
+If the `.SchDot` should also control the target page setup, pass
+`apply_visual_sheet_settings=True`:
+
+```python
+schdoc.apply_template(
+    "title_block.SchDot",
+    template_filename="title_block.SchDot",
+    apply_visual_sheet_settings=True,
+)
+```
+
+That option copies visual sheet context such as sheet style, custom sheet
+dimensions, border and reference-zone settings, display unit, grid settings,
+sheet colors, sheet-number spacing, and the sheet system font. It does not copy
+template identity, vault/release GUIDs, sheet number, or project/page
+parameters.
+
 ## Examples
 
 Start with:
@@ -73,6 +100,7 @@ Start with:
 9. [`schdoc_insert_dblib_style`](../examples/schdoc_insert_dblib_style/README.md)
 10. [`schdoc_clean`](../examples/schdoc_clean/README.md)
 11. [`schdoc_svg`](../examples/schdoc_svg/README.md)
+12. [`schdoc_apply_dynamic_template`](../examples/schdoc_apply_dynamic_template/README.md)
 
 See [API patterns](api_patterns/index.md) for cross-cutting mutation and
 ownership guidance.

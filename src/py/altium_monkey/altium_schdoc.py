@@ -2850,6 +2850,62 @@ class AltiumSchDoc(JsonApplyMixin):
             font_id_map[int(source_id)] = target_id
         return font_id_map
 
+    def _apply_template_visual_sheet_settings(
+        self,
+        template_doc: "AltiumSchDoc",
+        font_id_map: dict[int, int],
+    ) -> None:
+        """
+        Copy opt-in visual sheet context from a SchDot into this document.
+        """
+        if self.sheet is None:
+            raise ValueError("apply_template requires a schematic sheet record")
+        if template_doc.sheet is None:
+            return
+
+        source = template_doc.sheet
+        target = self.sheet
+        visual_attrs = (
+            "sheet_style",
+            "use_custom_sheet",
+            "custom_x",
+            "custom_y",
+            "custom_x_zones",
+            "custom_y_zones",
+            "custom_margin_width",
+            "border_on",
+            "title_block_on",
+            "reference_zones_on",
+            "reference_zone_style",
+            "document_border_style",
+            "workspace_orientation",
+            "display_unit",
+            "snap_grid_on",
+            "snap_grid_size",
+            "visible_grid_on",
+            "visible_grid_size",
+            "hot_spot_grid_on",
+            "hot_spot_grid_size",
+            "hot_spot_grid_size_frac",
+            "color",
+            "area_color",
+            "sheet_number_space_size",
+        )
+        for attr in visual_attrs:
+            if hasattr(source, attr):
+                setattr(target, attr, deepcopy(getattr(source, attr)))
+
+        for flag in (
+            "_has_custom_x_zones",
+            "_has_custom_y_zones",
+            "_has_custom_margin_width",
+        ):
+            setattr(target, flag, bool(getattr(source, flag, False)))
+
+        source_system_font = int(getattr(source, "system_font", 0) or 0)
+        if source_system_font in font_id_map:
+            target.system_font = font_id_map[source_system_font]
+
     def _template_content_from_document(
         self,
         template_doc: "AltiumSchDoc",
@@ -2956,6 +3012,7 @@ class AltiumSchDoc(JsonApplyMixin):
         clear_existing: bool = True,
         merge_parameters: bool = True,
         template_filename: str | Path | None = None,
+        apply_visual_sheet_settings: bool = False,
     ) -> int:
         """
         Apply a schematic `.SchDot` template to this document.
@@ -2974,6 +3031,10 @@ class AltiumSchDoc(JsonApplyMixin):
             template_filename: Optional filename/path to store in the SchDoc
                 template metadata. If omitted, stores ``template_path`` exactly
                 as passed after normal ``Path`` string conversion.
+            apply_visual_sheet_settings: If True, copy visual sheet settings
+                such as sheet size/style, grids, colors, border/title-zone
+                settings, display unit, and remapped system font from the
+                template document.
 
         Returns:
             Number of records inserted, including the template container,
@@ -2996,6 +3057,8 @@ class AltiumSchDoc(JsonApplyMixin):
             else resolved_template_path
         )
         font_id_map = self._merge_template_fonts(template_doc)
+        if apply_visual_sheet_settings:
+            self._apply_template_visual_sheet_settings(template_doc, font_id_map)
         template, child_objects, source_parameters = (
             self._template_content_from_document(
                 template_doc,
