@@ -68,6 +68,39 @@ def _decode_prjpcb_text(raw: bytes, filepath: Path) -> tuple[str, str]:
     return raw.decode(_LOSSY_TEXT_FALLBACK), _LOSSY_TEXT_FALLBACK
 
 
+def _parse_variant_key_values(value: str) -> dict[str, str]:
+    """
+    Parse Altium's pipe-separated project variant field format.
+    """
+    result: dict[str, str] = {}
+    for pair in str(value or "").split("|"):
+        if "=" not in pair:
+            continue
+        key, parsed_value = pair.split("=", 1)
+        result[key] = parsed_value
+    return result
+
+
+def _build_parameter_override_map(
+    param_variations: list[dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """
+    Group parsed ParamVariation rows as designator -> parameter name -> value.
+    """
+    overrides: dict[str, dict[str, str]] = {}
+    for row in param_variations:
+        designator = str(
+            row.get("ParamDesignator") or row.get("Designator") or ""
+        ).strip()
+        parameter_name = str(row.get("ParameterName") or "").strip()
+        if not designator or not parameter_name:
+            continue
+        overrides.setdefault(designator, {})[parameter_name] = str(
+            row.get("VariantValue", "")
+        )
+    return overrides
+
+
 class NetIdentifierScope(IntEnum):
     """
     Net Identifier Scope for Altium projects.
@@ -665,6 +698,11 @@ class AltiumPrjPcb:
                 'allow_fabrication': bool,
                 'variation_count': int,
                 'variations': list[dict],  # Raw variation data
+                'parameter_count': int,
+                'parameters': list[dict],  # Variant-level parameter rows
+                'param_variation_count': int,
+                'param_variations': list[dict],  # Per-variation parameter changes
+                'parameter_overrides': dict[str, dict[str, str]],
                 'DNP': list[str]           # Designators marked as Not Fitted (Kind=1)
             }
         """
@@ -681,18 +719,44 @@ class AltiumPrjPcb:
 
             variations = []
             variation_count = self.config.getint(section, "VariationCount", fallback=0)
+            parameters = []
+            parameter_count = self.config.getint(section, "ParameterCount", fallback=0)
+            param_variations = []
+            param_variation_count = self.config.getint(
+                section, "ParamVariationCount", fallback=0
+            )
 
             # Get variations
             for i in range(1, variation_count + 1):
                 var_key = f"Variation{i}"
                 if self.config.has_option(section, var_key):
                     var_str = self.config.get(section, var_key)
-                    var_pairs = {}
-                    for pair in var_str.split("|"):
-                        if "=" in pair:
-                            key, value = pair.split("=", 1)
-                            var_pairs[key] = value
-                    variations.append(var_pairs)
+                    variations.append(_parse_variant_key_values(var_str))
+
+            # Get variant-level parameters
+            for i in range(1, parameter_count + 1):
+                param_key = f"Parameter{i}"
+                if self.config.has_option(section, param_key):
+                    param_str = self.config.get(section, param_key)
+                    parameters.append(_parse_variant_key_values(param_str))
+
+            # Get per-variation parameter overrides. Altium indexes these in
+            # lockstep with ParamDesignatorN rows.
+            for i in range(1, param_variation_count + 1):
+                param_var_key = f"ParamVariation{i}"
+                if self.config.has_option(section, param_var_key):
+                    param_var_str = self.config.get(section, param_var_key)
+                    param_variation = _parse_variant_key_values(param_var_str)
+                    param_designator_key = f"ParamDesignator{i}"
+                    if self.config.has_option(section, param_designator_key):
+                        param_designator = self.config.get(
+                            section, param_designator_key
+                        )
+                        param_variation["ParamDesignator"] = param_designator
+                        param_variation.setdefault("Designator", param_designator)
+                    param_variations.append(param_variation)
+
+            parameter_overrides = _build_parameter_override_map(param_variations)
 
             variants[description] = {
                 "unique_id": self.config.get(section, "UniqueId", fallback=""),
@@ -701,6 +765,11 @@ class AltiumPrjPcb:
                 ),
                 "variation_count": variation_count,
                 "variations": variations,
+                "parameter_count": parameter_count,
+                "parameters": parameters,
+                "param_variation_count": param_variation_count,
+                "param_variations": param_variations,
+                "parameter_overrides": parameter_overrides,
             }
 
             # Build DNP list (Kind=1 means Not Fitted)

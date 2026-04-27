@@ -40,6 +40,8 @@ class SheetEntryLink:
     sheet_sym_uid: str = ""
     port_name: str = ""
     match_by_name: bool = False
+    parent_entry_name: str = ""
+    child_object_ids: tuple[str, ...] = ()
     hierarchy_path: HierarchyPath = field(default_factory=HierarchyPath)
 
 
@@ -125,13 +127,38 @@ def _find_or_create_net_for_wire(
     port_net_map: dict,
     other_nets: list,
     harness_keys: set[str],
+    harness_entry_id: str = "",
+    harness_entry_name: str = "",
+    source_sheet: str = "",
+    source_sheet_index: int | None = None,
 ) -> bool:
     """Find the net connected to a wire UID and add it to `port_net_map`."""
-    from .altium_netlist_model import Net
+    from .altium_netlist_model import Net, NetEndpoint
+
+    def append_harness_endpoint(net: "Net") -> None:
+        clean_id = str(harness_entry_id or "").strip()
+        if not clean_id:
+            return
+        endpoint_id = f"harness_entry:{clean_id}"
+        if any(endpoint.endpoint_id == endpoint_id for endpoint in net.endpoints):
+            return
+        net.endpoints.append(
+            NetEndpoint(
+                endpoint_id=endpoint_id,
+                role="harness_entry",
+                element_id=clean_id,
+                object_id=clean_id,
+                name=str(harness_entry_name or ""),
+                source_sheet=source_sheet,
+                sheet_index=source_sheet_index,
+                compiled_sheet_index=sheet_idx,
+            )
+        )
 
     for idx in range(len(other_nets) - 1, -1, -1):
         existing_sheet_idx, net = other_nets[idx]
         if existing_sheet_idx == sheet_idx and wire_uid in net.graphical.wires:
+            append_harness_endpoint(net)
             port_net_map[merge_key].append((sheet_idx, net))
             other_nets.pop(idx)
             harness_keys.add(merge_key)
@@ -140,6 +167,7 @@ def _find_or_create_net_for_wire(
     for existing_entries in port_net_map.values():
         for existing_sheet_idx, net in existing_entries:
             if existing_sheet_idx == sheet_idx and wire_uid in net.graphical.wires:
+                append_harness_endpoint(net)
                 port_net_map[merge_key].append((sheet_idx, net))
                 harness_keys.add(merge_key)
                 return True
@@ -149,6 +177,20 @@ def _find_or_create_net_for_wire(
         terminals=[],
         graphical=NetGraphical(wires=[wire_uid]),
         auto_named=True,
+        endpoints=[
+            NetEndpoint(
+                endpoint_id=f"harness_entry:{harness_entry_id}",
+                role="harness_entry",
+                element_id=harness_entry_id,
+                object_id=harness_entry_id,
+                name=harness_entry_name,
+                source_sheet=source_sheet,
+                sheet_index=source_sheet_index,
+                compiled_sheet_index=sheet_idx,
+            )
+        ]
+        if harness_entry_id
+        else [],
     )
     port_net_map[merge_key].append((sheet_idx, synthetic))
     harness_keys.add(merge_key)
@@ -299,6 +341,7 @@ def _merge_single_power_net(
             auto_named=False,
             source_sheets=list(net.source_sheets),
             aliases=[net.name] if not net.auto_named else [],
+            endpoints=list(net.endpoints),
         )
     return net
 
@@ -451,8 +494,8 @@ def _reinsert_bridge_groups(
 def _build_child_harness_entry_map(
     resolver: _HarnessPortNameResolver,
     child_schdoc: "AltiumSchDoc",
-) -> dict[str, list[str]]:
-    """Build `port_name -> [entry_names]` lookup for child harness connectors."""
+) -> dict[str, list[dict[str, str]]]:
+    """Build `port_name -> [{name, object_id}]` lookup for child harness connectors."""
     child_harness_entries = {}
     child_port_location_map = _build_port_location_map(child_schdoc)
     for harness_connector in child_schdoc.harness_connectors:
@@ -463,7 +506,12 @@ def _build_child_harness_entry_map(
         )
         if harness_port:
             child_harness_entries[harness_port.lower()] = [
-                entry.name for entry in harness_connector.entries if entry.name
+                {
+                    "name": entry.name,
+                    "object_id": getattr(entry, "unique_id", "") or "",
+                }
+                for entry in harness_connector.entries
+                if entry.name
             ]
     return child_harness_entries
 

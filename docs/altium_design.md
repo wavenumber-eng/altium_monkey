@@ -15,7 +15,7 @@ Use it when you need to:
 
 ## Public Contracts
 
-`AltiumDesign.to_json(...)` emits `altium_monkey.design.a0`.
+`AltiumDesign.to_json(...)` emits `altium_monkey.design.a1`.
 
 `AltiumDesign.to_netlist().to_json(...)` emits `altium_monkey.netlist.a0`.
 
@@ -32,11 +32,12 @@ See [schema contracts](schemas/index.md) for field-level contract notes.
 
 ## Current Boundaries
 
-Variant processing is limited to DNP handling in this release.
+Variant processing includes DNP handling and parameter overrides in this
+release.
 
 Complex hierarchical sheets, repeated channels, and annotation-file driven
-designator mapping may have edge cases. This release does not process
-`*.Annotation` files.
+designator mapping may still have edge cases. This release emits resolved
+schematic hierarchy metadata, but does not process `*.Annotation` files.
 
 Use schematic SVG rendering directly when you only need page-level drawings.
 Use `AltiumDesign` when you need project context such as parameters, variants,

@@ -33,7 +33,7 @@ EXAMPLES_DIR = SAMPLE_DIR.parent
 
 TITLE_BLOCK_IMAGE = SAMPLE_DIR / "assets" / "logo.png"
 
-PROJECT_NAME = "ultra-monkey"
+PROJECT_NAME = "ULTRA-MONKEY"
 VARIANT_NAME = "A"
 
 OUTPUT_DIR = SAMPLE_DIR / "output"
@@ -63,7 +63,7 @@ PROJECT_PARAMETERS = {
     "CCA_CODENAME": "ULTRA-MONKEY CCA",
     "CCA_MIXDOWN": "A",
     "PCB_PART_NUMBER": "10079",
-    "PCB_CODENAME": "ULTRAMONKEY",
+    "PCB_CODENAME": "ULTRA-MONKEY PCB",
     "PCB_MIXDOWN": "A",
     "STATUS": "DRAFT",
     "ENGINEER": "altium-monkey",
@@ -482,7 +482,7 @@ def build_schdoc(project_dir: Path, temp_dir: Path) -> Path:
         make_sch_parameter(
             location_mils=point(0, 0),
             name="Schematic Page",
-            text=PROJECT_NAME + " Top Level",
+            text=PROJECT_NAME + " TOP LEVEL",
             font=SchFontSpec(name="Arial", size=10),
             hidden=True,
         )

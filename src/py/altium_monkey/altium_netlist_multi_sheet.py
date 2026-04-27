@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
+from dataclasses import replace
 from copy import copy
 from typing import TYPE_CHECKING, Optional
 
@@ -66,12 +67,18 @@ class AltiumNetlistMultiSheetCompiler:
         Initialize the multi-sheet compiler.
         """
         self._schdocs = schdocs
+        self._source_schdocs = list(schdocs)
         self._project = project
         self._options = options
         self._channel_instances = []
         self._channel_netlist_map = {}
+        self._compiled_to_source_sheet_idx = {
+            idx: idx for idx in range(len(self._source_schdocs))
+        }
         self._effective_scope = None
         self._sheet_paths = {}
+        self._hierarchy_links: list[SheetEntryLink] = []
+        self._hierarchy_unresolved: list[dict] = []
 
     def build(self) -> "Netlist":
         """
@@ -97,6 +104,7 @@ class AltiumNetlistMultiSheetCompiler:
             )
 
         self._build_sheet_paths()
+        self._annotate_endpoint_sheet_context(sheet_netlists)
 
         all_components = self._merge_components(sheet_netlists)
         classified = self._classify_and_expand_nets(sheet_netlists)
@@ -157,7 +165,9 @@ class AltiumNetlistMultiSheetCompiler:
             len(all_components),
         )
 
-        return Netlist(nets=final_nets, components=all_components)
+        netlist = Netlist(nets=final_nets, components=all_components)
+        netlist.schematic_hierarchy = self.build_schematic_hierarchy_metadata()
+        return netlist
 
     def _generate_per_sheet_netlists(self) -> list["Netlist"]:
         """
@@ -266,12 +276,14 @@ class AltiumNetlistMultiSheetCompiler:
         expanded = []
         expanded_schdocs = []
         self._channel_netlist_map.clear()
+        self._compiled_to_source_sheet_idx.clear()
 
         for idx, (netlist, schdoc) in enumerate(zip(sheet_netlists, self._schdocs)):
             if idx in child_channels:
                 for channel in child_channels[idx]:
                     new_idx = len(expanded)
                     self._channel_netlist_map[(idx, channel.instance_index)] = new_idx
+                    self._compiled_to_source_sheet_idx[new_idx] = idx
                     cloned = self._clone_netlist_for_channel(
                         netlist,
                         channel,
@@ -286,6 +298,8 @@ class AltiumNetlistMultiSheetCompiler:
                         new_idx,
                     )
             else:
+                new_idx = len(expanded)
+                self._compiled_to_source_sheet_idx[new_idx] = idx
                 expanded.append(netlist)
                 expanded_schdocs.append(schdoc)
 
@@ -347,6 +361,20 @@ class AltiumNetlistMultiSheetCompiler:
                     )
                 )
 
+            new_endpoints = []
+            for endpoint in net.endpoints:
+                next_endpoint = replace(endpoint)
+                if endpoint.designator:
+                    next_endpoint.designator = desig_map.get(
+                        endpoint.designator,
+                        endpoint.designator,
+                    )
+                if next_endpoint.role == "pin":
+                    next_endpoint.endpoint_id = (
+                        f"pin:{next_endpoint.designator}:{next_endpoint.pin}"
+                    )
+                new_endpoints.append(next_endpoint)
+
             new_nets.append(
                 Net(
                     name=self._annotate_net_name(
@@ -361,10 +389,57 @@ class AltiumNetlistMultiSheetCompiler:
                     auto_named=net.auto_named,
                     source_sheets=list(net.source_sheets),
                     aliases=list(net.aliases),
+                    endpoints=new_endpoints,
                 )
             )
 
         return Netlist(nets=new_nets, components=new_components)
+
+    def _annotate_endpoint_sheet_context(self, sheet_netlists: list["Netlist"]) -> None:
+        """
+        Stamp net endpoints with source/compiled sheet indexes after channel expansion.
+        """
+        for compiled_idx, netlist in enumerate(sheet_netlists):
+            source_idx = self._source_sheet_index(compiled_idx)
+            for net in netlist.nets:
+                for endpoint in net.endpoints:
+                    if endpoint.compiled_sheet_index is None:
+                        endpoint.compiled_sheet_index = compiled_idx
+                    if endpoint.sheet_index is None:
+                        endpoint.sheet_index = source_idx
+
+    @staticmethod
+    def _dedupe_endpoints(endpoints: list) -> list:
+        seen = set()
+        result = []
+        for endpoint in endpoints:
+            key = (
+                getattr(endpoint, "endpoint_id", ""),
+                getattr(endpoint, "source_sheet", ""),
+                getattr(endpoint, "compiled_sheet_index", None),
+                getattr(endpoint, "sheet_index", None),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(endpoint)
+        return result
+
+    @classmethod
+    def _collect_sheet_net_endpoints(cls, sheet_nets: list[tuple[int, "Net"]]) -> list:
+        endpoints = [
+            endpoint
+            for _, net in sheet_nets
+            for endpoint in getattr(net, "endpoints", [])
+        ]
+        return cls._dedupe_endpoints(endpoints)
+
+    @classmethod
+    def _collect_net_endpoints(cls, nets: list["Net"]) -> list:
+        endpoints = [
+            endpoint for net in nets for endpoint in getattr(net, "endpoints", [])
+        ]
+        return cls._dedupe_endpoints(endpoints)
 
     def _annotate_net_name(
         self,
@@ -636,6 +711,8 @@ class AltiumNetlistMultiSheetCompiler:
             if not schdoc.harness_connectors:
                 continue
 
+            source_sheet = schdoc.filepath.name if schdoc.filepath else ""
+            source_sheet_index = self._source_sheet_index(sheet_idx)
             wire_endpoint_map = _build_wire_endpoint_map(schdoc)
             port_location_map = _build_port_location_map(schdoc)
 
@@ -670,6 +747,10 @@ class AltiumNetlistMultiSheetCompiler:
                         port_net_map,
                         other_nets,
                         harness_keys,
+                        str(getattr(entry, "unique_id", "") or ""),
+                        str(getattr(entry, "name", "") or ""),
+                        source_sheet,
+                        source_sheet_index,
                     )
 
         return harness_keys
@@ -804,6 +885,15 @@ class AltiumNetlistMultiSheetCompiler:
                     filename_to_idx,
                 )
                 if not child_indices:
+                    self._hierarchy_unresolved.append(
+                        {
+                            "kind": "missing_child_sheet",
+                            "parent_sheet_index": self._source_sheet_index(parent_idx),
+                            "parent_compiled_sheet_index": parent_idx,
+                            "sheet_symbol_id": sheet_sym_info.unique_id,
+                            "child_filename": child_filename,
+                        }
+                    )
                     log.debug(
                         "Sheet symbol references '%s' but no matching SchDoc found in project",
                         child_filename,
@@ -868,14 +958,24 @@ class AltiumNetlistMultiSheetCompiler:
             if harness_type:
                 harness_entries = child_harness_entries.get(entry_name.lower(), [])
                 if harness_entries:
-                    for harness_entry_name in harness_entries:
+                    for harness_entry in harness_entries:
+                        harness_entry_name = str(harness_entry.get("name", "")).strip()
+                        if not harness_entry_name:
+                            continue
+                        child_object_id = str(
+                            harness_entry.get("object_id", "")
+                        ).strip()
                         links.append(
                             SheetEntryLink(
                                 entry_name=harness_entry_name,
                                 parent_sheet_idx=parent_idx,
                                 child_sheet_idx=child_idx,
-                                sheet_sym_uid="",
+                                sheet_sym_uid=sheet_sym_info.unique_id,
                                 match_by_name=True,
+                                parent_entry_name=entry_name,
+                                child_object_ids=(
+                                    (child_object_id,) if child_object_id else ()
+                                ),
                                 hierarchy_path=hierarchy_path,
                             )
                         )
@@ -891,6 +991,18 @@ class AltiumNetlistMultiSheetCompiler:
             inner_port = _parse_entry_repeat(entry_name)
             match_name = inner_port if inner_port else entry_name
             if match_name.lower() not in child_port_names:
+                self._hierarchy_unresolved.append(
+                    {
+                        "kind": "unmatched_child_port",
+                        "parent_sheet_index": self._source_sheet_index(parent_idx),
+                        "parent_compiled_sheet_index": parent_idx,
+                        "child_sheet_index": self._source_sheet_index(child_idx),
+                        "child_compiled_sheet_index": child_idx,
+                        "sheet_symbol_id": sheet_sym_info.unique_id,
+                        "entry_name": entry_name,
+                        "port_name": match_name,
+                    }
+                )
                 continue
 
             if inner_port and channel and channel.repeat_value is not None:
@@ -944,9 +1056,11 @@ class AltiumNetlistMultiSheetCompiler:
             NetIdentifierScope.HIERARCHICAL,
             NetIdentifierScope.STRICT_HIERARCHICAL,
         ):
+            self._hierarchy_links = []
             return
 
         links = self._build_hierarchy_links()
+        self._hierarchy_links = links
         if not links:
             return
 
@@ -975,6 +1089,451 @@ class AltiumNetlistMultiSheetCompiler:
 
         log.debug("Bridged %s hierarchical net pairs", bridged_count)
         self._update_maps_after_bridging(uf, net_registry, classified)
+
+    def build_schematic_hierarchy_metadata(self) -> dict:
+        """
+        Export compiler-resolved schematic hierarchy metadata.
+        """
+        from .altium_netlist_model import _hierarchy_path_to_json
+
+        path_id_by_value = {}
+        hierarchy_paths = []
+        for compiled_idx, path in sorted(self._sheet_paths.items()):
+            if path.is_empty:
+                continue
+            if path not in path_id_by_value:
+                path_id = f"path-{len(path_id_by_value) + 1:04d}"
+                path_id_by_value[path] = path_id
+                hierarchy_paths.append(
+                    {
+                        "id": path_id,
+                        "source_sheet_index": self._source_sheet_index(compiled_idx),
+                        "compiled_sheet_index": compiled_idx,
+                        "levels": _hierarchy_path_to_json(path),
+                    }
+                )
+
+        channels = []
+        for channel in self._channel_instances:
+            compiled_idx = self._channel_netlist_map.get(
+                (channel.child_idx, channel.instance_index)
+            )
+            path = self._sheet_paths.get(compiled_idx)
+            room = channel.room
+            channels.append(
+                {
+                    "id": f"channel-{len(channels) + 1:04d}",
+                    "sheet_symbol_id": channel.sheet_sym_unique_id,
+                    "parent_sheet_index": channel.parent_idx,
+                    "child_sheet_index": channel.child_idx,
+                    "compiled_child_sheet_index": compiled_idx,
+                    "instance_index": channel.instance_index,
+                    "channel_name": room.room_name if room else "",
+                    "channel_prefix": room.channel_prefix if room else "",
+                    "channel_index": room.channel_index if room else "",
+                    "channel_alpha": room.channel_alpha if room else "",
+                    "repeat_value": channel.repeat_value,
+                    "repeat_entry_ports": sorted(channel.repeat_entry_ports),
+                    "hierarchy_path_id": path_id_by_value.get(path, "") if path else "",
+                }
+            )
+
+        return {
+            "schema": "altium_monkey.schematic_hierarchy.a1",
+            "requested_scope": self._options.net_identifier_scope.name,
+            "effective_scope": (
+                self._effective_scope.name if self._effective_scope is not None else ""
+            ),
+            "documents": self._build_hierarchy_documents(),
+            "sheet_symbols": self._build_hierarchy_sheet_symbols(),
+            "hierarchy_paths": hierarchy_paths,
+            "channels": channels,
+            "links": self._build_hierarchy_link_json(path_id_by_value),
+            "harness_bundle_links": self._build_harness_bundle_link_json(),
+            "unresolved": list(self._hierarchy_unresolved),
+        }
+
+    def _source_sheet_index(self, compiled_sheet_idx: int | None) -> int | None:
+        if compiled_sheet_idx is None:
+            return None
+        return self._compiled_to_source_sheet_idx.get(compiled_sheet_idx, compiled_sheet_idx)
+
+    def _build_hierarchy_documents(self) -> list[dict]:
+        documents = []
+        for idx, schdoc in enumerate(self._source_schdocs):
+            filepath = schdoc.filepath
+            documents.append(
+                {
+                    "sheet_index": idx,
+                    "filename": filepath.name if filepath else f"sheet{idx}",
+                    "path": str(filepath) if filepath else "",
+                    "is_top_level": not any(
+                        symbol.child_filename.lower()
+                        == (filepath.name.lower() if filepath else "")
+                        for parent in self._source_schdocs
+                        for symbol in parent.get_sheet_symbols()
+                    ),
+                    "metadata": {},
+                }
+            )
+        return documents
+
+    def _build_hierarchy_sheet_symbols(self) -> list[dict]:
+        symbols = []
+        for parent_idx, schdoc in enumerate(self._source_schdocs):
+            for sheet_sym_info in schdoc.get_sheet_symbols():
+                child_filename = sheet_sym_info.child_filename
+                child_indices = [
+                    idx
+                    for idx, child in enumerate(self._source_schdocs)
+                    if child.filepath and child.filepath.name.lower() == child_filename.lower()
+                ]
+                symbols.append(
+                    {
+                        "id": sheet_sym_info.unique_id,
+                        "parent_sheet_index": parent_idx,
+                        "designator": sheet_sym_info.designator,
+                        "child_filename": child_filename,
+                        "child_sheet_indices": child_indices,
+                        "repeat": self._parse_sheet_symbol_repeat(
+                            sheet_sym_info.designator
+                        ),
+                        "entries": [
+                            {
+                                "id": getattr(entry, "unique_id", "") or "",
+                                "name": entry.display_name or "",
+                                "graphical_id": self._sheet_entry_graphical_id(
+                                    sheet_sym_info.unique_id,
+                                    entry.display_name or "",
+                                ),
+                                "harness_type": getattr(entry, "harness_type", "") or "",
+                                "metadata": {},
+                            }
+                            for entry in sheet_sym_info.entries
+                        ],
+                        "metadata": {},
+                    }
+                )
+        return symbols
+
+    def _build_hierarchy_link_json(self, path_id_by_value: dict) -> list[dict]:
+        links = []
+        for link in self._hierarchy_links:
+            child_port_name = link.port_name or link.entry_name
+            parent_entry_name = link.parent_entry_name or link.entry_name
+            child_schdoc = self._schdocs[link.child_sheet_idx]
+            child_port_ids = [
+                port.unique_id
+                for port in child_schdoc.get_ports()
+                if port.name.lower() == child_port_name.lower()
+            ]
+            child_object_ids = []
+            child_object_seen = set()
+            for object_id in [*child_port_ids, *link.child_object_ids]:
+                clean_id = str(object_id or "").strip()
+                if clean_id and clean_id not in child_object_seen:
+                    child_object_seen.add(clean_id)
+                    child_object_ids.append(clean_id)
+            hierarchy_path_id = path_id_by_value.get(link.hierarchy_path, "")
+            channel = self._channel_for_compiled_child(link.child_sheet_idx)
+            links.append(
+                {
+                    "id": f"hier-link-{len(links) + 1:04d}",
+                    "kind": "sheet_entry_to_port",
+                    "parent": {
+                        "sheet_index": self._source_sheet_index(link.parent_sheet_idx),
+                        "compiled_sheet_index": link.parent_sheet_idx,
+                        "object_kind": "sheet_entry",
+                        "object_id": self._sheet_entry_graphical_id(
+                            link.sheet_sym_uid,
+                            parent_entry_name,
+                        ),
+                        "graphical_id": self._sheet_entry_graphical_id(
+                            link.sheet_sym_uid,
+                            parent_entry_name,
+                        ),
+                        "sheet_symbol_id": link.sheet_sym_uid,
+                        "name": link.entry_name,
+                        "sheet_entry_name": parent_entry_name,
+                    },
+                    "child": {
+                        "sheet_index": self._source_sheet_index(link.child_sheet_idx),
+                        "compiled_sheet_index": link.child_sheet_idx,
+                        "object_kind": (
+                            "harness_entry"
+                            if link.match_by_name and link.child_object_ids
+                            else "port"
+                        ),
+                        "object_ids": child_object_ids,
+                        "name": child_port_name,
+                    },
+                    "match_kind": "name" if not link.match_by_name else "harness_name",
+                    "hierarchy_path_id": hierarchy_path_id,
+                    "channel_index": channel.instance_index if channel else None,
+                    "channel_name": channel.room.room_name
+                    if channel and channel.room
+                    else "",
+                    "repeat_value": channel.repeat_value if channel else None,
+                    "metadata": {},
+                }
+            )
+        return links
+
+    def _build_harness_bundle_endpoint_map(self) -> dict[str, list[dict]]:
+        endpoint_map: dict[str, list[dict]] = defaultdict(list)
+        for compiled_idx, schdoc in enumerate(self._schdocs):
+            if not getattr(schdoc, "harness_connectors", None):
+                continue
+            port_location_map = _build_port_location_map(schdoc)
+            for connector in schdoc.harness_connectors:
+                bundle_info = self._find_harness_bundle_info(
+                    connector,
+                    getattr(schdoc, "signal_harnesses", None),
+                    port_location_map,
+                )
+                port_name = bundle_info.get("port_name") or ""
+                if not port_name:
+                    continue
+                port_ids = [
+                    port.unique_id
+                    for port in schdoc.get_ports()
+                    if port.name and port.name.lower() == port_name.lower()
+                ]
+                connector_id = str(getattr(connector, "unique_id", "") or "").strip()
+                signal_harness_ids = bundle_info.get("signal_harness_ids") or []
+                object_ids = self._unique_nonempty(
+                    [*port_ids, *signal_harness_ids, connector_id]
+                )
+                endpoint_map[port_name.lower()].append(
+                    {
+                        "name": port_name,
+                        "sheet_index": self._source_sheet_index(compiled_idx),
+                        "compiled_sheet_index": compiled_idx,
+                        "port_ids": self._unique_nonempty(port_ids),
+                        "signal_harness_ids": self._unique_nonempty(
+                            signal_harness_ids
+                        ),
+                        "harness_connector_ids": self._unique_nonempty(
+                            [connector_id]
+                        ),
+                        "object_ids": object_ids,
+                        "member_names": [
+                            entry.name
+                            for entry in getattr(connector, "entries", [])
+                            if getattr(entry, "name", "")
+                        ],
+                    }
+                )
+        return endpoint_map
+
+    def _build_harness_bundle_link_json(self) -> list[dict]:
+        endpoints_by_name = self._build_harness_bundle_endpoint_map()
+        links: list[dict] = []
+
+        def append_link(
+            *,
+            name: str,
+            topology: str,
+            parent_endpoint: dict,
+            child_endpoint: dict,
+            parent: dict | None = None,
+        ) -> None:
+            parent_ids = self._unique_nonempty(
+                parent.get("object_ids", []) if parent else parent_endpoint["port_ids"]
+            )
+            child_ids = self._unique_nonempty(child_endpoint["port_ids"])
+            bundle_object_ids = self._unique_nonempty(
+                [
+                    *parent_ids,
+                    *child_ids,
+                    *(
+                        parent_endpoint.get("object_ids", [])
+                        if parent_endpoint
+                        else []
+                    ),
+                    *child_endpoint.get("object_ids", []),
+                ]
+            )
+            links.append(
+                {
+                    "id": f"harness-bundle-link-{len(links) + 1:04d}",
+                    "kind": "harness_bundle",
+                    "topology": topology,
+                    "name": name,
+                    "parent": parent
+                    or {
+                        "sheet_index": parent_endpoint["sheet_index"],
+                        "compiled_sheet_index": parent_endpoint[
+                            "compiled_sheet_index"
+                        ],
+                        "object_kind": "harness_port",
+                        "object_ids": parent_ids,
+                        "name": parent_endpoint["name"],
+                    },
+                    "child": {
+                        "sheet_index": child_endpoint["sheet_index"],
+                        "compiled_sheet_index": child_endpoint[
+                            "compiled_sheet_index"
+                        ],
+                        "object_kind": "harness_port",
+                        "object_ids": child_ids,
+                        "name": child_endpoint["name"],
+                    },
+                    "bundle": {
+                        "object_ids": bundle_object_ids,
+                        "parent_object_ids": parent_endpoint.get("object_ids", []),
+                        "child_object_ids": child_endpoint.get("object_ids", []),
+                        "member_names": self._unique_nonempty(
+                            [
+                                *parent_endpoint.get("member_names", []),
+                                *child_endpoint.get("member_names", []),
+                            ]
+                        ),
+                        "signal_harness_ids": self._unique_nonempty(
+                            [
+                                *parent_endpoint.get("signal_harness_ids", []),
+                                *child_endpoint.get("signal_harness_ids", []),
+                            ]
+                        ),
+                        "harness_connector_ids": self._unique_nonempty(
+                            [
+                                *parent_endpoint.get("harness_connector_ids", []),
+                                *child_endpoint.get("harness_connector_ids", []),
+                            ]
+                        ),
+                    },
+                    "match_kind": "harness_bundle",
+                    "metadata": {},
+                }
+            )
+
+        hierarchical_keys = set()
+        for link in self._hierarchy_links:
+            parent_entry_name = (link.parent_entry_name or "").strip()
+            if not parent_entry_name:
+                continue
+            child_endpoint = next(
+                (
+                    endpoint
+                    for endpoint in endpoints_by_name.get(parent_entry_name.lower(), [])
+                    if endpoint["compiled_sheet_index"] == link.child_sheet_idx
+                ),
+                None,
+            )
+            if not child_endpoint:
+                continue
+            parent_graphical_id = self._sheet_entry_graphical_id(
+                link.sheet_sym_uid,
+                parent_entry_name,
+            )
+            parent_endpoint = {
+                "name": parent_entry_name,
+                "sheet_index": self._source_sheet_index(link.parent_sheet_idx),
+                "compiled_sheet_index": link.parent_sheet_idx,
+                "port_ids": [parent_graphical_id],
+                "object_ids": [parent_graphical_id],
+                "signal_harness_ids": [],
+                "harness_connector_ids": [],
+            }
+            key = (
+                link.parent_sheet_idx,
+                link.child_sheet_idx,
+                link.sheet_sym_uid,
+                parent_entry_name.lower(),
+            )
+            if key in hierarchical_keys:
+                continue
+            hierarchical_keys.add(key)
+            append_link(
+                name=parent_entry_name,
+                topology="hierarchical",
+                parent_endpoint=parent_endpoint,
+                child_endpoint=child_endpoint,
+                parent={
+                    "sheet_index": self._source_sheet_index(link.parent_sheet_idx),
+                    "compiled_sheet_index": link.parent_sheet_idx,
+                    "object_kind": "sheet_entry",
+                    "object_id": parent_graphical_id,
+                    "graphical_id": parent_graphical_id,
+                    "object_ids": [parent_graphical_id],
+                    "sheet_symbol_id": link.sheet_sym_uid,
+                    "name": parent_entry_name,
+                },
+            )
+
+        from .altium_prjpcb import NetIdentifierScope
+
+        if self._effective_scope in (
+            NetIdentifierScope.FLAT,
+            NetIdentifierScope.GLOBAL,
+        ):
+            for endpoint_name in sorted(endpoints_by_name):
+                endpoints = sorted(
+                    endpoints_by_name[endpoint_name],
+                    key=lambda endpoint: (
+                        endpoint["compiled_sheet_index"],
+                        endpoint["name"],
+                    ),
+                )
+                for idx in range(len(endpoints) - 1):
+                    append_link(
+                        name=endpoints[idx]["name"],
+                        topology="flat",
+                        parent_endpoint=endpoints[idx],
+                        child_endpoint=endpoints[idx + 1],
+                    )
+
+        return links
+
+    def _channel_for_compiled_child(self, compiled_child_idx: int) -> "ChannelInstance | None":
+        for channel in self._channel_instances:
+            if (
+                self._channel_netlist_map.get((channel.child_idx, channel.instance_index))
+                == compiled_child_idx
+            ):
+                return channel
+        return None
+
+    @staticmethod
+    def _sheet_entry_graphical_id(sheet_symbol_uid: str, entry_name: str) -> str:
+        if not sheet_symbol_uid:
+            return entry_name
+        return f"{sheet_symbol_uid}_{entry_name}"
+
+    @staticmethod
+    def _unique_nonempty(values: list[str] | tuple[str, ...]) -> list[str]:
+        ids = []
+        seen = set()
+        for value in values:
+            clean = str(value or "").strip()
+            if clean and clean not in seen:
+                seen.add(clean)
+                ids.append(clean)
+        return ids
+
+    @staticmethod
+    def _parse_sheet_symbol_repeat(designator: str) -> dict:
+        repeat = {
+            "is_repeated": False,
+            "syntax": "",
+            "base_designator": "",
+            "values": [],
+        }
+        match = re.match(
+            r"^REPEAT\s*\(\s*([^,]+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$",
+            (designator or "").strip(),
+            re.IGNORECASE,
+        )
+        if not match:
+            return repeat
+        start_idx = int(match.group(2))
+        end_idx = int(match.group(3))
+        return {
+            "is_repeated": True,
+            "syntax": designator,
+            "base_designator": match.group(1).strip(),
+            "values": list(range(start_idx, end_idx + 1)),
+        }
 
     def _process_hierarchy_links(
         self,
@@ -1349,6 +1908,7 @@ class AltiumNetlistMultiSheetCompiler:
                             sheet_nets,
                             self._sheet_paths,
                         ),
+                        endpoints=self._collect_sheet_net_endpoints(sheet_nets),
                     )
                 )
             else:
@@ -1400,6 +1960,12 @@ class AltiumNetlistMultiSheetCompiler:
                 all_names = {
                     net.name for _, net in sheet_nets if not net.auto_named and net.name
                 }
+                if harness_keys is not None and port_name in harness_keys:
+                    all_names.add(port_name)
+                    if "." in port_name:
+                        member_name = port_name.rsplit(".", 1)[-1].strip()
+                        if member_name:
+                            all_names.add(member_name)
                 aliases = sorted(name for name in all_names if name != final_name)
 
                 merged_nets.append(
@@ -1420,6 +1986,7 @@ class AltiumNetlistMultiSheetCompiler:
                             sheet_nets,
                             self._sheet_paths,
                         ),
+                        endpoints=self._collect_sheet_net_endpoints(sheet_nets),
                     )
                 )
             elif ports_are_global and len(sheet_nets) == 1:
@@ -1434,6 +2001,7 @@ class AltiumNetlistMultiSheetCompiler:
                             graphical=net.graphical,
                             auto_named=False,
                             source_sheets=list(net.source_sheets),
+                            endpoints=list(net.endpoints),
                         )
                     )
                 else:
@@ -1559,6 +2127,7 @@ class AltiumNetlistMultiSheetCompiler:
                                 group,
                                 self._sheet_paths,
                             ),
+                            endpoints=self._collect_sheet_net_endpoints(group),
                         )
                     )
                 else:
@@ -1609,6 +2178,7 @@ class AltiumNetlistMultiSheetCompiler:
                             {sheet for net in group for sheet in net.source_sheets}
                         ),
                         aliases=aliases,
+                        endpoints=self._collect_net_endpoints(group),
                     )
                 )
             else:
@@ -1645,6 +2215,7 @@ class AltiumNetlistMultiSheetCompiler:
                     source_sheets=list(net.source_sheets),
                     aliases=net.aliases,
                     hierarchy_paths=paths,
+                    endpoints=self._dedupe_endpoints(list(net.endpoints)),
                 )
             )
 
@@ -1759,12 +2330,34 @@ class AltiumNetlistMultiSheetCompiler:
         """
         Find the port connected to a harness connector.
         """
+        info = AltiumNetlistMultiSheetCompiler._find_harness_bundle_info(
+            connector,
+            signal_harnesses,
+            port_location_map,
+        )
+        return info.get("port_name") or None
+
+    @staticmethod
+    def _find_harness_bundle_info(
+        connector: object,
+        signal_harnesses: list[object] | None,
+        port_location_map: dict[tuple[int, int], str],
+    ) -> dict[str, object]:
+        """
+        Find the harness port and signal-harness object IDs for a connector.
+        """
+        result: dict[str, object] = {
+            "port_name": "",
+            "signal_harness_ids": [],
+        }
         if not signal_harnesses:
-            return None
+            return result
 
         harness_y = connector.location.y - connector.primary_connection_position
         harness_x_left = connector.location.x
         harness_x_right = connector.location.x + connector.xsize
+        signal_harness_ids = []
+        seen_signal_harness_ids = set()
 
         for signal_harness in signal_harnesses:
             if not signal_harness.points or len(signal_harness.points) < 2:
@@ -1780,12 +2373,22 @@ class AltiumNetlistMultiSheetCompiler:
             if not touches_connector:
                 continue
 
+            signal_harness_id = str(
+                getattr(signal_harness, "unique_id", "") or ""
+            ).strip()
+            if signal_harness_id and signal_harness_id not in seen_signal_harness_ids:
+                seen_signal_harness_ids.add(signal_harness_id)
+                signal_harness_ids.append(signal_harness_id)
+
             for point in signal_harness.points:
                 port_name = port_location_map.get((point.x, point.y))
                 if port_name:
-                    return port_name
+                    result["port_name"] = port_name
+                    result["signal_harness_ids"] = signal_harness_ids
+                    return result
 
-        return None
+        result["signal_harness_ids"] = signal_harness_ids
+        return result
 
     @staticmethod
     def _auto_name_from_terminals(terminals: list["Terminal"]) -> str:

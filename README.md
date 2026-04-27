@@ -177,7 +177,7 @@ Known release boundaries include:
 4. Variant processing is limited to DNP handling.
 5. Complex hierarchical channels and `.Annotation` file handling may need
    additional validation.
-6. Linux and macOS coverage is still minimal.
+6. Linux and macOS coverage is minimal for the first release.
 
 See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the full current support boundary.
 

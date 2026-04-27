@@ -43,12 +43,12 @@ examples/prjpcb_make_project/assets/logo.png
 The script writes a self-contained project folder:
 
 ```text
-examples/prjpcb_make_project/output/ultra-monkey/ultra-monkey.PrjPcb
-examples/prjpcb_make_project/output/ultra-monkey/ultra-monkey.SchDoc
-examples/prjpcb_make_project/output/ultra-monkey/ultra-monkey.PcbDoc
-examples/prjpcb_make_project/output/ultra-monkey/ultra-monkey.OutJob
-examples/prjpcb_make_project/output/ultra-monkey/outputs/
-examples/prjpcb_make_project/output/ultra-monkey/project_manifest.json
+examples/prjpcb_make_project/output/ULTRA-MONKEY/ULTRA-MONKEY.PrjPcb
+examples/prjpcb_make_project/output/ULTRA-MONKEY/ULTRA-MONKEY.SchDoc
+examples/prjpcb_make_project/output/ULTRA-MONKEY/ULTRA-MONKEY.PcbDoc
+examples/prjpcb_make_project/output/ULTRA-MONKEY/ULTRA-MONKEY.OutJob
+examples/prjpcb_make_project/output/ULTRA-MONKEY/outputs/
+examples/prjpcb_make_project/output/ULTRA-MONKEY/project_manifest.json
 ```
 
 Open the generated `.PrjPcb` in Altium to inspect the project documents and run

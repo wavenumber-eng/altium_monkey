@@ -702,6 +702,7 @@ class AltiumSchPowerPort(SingleFontBindableRecordMixin, SchGraphicalObject):
             document_id=document_id,
             object_id=object_id,
             sheet_height_px=sheet_height_px,
+            connection_point=geo_point(x, y),
             min_x=min_x,
             min_y=min_y,
             max_x=max_x,
@@ -846,6 +847,7 @@ class AltiumSchPowerPort(SingleFontBindableRecordMixin, SchGraphicalObject):
             document_id=document_id,
             object_id="ePowerObject",
             sheet_height_px=sheet_height_px,
+            connection_point=geo_point(x, y),
             min_x=min_x_ref(),
             min_y=min_y_ref(),
             max_x=max_x_ref(),
@@ -1553,6 +1555,7 @@ class AltiumSchPowerPort(SingleFontBindableRecordMixin, SchGraphicalObject):
         document_id: str,
         object_id: str,
         sheet_height_px: float,
+        connection_point: tuple[float, float],
         min_x: float,
         min_y: float,
         max_x: float,
@@ -1579,4 +1582,15 @@ class AltiumSchPowerPort(SingleFontBindableRecordMixin, SchGraphicalObject):
                 operations,
                 units_per_px=units_per_px,
             ),
+            extras={
+                "connection_points": [
+                    {
+                        "id": "power-port-hotspot",
+                        "kind": "connection",
+                        "role": "ratsnest-anchor",
+                        "point": [connection_point[0], connection_point[1]],
+                        "source_kind": "power_port_hotspot",
+                    }
+                ]
+            },
         )

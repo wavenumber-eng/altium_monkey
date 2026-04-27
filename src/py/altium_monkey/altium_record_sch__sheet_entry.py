@@ -63,6 +63,8 @@ class _SheetEntryGeometryLayout:
     shadow_points: list[tuple[float, float]]
     text_x: float
     text_y: float
+    connection_x: float | None = None
+    connection_y: float | None = None
     harness_fill: str | None = None
     harness_stroke: str | None = None
     shadow_fill: str | None = None
@@ -1285,6 +1287,8 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
                 shadow_points=[],
                 text_x=text_x,
                 text_y=text_y,
+                connection_x=location_x,
+                connection_y=location_y,
             )
 
         palette = self._harness_palette(harness_color)
@@ -1293,6 +1297,8 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
             shadow_points=[(x + 0.5, y + 1.0) for x, y in points],
             text_x=text_x,
             text_y=text_y,
+            connection_x=location_x,
+            connection_y=location_y,
             harness_fill=palette[0],
             harness_stroke=palette[1],
             shadow_fill=palette[2],
@@ -1415,6 +1421,12 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
             )
 
         sheet_height = float(ctx.sheet_height or 0.0)
+        connection_point = svg_coord_to_geometry(
+            layout.connection_x if layout.connection_x is not None else points[0][0],
+            layout.connection_y if layout.connection_y is not None else points[0][1],
+            sheet_height_px=sheet_height,
+            units_per_px=units_per_px,
+        )
         return SchGeometryRecord(
             handle=f"{document_id}\\{self.unique_id}",
             unique_id=self.unique_id,
@@ -1431,6 +1443,17 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
                 operations,
                 units_per_px=units_per_px,
             ),
+            extras={
+                "connection_points": [
+                    {
+                        "id": "sheet-entry-hotspot",
+                        "kind": "connection",
+                        "role": "ratsnest-anchor",
+                        "point": [connection_point[0], connection_point[1]],
+                        "source_kind": "sheet_entry_hotspot",
+                    }
+                ]
+            },
         )
 
     def _sheet_entry_fill_colors(self) -> tuple[int, int]:

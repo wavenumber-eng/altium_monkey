@@ -238,6 +238,11 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
             rotation_deg=rotation_deg,
             units_per_px=units_per_px,
         )
+        connection_point = svg_coord_to_geometry(
+            *ctx.transform_coord_precise(self.location),
+            sheet_height_px=float(ctx.sheet_height or 0.0),
+            units_per_px=units_per_px,
+        )
 
         junction_ops, junction_bounds = self._build_junction_overlay(
             ctx,
@@ -273,6 +278,17 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
                 operations,
                 units_per_px=units_per_px,
             ),
+            extras={
+                "connection_points": [
+                    {
+                        "id": "net-label-hotspot",
+                        "kind": "connection",
+                        "role": "ratsnest-anchor",
+                        "point": [connection_point[0], connection_point[1]],
+                        "source_kind": "net_label_hotspot",
+                    }
+                ]
+            },
         )
 
     def _compute_text_layout(

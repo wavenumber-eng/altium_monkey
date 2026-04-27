@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .altium_api_markers import public_api
+from .altium_netlist_common import _evaluate_altium_expression
 
 if TYPE_CHECKING:
     from .altium_netlist_options import NetlistOptions
@@ -28,8 +29,90 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-DESIGN_JSON_SCHEMA = "altium_monkey.design.a0"
+DESIGN_JSON_SCHEMA = "altium_monkey.design.a1"
 DESIGN_JSON_GENERATOR = "altium_monkey"
+SCHEMATIC_HIERARCHY_SCHEMA = "altium_monkey.schematic_hierarchy.a1"
+
+
+def _coerce_variant_parameter_overrides(
+    variant_data: dict[str, object],
+) -> dict[str, dict[str, str]]:
+    """
+    Return variant parameter overrides grouped by source designator.
+    """
+    overrides: dict[str, dict[str, str]] = {}
+    raw_overrides = variant_data.get("parameter_overrides")
+    if isinstance(raw_overrides, dict):
+        for designator, parameters in raw_overrides.items():
+            designator_s = str(designator or "").strip()
+            if not designator_s or not isinstance(parameters, dict):
+                continue
+            coerced_params = {
+                str(name): str(value)
+                for name, value in parameters.items()
+                if str(name or "").strip()
+            }
+            if coerced_params:
+                overrides[designator_s] = coerced_params
+
+    for row in variant_data.get("param_variations", []) or []:
+        if not isinstance(row, dict):
+            continue
+        designator = str(
+            row.get("ParamDesignator") or row.get("Designator") or ""
+        ).strip()
+        parameter_name = str(row.get("ParameterName") or "").strip()
+        if not designator or not parameter_name:
+            continue
+        overrides.setdefault(designator, {})[parameter_name] = str(
+            row.get("VariantValue", "")
+        )
+
+    return overrides
+
+
+def _lookup_case_insensitive(values: dict[str, str], name: str) -> str | None:
+    name_lower = name.lower()
+    for key, value in values.items():
+        if key.lower() == name_lower:
+            return value
+    return None
+
+
+def _resolve_component_value_from_parameters(
+    *,
+    base_value: str,
+    parameters: dict[str, str],
+    project_parameters: dict[str, str] | None = None,
+) -> str:
+    """
+    Resolve a component display value from an effective parameter dictionary.
+    """
+    comment = _lookup_case_insensitive(parameters, "Comment")
+    if not comment:
+        return base_value
+    if not comment.startswith("="):
+        return comment
+
+    expr = comment[1:]
+    if "+" not in expr and "'" not in expr:
+        if expr.lower() == "value":
+            return _lookup_case_insensitive(parameters, "Value") or base_value
+        resolved = _lookup_case_insensitive(parameters, expr)
+        if resolved is not None:
+            return resolved
+        if project_parameters:
+            resolved = _lookup_case_insensitive(project_parameters, expr)
+            if resolved is not None:
+                return resolved
+        return base_value
+
+    expression_parameters: dict[str, str] = {}
+    if project_parameters:
+        expression_parameters.update(project_parameters)
+    expression_parameters.update(parameters)
+    expression_parameters.setdefault("Value", base_value)
+    return _evaluate_altium_expression(expr, expression_parameters)
 
 
 @public_api
@@ -235,6 +318,7 @@ class AltiumDesign:
             "options": options_data,
             "sheets": sheets_data,
             "components": components_data,
+            "schematic_hierarchy": self._build_schematic_hierarchy_data(netlist),
         }
 
         pnp_data = self._build_pnp_data()
@@ -247,6 +331,62 @@ class AltiumDesign:
             result["indexes"] = self._build_indexes(netlist, components_data)
 
         return result
+
+    def _build_schematic_hierarchy_data(self, netlist: Netlist) -> dict:
+        """
+        Build schematic hierarchy JSON for the design payload.
+        """
+        hierarchy = getattr(netlist, "schematic_hierarchy", None)
+        if isinstance(hierarchy, dict) and hierarchy:
+            return hierarchy
+
+        from .altium_netlist_options import NetlistOptions
+
+        options = self._options or NetlistOptions()
+        effective_scope = self._resolve_design_effective_scope(options)
+        return {
+            "schema": SCHEMATIC_HIERARCHY_SCHEMA,
+            "requested_scope": options.net_identifier_scope.name,
+            "effective_scope": effective_scope,
+            "documents": [
+                {
+                    "sheet_index": idx,
+                    "filename": schdoc.filepath.name
+                    if schdoc.filepath
+                    else f"sheet{idx}",
+                    "path": str(schdoc.filepath) if schdoc.filepath else "",
+                    "is_top_level": True,
+                    "metadata": {},
+                }
+                for idx, schdoc in enumerate(self.schdocs)
+            ],
+            "sheet_symbols": [],
+            "hierarchy_paths": [],
+            "channels": [],
+            "links": [],
+            "unresolved": [],
+        }
+
+    def _resolve_design_effective_scope(self, options: "NetlistOptions") -> str:
+        """
+        Resolve automatic scope for hierarchy metadata fallback payloads.
+        """
+        from .altium_prjpcb import NetIdentifierScope
+
+        scope = options.net_identifier_scope
+        if scope != NetIdentifierScope.AUTOMATIC:
+            return scope.name
+
+        has_sheet_entries = any(
+            sheet_symbol.entries
+            for schdoc in self.schdocs
+            for sheet_symbol in schdoc.get_sheet_symbols()
+        )
+        if has_sheet_entries:
+            return NetIdentifierScope.HIERARCHICAL.name
+        if any(schdoc.get_ports() for schdoc in self.schdocs):
+            return NetIdentifierScope.FLAT.name
+        return NetIdentifierScope.GLOBAL.name
 
     def _build_pnp_data(self) -> dict | None:
         """
@@ -356,7 +496,15 @@ class AltiumDesign:
                     if designator:
                         dnp_designators.append(designator)
 
-            variants_list.append({"name": variant_name, "dnp": dnp_designators})
+            variant_entry = {"name": variant_name, "dnp": dnp_designators}
+            for key in ("variations", "parameters", "param_variations"):
+                values = variant_data.get(key, [])
+                if values:
+                    variant_entry[key] = values
+            parameter_overrides = _coerce_variant_parameter_overrides(variant_data)
+            if parameter_overrides:
+                variant_entry["parameter_overrides"] = parameter_overrides
+            variants_list.append(variant_entry)
 
         return variants_list
 
@@ -580,6 +728,7 @@ class AltiumDesign:
 
         # Get DNP list for this variant (if specified)
         dnp_set: set[str] = set()
+        parameter_overrides: dict[str, dict[str, str]] = {}
         if variant and self.project:
             variant_data = self.project.variants.get(variant, {})
             for variation in variant_data.get("variations", []):
@@ -588,6 +737,7 @@ class AltiumDesign:
                     designator = variation.get("Designator", "")
                     if designator:
                         dnp_set.add(designator)
+            parameter_overrides = self.get_variant_parameter_overrides(variant)
 
         result = []
         for comp in netlist.components:
@@ -595,16 +745,30 @@ class AltiumDesign:
             if comp.exclude_from_bom:
                 continue
 
+            parameters = dict(comp.parameters)
+            component_overrides = parameter_overrides.get(comp.designator, {})
+            if component_overrides:
+                parameters.update(component_overrides)
+
+            value = _resolve_component_value_from_parameters(
+                base_value=comp.value,
+                parameters=parameters,
+                project_parameters=self.project.parameters if self.project else None,
+            )
+            description = (
+                _lookup_case_insensitive(parameters, "Description") or comp.description
+            )
+
             # Use parameters from the compiled netlist component rather than
             # reaching back into the source SchDoc.
             component_data = {
                 "designator": comp.designator,
-                "value": comp.value,
+                "value": value,
                 "footprint": comp.footprint,
                 "library_ref": comp.library_ref,
-                "description": comp.description,
+                "description": description,
                 "sheet": comp_data_map.get(comp.designator, {}).get("sheet", ""),
-                "parameters": comp.parameters,
+                "parameters": parameters,
                 "dnp": comp.designator in dnp_set,
             }
             result.append(component_data)
@@ -621,6 +785,30 @@ class AltiumDesign:
         if not self.project:
             return []
         return list(self.project.variants.keys())
+
+    def get_variant_parameter_overrides(
+        self, variant: str | None = None
+    ) -> dict[str, dict[str, str]]:
+        """
+        Get active variant parameter overrides grouped by source designator.
+
+        Args:
+            variant: Variant name to resolve. If omitted, use the project's
+                current variant.
+
+        Returns:
+            Mapping of designator -> parameter name -> variant value. Empty
+            when there is no project, no active variant, or no overrides.
+        """
+        if not self.project:
+            return {}
+        variant_name = variant or self.project.get_current_variant()
+        if not variant_name:
+            return {}
+        variant_data = self.project.variants.get(variant_name)
+        if not variant_data:
+            return {}
+        return _coerce_variant_parameter_overrides(variant_data)
 
     def get_pcb_project_parameters(self) -> dict[str, str]:
         """

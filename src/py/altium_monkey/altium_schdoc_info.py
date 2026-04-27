@@ -29,6 +29,7 @@ from .altium_record_sch__cross_sheet_connector import AltiumSchCrossSheetConnect
 from .altium_record_sch__power_port import AltiumSchPowerPort
 from .altium_record_sch__sheet_entry import AltiumSchSheetEntry
 from .altium_record_sch__sheet_symbol import AltiumSchSheetSymbol
+from .altium_record_types import SchRectMils
 from .altium_sch_enums import OffSheetConnectorStyle, PinElectrical
 
 
@@ -189,6 +190,44 @@ class SchComponentInfo(_RecordLocationInfoMixin):
             if param.name == name:
                 return param.text
         return None
+
+    def display_body_bounds_mils(self) -> SchRectMils | None:
+        """
+        Component body graphics bounds in schematic mils, excluding pins/text.
+        """
+        return self.record.display_body_bounds_mils()
+
+    def display_body_element_ids(self) -> list[str]:
+        """
+        Unique IDs for component body graphics, excluding pins/text.
+        """
+        return self.record.display_body_element_ids()
+
+    def non_accessible_children_bounds_mils(self) -> SchRectMils | None:
+        """
+        Bounds used by Altium-style DNP/non-accessible child graphics.
+        """
+        return self.record.non_accessible_children_bounds_mils()
+
+    def non_accessible_children_element_ids(self) -> list[str]:
+        """
+        Unique IDs used by Altium-style DNP/non-accessible child graphics.
+        """
+        return self.record.non_accessible_children_element_ids()
+
+    def full_bounds_mils(
+        self,
+        *,
+        include_pins: bool = True,
+        include_parameters: bool = True,
+    ) -> SchRectMils | None:
+        """
+        Component bounds in schematic mils with optional pin/text inclusion.
+        """
+        return self.record.full_bounds_mils(
+            include_pins=include_pins,
+            include_parameters=include_parameters,
+        )
 
 
 @public_api

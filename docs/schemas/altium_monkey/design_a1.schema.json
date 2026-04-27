@@ -1,0 +1,423 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:design_a1",
+  "title": "Altium Monkey design a1",
+  "description": "Full Altium design analysis emitted by AltiumDesign.to_json().",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generator",
+    "project",
+    "variants",
+    "options",
+    "sheets",
+    "components",
+    "schematic_hierarchy",
+    "nets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "altium_monkey.design.a1"
+    },
+    "generator": {
+      "const": "altium_monkey"
+    },
+    "project": {
+      "$ref": "design_a0.schema.json#/$defs/project"
+    },
+    "variants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variant"
+      }
+    },
+    "options": {
+      "$ref": "design_a0.schema.json#/$defs/options"
+    },
+    "sheets": {
+      "type": "array",
+      "items": {
+        "$ref": "design_a0.schema.json#/$defs/sheet"
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "design_a0.schema.json#/$defs/component"
+      }
+    },
+    "schematic_hierarchy": {
+      "$ref": "#/$defs/schematic_hierarchy"
+    },
+    "pnp": {
+      "$ref": "design_a0.schema.json#/$defs/pnp"
+    },
+    "nets": {
+      "type": "array",
+      "items": {
+        "$ref": "netlist_a0.schema.json#/$defs/net"
+      }
+    },
+    "indexes": {
+      "$ref": "design_a0.schema.json#/$defs/indexes"
+    }
+  },
+  "$defs": {
+    "string_list": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "parameter_map": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "variant_key_values": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "dnp"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "dnp": {
+          "$ref": "#/$defs/string_list"
+        },
+        "variations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variant_key_values"
+          }
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variant_key_values"
+          }
+        },
+        "param_variations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variant_key_values"
+          }
+        },
+        "parameter_overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/parameter_map"
+          }
+        }
+      }
+    },
+    "schematic_hierarchy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "requested_scope",
+        "effective_scope",
+        "documents",
+        "sheet_symbols",
+        "hierarchy_paths",
+        "channels",
+        "links",
+        "unresolved"
+      ],
+      "properties": {
+        "schema": {
+          "const": "altium_monkey.schematic_hierarchy.a1"
+        },
+        "requested_scope": {
+          "type": "string"
+        },
+        "effective_scope": {
+          "type": "string"
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_document"
+          }
+        },
+        "sheet_symbols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_sheet_symbol"
+          }
+        },
+        "hierarchy_paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_path_record"
+          }
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_channel"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_link"
+          }
+        },
+        "harness_bundle_links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/harness_bundle_link"
+          }
+        },
+        "unresolved": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/freeform_object"
+          }
+        }
+      }
+    },
+    "hierarchy_document": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sheet_index",
+        "filename",
+        "path",
+        "is_top_level",
+        "metadata"
+      ],
+      "properties": {
+        "sheet_index": {
+          "type": "integer"
+        },
+        "filename": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "is_top_level": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "hierarchy_sheet_symbol": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "parent_sheet_index",
+        "designator",
+        "child_filename",
+        "child_sheet_indices",
+        "entries",
+        "metadata"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parent_sheet_index": {
+          "type": "integer"
+        },
+        "designator": {
+          "type": "string"
+        },
+        "child_filename": {
+          "type": "string"
+        },
+        "child_sheet_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "repeat": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/freeform_object"
+          }
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "hierarchy_path_record": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "source_sheet_index",
+        "compiled_sheet_index",
+        "levels"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "source_sheet_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "compiled_sheet_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "$ref": "netlist_a0.schema.json#/$defs/hierarchy_level"
+          }
+        }
+      }
+    },
+    "hierarchy_channel": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "sheet_symbol_id",
+        "parent_sheet_index",
+        "child_sheet_index",
+        "instance_index",
+        "hierarchy_path_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sheet_symbol_id": {
+          "type": "string"
+        },
+        "parent_sheet_index": {
+          "type": "integer"
+        },
+        "child_sheet_index": {
+          "type": "integer"
+        },
+        "compiled_child_sheet_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "instance_index": {
+          "type": "integer"
+        },
+        "channel_name": {
+          "type": "string"
+        },
+        "hierarchy_path_id": {
+          "type": "string"
+        }
+      }
+    },
+    "hierarchy_link": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind",
+        "parent",
+        "child",
+        "match_kind",
+        "hierarchy_path_id",
+        "metadata"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "parent": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "child": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "match_kind": {
+          "type": "string"
+        },
+        "hierarchy_path_id": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "harness_bundle_link": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind",
+        "topology",
+        "name",
+        "parent",
+        "child",
+        "bundle",
+        "match_kind",
+        "metadata"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "harness_bundle"
+        },
+        "topology": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "child": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "bundle": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "match_kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "freeform_object": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

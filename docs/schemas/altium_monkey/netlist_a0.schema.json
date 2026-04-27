@@ -111,6 +111,12 @@
         "aliases": {
           "$ref": "#/$defs/string_list"
         },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/endpoint"
+          }
+        },
         "hierarchy_paths": {
           "type": "array",
           "items": {
@@ -140,6 +146,79 @@
         },
         "pin_type": {
           "type": "string"
+        }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint_id",
+        "role",
+        "element_id",
+        "object_id",
+        "name",
+        "source_sheet"
+      ],
+      "properties": {
+        "endpoint_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "element_id": {
+          "type": "string"
+        },
+        "object_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source_sheet": {
+          "type": "string"
+        },
+        "designator": {
+          "type": "string"
+        },
+        "pin": {
+          "type": "string"
+        },
+        "pin_name": {
+          "type": "string"
+        },
+        "pin_type": {
+          "type": "string"
+        },
+        "sheet_index": {
+          "type": "integer"
+        },
+        "compiled_sheet_index": {
+          "type": "integer"
+        },
+        "connection_point": {
+          "$ref": "#/$defs/connection_point"
+        }
+      }
+    },
+    "connection_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "units"
+      ],
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "units": {
+          "const": "altium_coord"
         }
       }
     },

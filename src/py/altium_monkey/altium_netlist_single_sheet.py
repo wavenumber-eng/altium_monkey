@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Callable, Protocol, TypeAlias
 
 from .altium_netlist_options import NetlistOptions
 from .altium_netlist_common import (
@@ -17,7 +17,6 @@ from .altium_netlist_common import (
     _emit_bridge_roots,
     _emit_named_roots,
     _emit_port_named_nets,
-    _normalize_text,
     _pin_electrical_to_pintype,
     _points_connected,
     _resolve_component_display_value,
@@ -25,10 +24,10 @@ from .altium_netlist_common import (
 from .altium_netlist_model import (
     GraphicalPinRef,
     Net,
+    NetEndpoint,
     NetGraphical,
     Netlist,
     NetlistComponent,
-    PinType,
     Terminal,
     UnionFind,
 )
@@ -122,6 +121,7 @@ class AltiumNetlistSingleSheetCompiler:
             SchPowerPortInfo | SchCrossSheetConnectorInfo,
         ] = {}
         self._port_objects: dict[tuple[int, int], SchPortInfo] = {}
+        self._sheet_entry_objects: dict[tuple[int, int], object] = {}
 
         # Order tracking
         self._net_label_names_ordered: list[str] = []
@@ -197,6 +197,9 @@ class AltiumNetlistSingleSheetCompiler:
         sheet_name = self.schdoc.filepath.name if self.schdoc.filepath else ""
         for net in nets:
             net.source_sheets = [sheet_name] if sheet_name else []
+            for endpoint in net.endpoints:
+                if sheet_name and not endpoint.source_sheet:
+                    endpoint.source_sheet = sheet_name
 
         log.debug(f"Generated {len(nets)} nets")
 
@@ -408,6 +411,7 @@ class AltiumNetlistSingleSheetCompiler:
                     continue
 
                 self._sheet_entries[hotspot] = (entry_name, sheet_sym_info)
+                self._sheet_entry_objects[hotspot] = entry
                 log.debug(
                     f"Sheet entry '{entry_name}' at hotspot {hotspot} "
                     f"(side={side}, dist={entry.distance_from_top})"
@@ -434,8 +438,6 @@ class AltiumNetlistSingleSheetCompiler:
             )
             if not value and comp.comment:
                 value = comp.comment
-            if self.strict:
-                value = _normalize_text(value)
 
             # Capture all component parameters so downstream consumers do not
             # need to reach back into the source SchDoc.
@@ -994,6 +996,8 @@ class AltiumNetlistSingleSheetCompiler:
                 unique IDs for SVG element references.
         """
         terminals = []
+        endpoints: list[NetEndpoint] = []
+        endpoint_seen: set[str] = set()
         seen_pins: set[tuple[str, str]] = set()
 
         graphical = NetGraphical(
@@ -1039,6 +1043,46 @@ class AltiumNetlistSingleSheetCompiler:
                 graphical.pins.append(
                     GraphicalPinRef(designator=comp_des, pin=pin_des, svg_id=pin_svg_id)
                 )
+            self._append_net_endpoint(
+                endpoints,
+                endpoint_seen,
+                NetEndpoint(
+                    endpoint_id=f"pin:{comp_des}:{pin_des}",
+                    role="pin",
+                    element_id=pin_svg_id,
+                    object_id=pin_svg_id,
+                    name=pin_name,
+                    designator=comp_des,
+                    pin=pin_des,
+                    pin_name=pin_name,
+                    pin_type=pin_type,
+                    connection_point=pin.connection_point,
+                ),
+            )
+
+        self._append_endpoint_ids(
+            endpoints,
+            endpoint_seen,
+            role="power_port",
+            ids=final_pp_ids.get(root, []),
+            name_for_id=self._power_like_name_for_id,
+            role_for_id=self._power_like_role_for_id,
+        )
+        self._append_endpoint_ids(
+            endpoints,
+            endpoint_seen,
+            role="port",
+            ids=final_port_ids.get(root, []),
+            name_for_id=self._port_name_for_id,
+        )
+        self._append_endpoint_ids(
+            endpoints,
+            endpoint_seen,
+            role="sheet_entry",
+            ids=final_se_ids.get(root, []),
+            name_for_id=self._sheet_entry_name_for_id,
+            object_id_for_id=self._sheet_entry_object_id_for_id,
+        )
 
         all_label_names = final_label_names.get(root, [])
         aliases = sorted(set(n for n in all_label_names if n != name))
@@ -1049,7 +1093,89 @@ class AltiumNetlistSingleSheetCompiler:
             graphical=graphical,
             auto_named=is_auto_named,
             aliases=aliases,
+            endpoints=endpoints,
         )
+
+    @staticmethod
+    def _append_net_endpoint(
+        endpoints: list[NetEndpoint],
+        seen: set[str],
+        endpoint: NetEndpoint,
+    ) -> None:
+        key = endpoint.endpoint_id or (
+            f"{endpoint.role}:{endpoint.element_id}:{endpoint.designator}:{endpoint.pin}"
+        )
+        if not key or key in seen:
+            return
+        seen.add(key)
+        endpoints.append(endpoint)
+
+    def _append_endpoint_ids(
+        self,
+        endpoints: list[NetEndpoint],
+        seen: set[str],
+        *,
+        role: str,
+        ids: list[str],
+        name_for_id: Callable[[str], str],
+        role_for_id: Callable[[str], str] | None = None,
+        object_id_for_id: Callable[[str], str] | None = None,
+    ) -> None:
+        for element_id in ids:
+            clean_id = str(element_id or "").strip()
+            if not clean_id:
+                continue
+            endpoint_role = role_for_id(clean_id) if role_for_id else role
+            object_id = object_id_for_id(clean_id) if object_id_for_id else clean_id
+            self._append_net_endpoint(
+                endpoints,
+                seen,
+                NetEndpoint(
+                    endpoint_id=f"{endpoint_role}:{clean_id}",
+                    role=endpoint_role,
+                    element_id=clean_id,
+                    object_id=object_id,
+                    name=name_for_id(clean_id),
+                ),
+            )
+
+    def _power_like_name_for_id(self, element_id: str) -> str:
+        for obj in self._power_port_objects.values():
+            if getattr(obj, "unique_id", "") == element_id:
+                return str(getattr(obj, "text", "") or "")
+        return ""
+
+    def _power_like_role_for_id(self, element_id: str) -> str:
+        for obj in self._power_port_objects.values():
+            if getattr(obj, "unique_id", "") != element_id:
+                continue
+            if obj.__class__.__name__ == "SchCrossSheetConnectorInfo":
+                return "offsheet_connector"
+            return "power_port"
+        return "power_port"
+
+    def _port_name_for_id(self, element_id: str) -> str:
+        for obj in self._port_objects.values():
+            if getattr(obj, "unique_id", "") == element_id:
+                return str(getattr(obj, "name", "") or "")
+        return ""
+
+    def _sheet_entry_name_for_id(self, element_id: str) -> str:
+        for loc, (entry_name, sheet_sym_info) in self._sheet_entries.items():
+            if f"{sheet_sym_info.unique_id}_{entry_name}" == element_id:
+                return entry_name
+            entry = self._sheet_entry_objects.get(loc)
+            if getattr(entry, "unique_id", "") == element_id:
+                return entry_name
+        return ""
+
+    def _sheet_entry_object_id_for_id(self, element_id: str) -> str:
+        for loc, (entry_name, sheet_sym_info) in self._sheet_entries.items():
+            if f"{sheet_sym_info.unique_id}_{entry_name}" != element_id:
+                continue
+            entry = self._sheet_entry_objects.get(loc)
+            return str(getattr(entry, "unique_id", "") or element_id)
+        return element_id
 
     def _order_and_output_nets(
         self,

@@ -475,6 +475,17 @@ class AltiumSchHarnessEntry(SingleFontBindableRecordMixin, SchPrimitive):
                 operations,
                 units_per_px=units_per_px,
             ),
+            extras={
+                "connection_points": [
+                    {
+                        "id": "harness-entry-hotspot",
+                        "kind": "connection",
+                        "role": "ratsnest-anchor",
+                        "point": [dot_geometry_x, dot_geometry_y],
+                        "source_kind": "harness_entry_hotspot",
+                    }
+                ]
+            },
         )
 
     def __repr__(self) -> str:

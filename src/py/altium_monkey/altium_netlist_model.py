@@ -241,6 +241,98 @@ class GraphicalPinRef:
 
 
 @dataclass
+class NetEndpoint:
+    """
+    Source-owned semantic endpoint for schematic net tracing.
+
+    ``element_id`` names the current render target. ``object_id`` names the
+    source electrical object when it differs from the rendered element. The
+    optional connection point is in the local source schematic coordinate frame.
+    """
+
+    endpoint_id: str
+    role: str
+    element_id: str = ""
+    object_id: str = ""
+    name: str = ""
+    designator: str = ""
+    pin: str = ""
+    pin_name: str = ""
+    pin_type: PinType = PinType.PASSIVE
+    source_sheet: str = ""
+    sheet_index: int | None = None
+    compiled_sheet_index: int | None = None
+    connection_point: tuple[int, int] | None = None
+
+    def to_json(self) -> dict:
+        """
+        Serialize endpoint metadata using the package JSON naming convention.
+        """
+        data = {
+            "endpoint_id": self.endpoint_id,
+            "role": self.role,
+            "element_id": self.element_id,
+            "object_id": self.object_id,
+            "name": self.name,
+            "source_sheet": self.source_sheet,
+        }
+        if self.designator:
+            data["designator"] = self.designator
+        if self.pin:
+            data["pin"] = self.pin
+        if self.pin_name:
+            data["pin_name"] = self.pin_name
+        if self.role == "pin" or self.pin_type != PinType.PASSIVE:
+            data["pin_type"] = self.pin_type.name
+        if self.sheet_index is not None:
+            data["sheet_index"] = self.sheet_index
+        if self.compiled_sheet_index is not None:
+            data["compiled_sheet_index"] = self.compiled_sheet_index
+        if self.connection_point is not None:
+            data["connection_point"] = {
+                "x": self.connection_point[0],
+                "y": self.connection_point[1],
+                "units": "altium_coord",
+            }
+        return data
+
+    @classmethod
+    def from_json(cls, data: dict) -> "NetEndpoint":
+        """
+        Deserialize endpoint metadata, accepting missing optional fields.
+        """
+        point_data = data.get("connection_point")
+        connection_point = None
+        if isinstance(point_data, dict):
+            x = point_data.get("x")
+            y = point_data.get("y")
+            if isinstance(x, int) and isinstance(y, int):
+                connection_point = (x, y)
+
+        pin_type_name = data.get("pin_type", "PASSIVE")
+        try:
+            pin_type = PinType[pin_type_name]
+        except KeyError:
+            pin_type = PinType.PASSIVE
+
+        return cls(
+            endpoint_id=data["endpoint_id"],
+            role=data["role"],
+            element_id=data.get("element_id", ""),
+            object_id=data.get("object_id", ""),
+            name=data.get("name", ""),
+            designator=data.get("designator", ""),
+            pin=data.get("pin", ""),
+            pin_name=data.get("pin_name", ""),
+            pin_type=pin_type,
+            source_sheet=data.get("source_sheet", ""),
+            sheet_index=data.get("sheet_index"),
+            compiled_sheet_index=data.get("compiled_sheet_index"),
+            connection_point=connection_point,
+        )
+
+
+@dataclass
 class NetGraphical:
     """
     Graphical elements for a net, grouped by type.
@@ -433,6 +525,9 @@ class Net:
     hierarchy_paths: list[HierarchyPath] = field(
         default_factory=list
     )  # Hierarchy provenance
+    endpoints: list[NetEndpoint] = field(
+        default_factory=list
+    )  # Source-owned semantic endpoints for trace/layout tools
 
     @property
     def designators(self) -> list[str]:
@@ -694,6 +789,7 @@ class Netlist:
 
     nets: list[Net] = field(default_factory=list)
     components: list[NetlistComponent] = field(default_factory=list)
+    schematic_hierarchy: dict = field(default_factory=dict)
     _net_lookup: dict[str, list[Net]] = field(default_factory=dict, repr=False)
     _uid_lookup: dict[str, Net] = field(default_factory=dict, repr=False)
     _component_lookup: dict[str, NetlistComponent] = field(
@@ -815,6 +911,7 @@ class Netlist:
                     ],
                     "graphical": n.graphical.to_json(),
                     "aliases": n.aliases,
+                    "endpoints": [endpoint.to_json() for endpoint in n.endpoints],
                     **(
                         {
                             "hierarchy_paths": [
@@ -887,6 +984,10 @@ class Netlist:
                     graphical=graphical,
                     aliases=n.get("aliases", []),
                     hierarchy_paths=hierarchy_paths,
+                    endpoints=[
+                        NetEndpoint.from_json(endpoint)
+                        for endpoint in n.get("endpoints", [])
+                    ],
                 )
             )
         return cls(nets=nets, components=components)

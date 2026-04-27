@@ -34,6 +34,7 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
     docs_text = docs_path.read_text(encoding="utf-8")
 
     for schema_id in (
+        "altium_monkey.design.a1",
         "altium_monkey.design.a0",
         "altium_monkey.netlist.a0",
         "altium_monkey.pcb.svg.enrichment.a0",
@@ -48,6 +49,7 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
     assert "Moving from `a` to `b`" in docs_text
     assert "Moving from `a0` to `a1`" in docs_text
     assert "docs/schemas/altium_monkey" in docs_text
+    assert "design_a1.schema.json" in docs_text
     assert "design_a0.schema.json" in docs_text
     assert "netlist_a0.schema.json" in docs_text
     assert "pcb_svg_enrichment_a0.schema.json" in docs_text
@@ -55,11 +57,10 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
 
 def test_altium_monkey_contract_schemas_are_parseable() -> None:
     schemas = {
+        "design_a1.schema.json": "altium_monkey.design.a1",
         "design_a0.schema.json": "altium_monkey.design.a0",
         "netlist_a0.schema.json": "altium_monkey.netlist.a0",
-        "pcb_svg_enrichment_a0.schema.json": (
-            "altium_monkey.pcb.svg.enrichment.a0"
-        ),
+        "pcb_svg_enrichment_a0.schema.json": ("altium_monkey.pcb.svg.enrichment.a0"),
     }
 
     spec_text = (CONTRACTS_ROOT / "SPEC.md").read_text(encoding="utf-8")
@@ -74,7 +75,9 @@ def test_altium_monkey_contract_schemas_are_parseable() -> None:
 def test_public_gitignore_tracks_lockfile_and_ignores_example_outputs() -> None:
     gitignore_lines = {
         line.strip()
-        for line in (PUBLIC_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for line in (PUBLIC_ROOT / ".gitignore")
+        .read_text(encoding="utf-8")
+        .splitlines()
         if line.strip() and not line.strip().startswith("#")
     }
 
@@ -139,7 +142,7 @@ def test_domain_docs_list_public_workflow_examples() -> None:
         "outjob_runner",
         "pcbdoc_bom",
         "pcbdoc_pick_n_place",
-        "altium_monkey.design.a0",
+        "altium_monkey.design.a1",
         "altium_monkey.netlist.a0",
     ):
         assert token in docs_text
@@ -349,12 +352,12 @@ def test_prjpcb_make_project_writes_project_container(
     from altium_monkey.altium_prjpcb import AltiumPrjPcb
 
     project_root = (
-        check_examples_root / "prjpcb_make_project" / "output" / "ultra-monkey"
+        check_examples_root / "prjpcb_make_project" / "output" / "ULTRA-MONKEY"
     )
-    project_path = project_root / "ultra-monkey.PrjPcb"
-    schdoc_path = project_root / "ultra-monkey.SchDoc"
-    pcbdoc_path = project_root / "ultra-monkey.PcbDoc"
-    outjob_path = project_root / "ultra-monkey.OutJob"
+    project_path = project_root / "ULTRA-MONKEY.PrjPcb"
+    schdoc_path = project_root / "ULTRA-MONKEY.SchDoc"
+    pcbdoc_path = project_root / "ULTRA-MONKEY.PcbDoc"
+    outjob_path = project_root / "ULTRA-MONKEY.OutJob"
 
     for path in (project_path, schdoc_path, pcbdoc_path, outjob_path):
         assert path.exists(), path
@@ -382,9 +385,9 @@ def test_prjpcb_make_project_writes_project_container(
 
     document_names = {Path(doc["path"]).name for doc in project.documents}
     assert {
-        "ultra-monkey.SchDoc",
-        "ultra-monkey.PcbDoc",
-        "ultra-monkey.OutJob",
+        "ULTRA-MONKEY.SchDoc",
+        "ULTRA-MONKEY.PcbDoc",
+        "ULTRA-MONKEY.OutJob",
     }.issubset(document_names)
 
     assert project.get_outjob_paths() == [outjob_path.resolve()]
@@ -394,9 +397,7 @@ def test_prjpcb_make_project_writes_project_container(
     documentation_outputs = [
         output for output in outputs if output["category"] == "Documentation"
     ]
-    assert [output["type"] for output in documentation_outputs] == [
-        "Schematic Print"
-    ]
+    assert [output["type"] for output in documentation_outputs] == ["Schematic Print"]
     assert "PCBDrawing" not in {output["type"] for output in outputs}
 
     output_group = outjob.config["OutputGroup1"]

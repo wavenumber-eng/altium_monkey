@@ -45,7 +45,7 @@ examples/hello_altium_design/output/bom_all.json
 examples/hello_altium_design/output/variant_boms/<variant>.json
 ```
 
-`altium_design.json` uses the `altium_monkey.design.a0` schema. `netlist.json`
+`altium_design.json` uses the `altium_monkey.design.a1` schema. `netlist.json`
 uses the `altium_monkey.netlist.a0` schema.
 
 When the project references a PcbDoc, `altium_design.json` also includes the

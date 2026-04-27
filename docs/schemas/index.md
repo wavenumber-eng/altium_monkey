@@ -5,7 +5,7 @@ the payload contract version. The Python package version is release metadata and
 is intentionally separate from these schema IDs.
 
 Breaking payload changes require a new schema ID. Additive fields may appear in
-the same `a0` contract when older readers can safely ignore them.
+the same major-revision family when older readers can safely ignore them.
 
 ## Revision Scheme
 
@@ -16,7 +16,7 @@ Schema suffixes use a stepping-style revision scheme:
 2. The trailing number is the minor revision. Moving from `a0` to `a1`
    indicates the contract may have added fields while preserving the existing
    `a` major-revision shape.
-3. The first public contracts use `a0`.
+3. Current public contracts use `a0` and `a1` depending on payload family.
 
 This is intentionally similar to semiconductor stepping names: compact, stable,
 and easy to compare in filenames, generated artifacts, and downstream tooling.
@@ -28,11 +28,12 @@ The explicit contract bundle is maintained under
 
 Machine-readable entry points:
 
-1. [`design_a0.schema.json`](altium_monkey/design_a0.schema.json)
-2. [`netlist_a0.schema.json`](altium_monkey/netlist_a0.schema.json)
-3. [`pcb_svg_enrichment_a0.schema.json`](altium_monkey/pcb_svg_enrichment_a0.schema.json)
+1. [`design_a1.schema.json`](altium_monkey/design_a1.schema.json)
+2. [`design_a0.schema.json`](altium_monkey/design_a0.schema.json)
+3. [`netlist_a0.schema.json`](altium_monkey/netlist_a0.schema.json)
+4. [`pcb_svg_enrichment_a0.schema.json`](altium_monkey/pcb_svg_enrichment_a0.schema.json)
 
-## `altium_monkey.design.a0`
+## `altium_monkey.design.a1`
 
 Emitter: `AltiumDesign.to_json(...)`
 
@@ -40,7 +41,8 @@ Generator: `altium_monkey`
 
 This is the full project/design analysis contract. It combines project metadata,
 schematic sheet metadata, variant metadata, enriched schematic components, and
-compiled nets.
+compiled nets. `design.a1` adds source-owned schematic hierarchy data for
+visualizers and project analysis tools.
 
 Root field order:
 
@@ -52,6 +54,7 @@ variants
 options
 sheets
 components
+schematic_hierarchy
 pnp
 nets
 indexes
@@ -65,16 +68,22 @@ can provide pick-and-place placements.
 
 Important fields:
 
-1. `schema`: always `altium_monkey.design.a0`.
+1. `schema`: always `altium_monkey.design.a1`.
 2. `generator`: always `altium_monkey`.
 3. `project`: project name, path-derived metadata, document paths, and project parameters.
-4. `variants`: project variant definitions, including DNP component lists when available.
+4. `variants`: project variant definitions, including DNP lists and parameter overrides when available.
 5. `options`: netlist and hierarchy-resolution options used to generate the payload.
 6. `sheets`: reachable schematic documents and sheet-level metadata.
 7. `components`: schematic components enriched with sheet, pin-count, parameters, and `svg_id` where available.
-8. `pnp`: optional PCB-backed pick-and-place data in millimeters.
-9. `nets`: compiled net records from the netlist contract.
-10. `indexes`: optional lookup maps for components, nets, pins, and SVG IDs.
+8. `schematic_hierarchy`: resolved documents, sheet symbols, channels, hierarchy paths, sheet-entry links, harness bundle links, and unresolved hierarchy diagnostics.
+9. `pnp`: optional PCB-backed pick-and-place data in millimeters.
+10. `nets`: compiled net records from the netlist contract.
+11. `indexes`: optional lookup maps for components, nets, pins, and SVG IDs.
+
+The predecessor [`design_a0.schema.json`](altium_monkey/design_a0.schema.json)
+is still bundled for readers that need the first public
+`altium_monkey.design.a0` contract. Current `AltiumDesign.to_json(...)` output
+uses `design.a1`.
 
 PNP fields:
 
@@ -136,7 +145,8 @@ Net fields:
 5. `terminals`: connected component pins.
 6. `graphical`: related schematic SVG IDs grouped by record type.
 7. `aliases`: alternate names discovered while merging connectivity.
-8. `hierarchy_paths`: optional hierarchy provenance for hierarchical or repeated-channel designs.
+8. `endpoints`: source-owned semantic trace endpoints for visualization.
+9. `hierarchy_paths`: optional hierarchy provenance for hierarchical or repeated-channel designs.
 
 Terminal fields:
 

@@ -17,6 +17,7 @@ from .altium_record_types import (
     CoordPoint,
     LineWidth,
     SchGraphicalObject,
+    SchRectMils,
     SchRecordType,
     TextOrientation,
 )
@@ -1313,6 +1314,274 @@ class AltiumSchComponent(SchGraphicalObject):
         )
 
     add_rounded_rectangle = add_round_rectangle
+
+    @staticmethod
+    def _part_matches(record: object, part_id: int | None) -> bool:
+        owner_part = getattr(record, "owner_part_id", None)
+        if owner_part is None:
+            return True
+        try:
+            owner_part_id = int(owner_part)
+        except (TypeError, ValueError):
+            return True
+        if owner_part_id <= 0:
+            return True
+        return part_id is None or owner_part_id == part_id
+
+    @staticmethod
+    def _point_to_mils(point: object) -> tuple[float, float] | None:
+        if point is None:
+            return None
+        if hasattr(point, "x_mils") and hasattr(point, "y_mils"):
+            return (float(point.x_mils), float(point.y_mils))
+        if hasattr(point, "x") and hasattr(point, "y"):
+            return (float(point.x) * 10.0, float(point.y) * 10.0)
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            return (float(point[0]), float(point[1]))
+        return None
+
+    @staticmethod
+    def _radius_value_mils(record: object, attr: str) -> float | None:
+        public_attr = f"{attr}_mils"
+        if hasattr(record, public_attr):
+            try:
+                return float(getattr(record, public_attr))
+            except (TypeError, ValueError):
+                return None
+        if not hasattr(record, attr):
+            return None
+        try:
+            value = int(getattr(record, attr))
+            frac = int(getattr(record, f"{attr}_frac", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        return value * 10.0 + frac / 10000.0
+
+    @classmethod
+    def _pin_record_bounds_mils(cls, record: object) -> SchRectMils | None:
+        location = cls._point_to_mils(getattr(record, "location", None))
+        get_hot_spot = getattr(record, "get_hot_spot", None)
+        if location is None or not callable(get_hot_spot):
+            return None
+        endpoint = cls._point_to_mils(get_hot_spot())
+        if endpoint is None:
+            return None
+        return SchRectMils.from_corners_mils(
+            location[0],
+            location[1],
+            endpoint[0],
+            endpoint[1],
+        ).normalized()
+
+    @classmethod
+    def _record_bounds_mils(cls, record: object) -> SchRectMils | None:
+        bounds = getattr(record, "bounds_mils", None)
+        if isinstance(bounds, SchRectMils):
+            normalized_bounds = bounds.normalized()
+            if normalized_bounds.width_mils <= 0 and normalized_bounds.height_mils <= 0:
+                return None
+            return normalized_bounds
+
+        pin_bounds = cls._pin_record_bounds_mils(record)
+        if pin_bounds is not None:
+            return pin_bounds
+
+        points: list[tuple[float, float]] = []
+        vertex_points: list[tuple[float, float]] = []
+        for vertex in getattr(record, "vertices", []) or []:
+            point = cls._point_to_mils(vertex)
+            if point is not None:
+                vertex_points.append(point)
+
+        if vertex_points:
+            points.extend(vertex_points)
+        else:
+            for attr in ("location", "corner"):
+                point = cls._point_to_mils(getattr(record, attr, None))
+                if point is not None:
+                    points.append(point)
+
+        location = cls._point_to_mils(getattr(record, "location", None))
+        radius = cls._radius_value_mils(record, "radius")
+        if location is not None and radius is not None:
+            secondary_radius = cls._radius_value_mils(record, "secondary_radius")
+            if secondary_radius is None:
+                secondary_radius = radius
+            points.extend(
+                [
+                    (location[0] - radius, location[1] - secondary_radius),
+                    (location[0] + radius, location[1] + secondary_radius),
+                ]
+            )
+
+        if not points:
+            return None
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        rect = SchRectMils.from_corners_mils(
+            min(xs),
+            min(ys),
+            max(xs),
+            max(ys),
+        ).normalized()
+        if rect.width_mils <= 0 and rect.height_mils <= 0:
+            return None
+        return rect
+
+    @staticmethod
+    def _merge_rects(rects: list[SchRectMils]) -> SchRectMils | None:
+        if not rects:
+            return None
+        normalized = [rect.normalized() for rect in rects]
+        return SchRectMils.from_corners_mils(
+            min(rect.x1_mils for rect in normalized),
+            min(rect.y1_mils for rect in normalized),
+            max(rect.x2_mils for rect in normalized),
+            max(rect.y2_mils for rect in normalized),
+        ).normalized()
+
+    def _resolved_part_id(self, part_id: int | None) -> int | None:
+        if part_id is None:
+            part_id = getattr(self, "current_part_id", None)
+        try:
+            return int(part_id) if part_id is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _unique_records(self, records: list[object]) -> list[object]:
+        result: list[object] = []
+        seen: set[int] = set()
+        for record in records:
+            identity = id(record)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            result.append(record)
+        return result
+
+    def _display_body_records(
+        self,
+        *,
+        part_id: int | None = None,
+    ) -> list[object]:
+        resolved_part_id = self._resolved_part_id(part_id)
+        pin_ids = {id(pin) for pin in getattr(self, "pins", []) or []}
+        parameter_ids = {id(param) for param in getattr(self, "parameters", []) or []}
+        body_records = self._unique_records(
+            list(getattr(self, "graphics", []) or [])
+            + [
+                child
+                for child in (getattr(self, "children", []) or [])
+                if getattr(child, "is_not_accessible", False)
+                and id(child) not in pin_ids
+                and id(child) not in parameter_ids
+            ]
+        )
+        return [
+            record
+            for record in body_records
+            if self._part_matches(record, resolved_part_id)
+        ]
+
+    def display_body_element_ids(
+        self,
+        *,
+        part_id: int | None = None,
+    ) -> list[str]:
+        """
+        Return unique IDs for records that form the visible component body.
+
+        This mirrors :meth:`display_body_bounds_mils` and intentionally excludes
+        pins and parameter/designator text.
+        """
+        result: list[str] = []
+        seen: set[str] = set()
+        for record in self._display_body_records(part_id=part_id):
+            unique_id = str(getattr(record, "unique_id", "") or "").strip()
+            if not unique_id or unique_id in seen:
+                continue
+            seen.add(unique_id)
+            result.append(unique_id)
+        return result
+
+    def display_body_bounds_mils(
+        self,
+        *,
+        part_id: int | None = None,
+    ) -> SchRectMils | None:
+        """
+        Return schematic mil bounds for the visible component body graphics.
+
+        This intentionally excludes pins and visible parameter text. It is the
+        preferred target for variant DNP graphics in downstream viewers.
+        """
+        rects: list[SchRectMils] = []
+        for record in self._display_body_records(part_id=part_id):
+            bounds = self._record_bounds_mils(record)
+            if bounds is not None:
+                rects.append(bounds)
+        return self._merge_rects(rects)
+
+    def non_accessible_children_bounds_mils(
+        self,
+        *,
+        part_id: int | None = None,
+    ) -> SchRectMils | None:
+        """
+        Alias for Altium's DNP/non-accessible child bounds concept.
+        """
+        return self.display_body_bounds_mils(part_id=part_id)
+
+    def non_accessible_children_element_ids(
+        self,
+        *,
+        part_id: int | None = None,
+    ) -> list[str]:
+        """
+        Alias for Altium-style DNP/non-accessible child target records.
+        """
+        return self.display_body_element_ids(part_id=part_id)
+
+    def full_bounds_mils(
+        self,
+        *,
+        include_pins: bool = True,
+        include_parameters: bool = True,
+        part_id: int | None = None,
+    ) -> SchRectMils | None:
+        """
+        Return schematic mil bounds for component graphics and optional children.
+        """
+        records: list[object] = list(getattr(self, "graphics", []) or [])
+        if include_pins:
+            records.extend(getattr(self, "pins", []) or [])
+        parameter_records = [
+            param
+            for param in (getattr(self, "parameters", []) or [])
+            if not getattr(param, "is_hidden", False)
+        ]
+        if include_parameters:
+            records.extend(parameter_records)
+
+        pin_ids = {id(pin) for pin in getattr(self, "pins", []) or []}
+        parameter_ids = {id(param) for param in getattr(self, "parameters", []) or []}
+        for child in getattr(self, "children", []) or []:
+            if child in records:
+                continue
+            if id(child) in pin_ids or id(child) in parameter_ids:
+                continue
+            if getattr(child, "is_not_accessible", False):
+                records.append(child)
+
+        resolved_part_id = self._resolved_part_id(part_id)
+        rects: list[SchRectMils] = []
+        for record in self._unique_records(records):
+            if not self._part_matches(record, resolved_part_id):
+                continue
+            bounds = self._record_bounds_mils(record)
+            if bounds is not None:
+                rects.append(bounds)
+        return self._merge_rects(rects)
 
     def _detect_case_mode(self) -> CaseMode:
         """

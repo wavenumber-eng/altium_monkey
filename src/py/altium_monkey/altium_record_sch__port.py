@@ -344,6 +344,13 @@ class AltiumSchPort(SingleFontBindableRecordMixin, SchGraphicalObject):
             ctx,
             units_per_px,
         )
+        connection_x, connection_y = self._connection_anchor_from_polygon(polygon_points)
+        connection_point = svg_coord_to_geometry(
+            connection_x,
+            connection_y,
+            sheet_height_px=float(ctx.sheet_height or 0.0),
+            units_per_px=units_per_px,
+        )
         operations = self._build_port_shape_operations(
             ctx,
             polygon_points,
@@ -391,7 +398,42 @@ class AltiumSchPort(SingleFontBindableRecordMixin, SchGraphicalObject):
                 operations,
                 units_per_px=units_per_px,
             ),
+            extras={
+                "connection_points": [
+                    {
+                        "id": "port-hotspot",
+                        "kind": "connection",
+                        "role": "ratsnest-anchor",
+                        "point": [connection_point[0], connection_point[1]],
+                        "source_kind": "port_hotspot",
+                    }
+                ]
+            },
         )
+
+    def _connection_anchor_from_polygon(
+        self,
+        polygon_points: list[tuple[float, float]],
+    ) -> tuple[float, float]:
+        if not polygon_points:
+            return (float(self.location.x), float(self.location.y))
+        min_x = min(point[0] for point in polygon_points)
+        max_x = max(point[0] for point in polygon_points)
+        min_y = min(point[1] for point in polygon_points)
+        max_y = max(point[1] for point in polygon_points)
+        center_y = (min_y + max_y) / 2.0
+        left_count = sum(1 for point in polygon_points if abs(point[0] - min_x) < 1e-6)
+        right_count = sum(1 for point in polygon_points if abs(point[0] - max_x) < 1e-6)
+        if left_count == 1 and right_count != 1:
+            return (min_x, center_y)
+        if right_count == 1 and left_count != 1:
+            return (max_x, center_y)
+        computed_end = int(getattr(self, "_computed_connected_end", 0) or 0)
+        if computed_end == 1:
+            return (min_x, center_y)
+        if computed_end == 2:
+            return (max_x, center_y)
+        return (min_x, center_y)
 
     def _resolve_arrow_style(self, is_harness_port: bool) -> int:
         if is_harness_port:

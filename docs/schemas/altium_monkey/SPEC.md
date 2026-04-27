@@ -1,6 +1,6 @@
 # Altium Monkey Contract Specification
 
-Version family: `a0`
+Version family: `a0`/`a1`
 
 This directory documents the JSON-shaped contracts emitted directly by
 `altium-monkey`. These contracts are Altium-oriented API payloads. They are not
@@ -8,7 +8,8 @@ the generic cross-CAD `wn.design.a0` data-model contract.
 
 ## Bundled Entry Points
 
-- `design_a0.schema.json`: schema for `altium_monkey.design.a0`
+- `design_a1.schema.json`: schema for current `altium_monkey.design.a1`
+- `design_a0.schema.json`: schema for predecessor `altium_monkey.design.a0`
 - `netlist_a0.schema.json`: schema for `altium_monkey.netlist.a0`
 - `pcb_svg_enrichment_a0.schema.json`: schema for
   `altium_monkey.pcb.svg.enrichment.a0`
@@ -29,7 +30,7 @@ Schema suffixes use a stepping-style revision scheme:
 - The Python package version is release metadata. The serialized payload
   contract version is the `schema` string.
 
-## `altium_monkey.design.a0`
+## `altium_monkey.design.a1`
 
 Emitter: `AltiumDesign.to_json(...)`
 
@@ -37,17 +38,19 @@ Generator: `altium_monkey`
 
 This is the full Altium project/design analysis contract. It combines project
 metadata, schematic sheet metadata, variants, enriched schematic components,
-compiled nets, optional PCB pick-and-place data, and optional lookup indexes.
+compiled nets, resolved schematic hierarchy metadata, optional PCB
+pick-and-place data, and optional lookup indexes.
 
 Required root fields:
 
-- `schema`: always `altium_monkey.design.a0`
+- `schema`: always `altium_monkey.design.a1`
 - `generator`: always `altium_monkey`
 - `project`: project identity and project parameters
-- `variants`: project variant definitions; currently DNP lists only
+- `variants`: project variant definitions, including DNP lists and parameter overrides when available
 - `options`: netlist and hierarchy-resolution options used for generation
 - `sheets`: reachable schematic documents and sheet metadata
 - `components`: schematic components enriched for downstream consumers
+- `schematic_hierarchy`: resolved schematic hierarchy metadata for visualizers
 - `nets`: compiled net records
 
 Optional root fields:
@@ -104,6 +107,25 @@ Each component contains:
 - `type`
 - `pin_count`
 
+### Schematic Hierarchy
+
+`schematic_hierarchy.schema` is always
+`altium_monkey.schematic_hierarchy.a1`.
+
+The hierarchy block contains:
+
+- `requested_scope`: requested net identifier scope
+- `effective_scope`: compiler-resolved scope
+- `documents`: source sheet documents and top-level classification
+- `sheet_symbols`: parent sheet symbols, child sheet indices, repeat metadata,
+  and entries
+- `hierarchy_paths`: compiled hierarchy paths for nested or repeated sheets
+- `channels`: repeated-channel instances and path references
+- `links`: sheet-entry to child-port relationships
+- `harness_bundle_links`: flat or hierarchical harness bundle relationships
+- `unresolved`: hierarchy diagnostics such as missing child sheets or unmatched
+  ports
+
 ### PNP
 
 `pnp.units` is currently `mm`.
@@ -119,6 +141,10 @@ Each placement contains:
 - `rotation`
 - `description`
 - `parameters`
+
+`design_a0.schema.json` remains bundled for readers that need the first public
+design contract. Current `AltiumDesign.to_json(...)` output uses
+`altium_monkey.design.a1`.
 
 ## `altium_monkey.netlist.a0`
 
@@ -155,6 +181,7 @@ Net fields:
 - `terminals`
 - `graphical`
 - `aliases`
+- `endpoints`
 - `hierarchy_paths`
 
 Terminal fields:
@@ -163,6 +190,20 @@ Terminal fields:
 - `pin`
 - `pin_name`
 - `pin_type`
+
+`endpoints` contains source-owned semantic trace endpoints for downstream
+schematic visualization. Unlike `graphical`, endpoint `role` values are not
+inferred from SVG ids or rendered text. Endpoint records contain:
+
+- `endpoint_id`
+- `role`
+- `element_id`: current render target id
+- `object_id`: source electrical object id when it differs from the render id
+- `name`
+- `source_sheet`
+- optional pin fields (`designator`, `pin`, `pin_name`, `pin_type`)
+- optional `sheet_index` and `compiled_sheet_index`
+- optional `connection_point` in `altium_coord` source schematic units
 
 `graphical` groups related schematic SVG IDs by record type:
 

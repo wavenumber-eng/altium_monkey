@@ -964,15 +964,15 @@ areas = ["prjpcb", "schdoc", "pcbdoc", "outjob"]
 status = "ready"
 entrypoint = "prjpcb_make_project/prjpcb_make_project.py"
 doc = "prjpcb_make_project/README.md"
-inputs = ["prjpcb_make_project/assets/logo.png"]
+inputs = []
 assets = ["prjpcb_make_project/assets/logo.png"]
 outputs = [
-  "prjpcb_make_project/output/ultra-monkey/ultra-monkey.PrjPcb",
-  "prjpcb_make_project/output/ultra-monkey/ultra-monkey.SchDoc",
-  "prjpcb_make_project/output/ultra-monkey/ultra-monkey.PcbDoc",
-  "prjpcb_make_project/output/ultra-monkey/ultra-monkey.OutJob",
-  "prjpcb_make_project/output/ultra-monkey/outputs/",
-  "prjpcb_make_project/output/ultra-monkey/project_manifest.json",
+  "prjpcb_make_project/output/ULTRA-MONKEY/ULTRA-MONKEY.PrjPcb",
+  "prjpcb_make_project/output/ULTRA-MONKEY/ULTRA-MONKEY.SchDoc",
+  "prjpcb_make_project/output/ULTRA-MONKEY/ULTRA-MONKEY.PcbDoc",
+  "prjpcb_make_project/output/ULTRA-MONKEY/ULTRA-MONKEY.OutJob",
+  "prjpcb_make_project/output/ULTRA-MONKEY/outputs/",
+  "prjpcb_make_project/output/ULTRA-MONKEY/project_manifest.json",
 ]
 requires_extra = []
 tags = ["project", "prjpcb", "generation", "dynamic-template", "outjob", "variant"]
