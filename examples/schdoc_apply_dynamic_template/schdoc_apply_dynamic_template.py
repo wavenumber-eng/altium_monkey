@@ -11,6 +11,7 @@ from altium_monkey import (
     SchHorizontalAlign,
     SchPointMils,
     SchRectMils,
+    SheetStyle,
     make_sch_embedded_image,
     make_sch_polyline,
     make_sch_text_frame,
@@ -30,8 +31,8 @@ OUTPUT_PROJECT = OUTPUT_DIR / f"{PROJECT_NAME}.PrjPcb"
 PROJECT_VARIANT = "A"
 
 ANSI_SHEET_STYLES = {
-    "B": 6,
-    "D": 8,
+    "B": SheetStyle.B,
+    "D": SheetStyle.D,
 }
 ANSI_BORDER_CLEARANCE_MILS = {
     "B": 200,
@@ -319,7 +320,7 @@ def make_title_block(
 
 def set_ansi_sheet(schdoc: AltiumSchDoc, sheet_size: str) -> None:
     sheet = schdoc.sheet
-    sheet.sheet_style = ANSI_SHEET_STYLES[sheet_size]
+    sheet.sheet_style = int(ANSI_SHEET_STYLES[sheet_size])
     sheet.use_custom_sheet = False
     sheet.border_on = True
     sheet.title_block_on = False
@@ -364,10 +365,10 @@ def apply_dynamic_template(sheet_size: str, temp_dir: Path) -> Path:
     template_doc.save(dynamic_template_path)
 
     schdoc = AltiumSchDoc(INPUT_SCHDOC)
-    set_ansi_sheet(schdoc, sheet_size)
     schdoc.apply_template(
         dynamic_template_path,
         template_filename=f"dynamic_title_block_ansi_{sheet_size}.SchDot",
+        apply_visual_sheet_settings=True,
     )
 
     output_path = OUTPUT_DIR / f"blank_with_dynamic_ansi_{sheet_size}.SchDoc"

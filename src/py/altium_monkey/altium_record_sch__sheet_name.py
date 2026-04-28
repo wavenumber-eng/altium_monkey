@@ -1,9 +1,11 @@
 """Schematic record model for SchRecordType.SHEET_NAME."""
 
-from typing import TYPE_CHECKING
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
-from .altium_record_sch__label import AltiumSchLabel
+from .altium_record_sch__sheet_symbol_child_label import (
+    AltiumSchSheetSymbolChildLabel,
+)
 from .altium_record_types import SchRecordType
 
 if TYPE_CHECKING:
@@ -11,7 +13,7 @@ if TYPE_CHECKING:
     from .altium_sch_svg_renderer import SchSvgRenderContext
 
 
-class AltiumSchSheetName(AltiumSchLabel):
+class AltiumSchSheetName(AltiumSchSheetSymbolChildLabel):
     """
     SHEET_NAME record.
     
