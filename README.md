@@ -185,6 +185,22 @@ Known release boundaries include:
 
 See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the full current support boundary.
 
+## Claude Code Skill
+
+This repository ships a [Claude Code](https://claude.com/claude-code) skill at
+[`.claude/skills/altium-schematic/`](.claude/skills/altium-schematic/) that
+lets Claude answer questions about an Altium design by reading it through
+`altium-monkey`. Open this repo (or any directory you copy the
+`.claude/skills/altium-schematic/` folder into) in Claude Code and ask
+questions like "what's connected to U7 pin C9?" or "list every IC on the
+codec sheet" — the skill is invoked automatically.
+
+The skill exposes targeted subcommands (`summary`, `components`, `nets`,
+`connections`, `bom`, `sheet`) so Claude loads only the slice of the design
+relevant to the question rather than the full design JSON. See
+[`.claude/skills/altium-schematic/SKILL.md`](.claude/skills/altium-schematic/SKILL.md)
+for usage details and the underlying CLI.
+
 ## License
 
 `altium-monkey` is licensed under the GNU Affero General Public License v3.0 or
