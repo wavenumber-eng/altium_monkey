@@ -4,6 +4,7 @@ Extract symbol definitions from placed SchDoc components into SchLib files.
 
 import logging
 import random
+import re
 import string
 from collections import defaultdict
 from copy import deepcopy
@@ -15,6 +16,7 @@ from .altium_record_sch__implementation import (
     AltiumSchImplementation,
     AltiumSchImplementationList,
 )
+from .altium_record_sch__designator import AltiumSchDesignator
 from .altium_record_sch__parameter import AltiumSchParameter
 from .altium_record_types import SchRecordType
 from .altium_symbol_transform import normalize_rectangle_coords, to_symbol_space
@@ -349,6 +351,11 @@ def _add_transformed_component_children(
         for param in getattr(template, "parameters", [])
         if isinstance(param, AltiumSchParameter)
     }
+    designator_ids = {
+        id(param)
+        for param in getattr(template, "parameters", [])
+        if isinstance(param, AltiumSchDesignator)
+    }
     graphic_ids = {id(graphic) for graphic in getattr(template, "graphics", [])}
 
     for child in _ordered_component_children(template):
@@ -371,6 +378,10 @@ def _add_transformed_component_children(
                 symbol.add_object(transformed)
             continue
 
+        if child_id in designator_ids:
+            symbol.add_object(_transform_designator_for_symbol(child, template))
+            continue
+
         if strip_parameters or child_id not in parameter_ids:
             continue
         transformed = to_symbol_space(child, template)
@@ -382,6 +393,29 @@ def _is_transformed_image(obj: object) -> bool:
     from .altium_record_sch__image import AltiumSchImage
 
     return isinstance(obj, AltiumSchImage)
+
+
+def _library_designator_text(text: object) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return "U?"
+    if "?" in value:
+        return value
+
+    prefix_match = re.match(r"([A-Za-z]+)", value)
+    if prefix_match:
+        return f"{prefix_match.group(1)}?"
+
+    without_number = re.sub(r"\d+$", "", value)
+    return f"{without_number or value}?"
+
+
+def _transform_designator_for_symbol(designator: object, template: object) -> object:
+    transformed = to_symbol_space(designator, template)
+    _clear_extracted_record_state(transformed)
+    if hasattr(transformed, "text"):
+        transformed.text = _library_designator_text(getattr(designator, "text", ""))
+    return transformed
 
 
 def _transform_graphic_for_symbol(graphic: object, template: object) -> object:

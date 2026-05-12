@@ -76,9 +76,15 @@ Each variant contains:
 
 - `name`: variant name
 - `dnp`: list of designators omitted from population for that variant
+- optional `variations`: raw project variation rows
+- optional `parameters`: variant-level parameter rows
+- optional `param_variations`: raw per-designator parameter-variation rows
+- optional `parameter_overrides`: grouped designator -> parameter -> value map
 
-Variant processing is currently DNP-oriented. More advanced variant semantics
-may be added in a later minor or major contract.
+`parameter_overrides` is the normalized form consumed by
+`AltiumDesign.to_bom(variant=...)`. Raw alternate fitted component rows may
+appear in `variations`, but alternate fitted component replacement is not
+applied semantically by the design contract yet.
 
 ### Components
 

@@ -176,10 +176,12 @@ Known release boundaries include:
 2. PcbDoc does not yet have a public object deletion API.
 3. IntLib support is extract-only, with fallback source-stream extraction when
    component cross-reference metadata cannot be parsed.
-4. Variant processing is limited to DNP handling.
+4. Variant processing supports DNP handling and parameter overrides; alternate
+   fitted component replacement is not applied semantically yet.
 5. Complex hierarchical channels and `.Annotation` file handling may need
    additional validation.
-6. Linux and macOS coverage is still minimal.
+6. Windows remains the primary validation platform. Basic macOS operation and
+   baseline font substitution have been checked; Linux coverage remains limited.
 
 See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the full current support boundary.
 

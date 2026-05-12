@@ -147,7 +147,11 @@ class PcbLibComponentParamsToc:
             offset += 4
             if offset + chunk_len > len(data):
                 raise ValueError("Invalid ComponentParamsTOC stream")
-            text = data[offset : offset + chunk_len].decode("latin-1").rstrip("\x00")
+            text = (
+                data[offset : offset + chunk_len]
+                .decode("cp1252", errors="replace")
+                .rstrip("\x00")
+            )
             offset += chunk_len
             entries.append(PcbLibComponentParamsTocEntry.from_text(text))
         return cls(entries=tuple(entries))
@@ -155,7 +159,7 @@ class PcbLibComponentParamsToc:
     def to_bytes(self) -> bytes:
         buf = bytearray()
         for entry in self.entries:
-            text_bytes = entry.to_text().encode("ascii", errors="replace")
+            text_bytes = entry.to_text().encode("cp1252", errors="replace")
             buf.extend(struct.pack("<I", len(text_bytes)))
             buf.extend(text_bytes)
         return bytes(buf)
@@ -328,7 +332,9 @@ class PcbLibSectionKeys:
         if offset + sr_len > len(data) or sr_len < 1:
             raise ValueError("Invalid SectionKeys stream")
         pascal_len = data[offset]
-        value = data[offset + 1 : offset + 1 + pascal_len].decode("latin-1")
+        value = data[offset + 1 : offset + 1 + pascal_len].decode(
+            "cp1252", errors="replace"
+        )
         return value, offset + sr_len
 
     def to_bytes(self) -> bytes:
@@ -341,7 +347,7 @@ class PcbLibSectionKeys:
 
     @staticmethod
     def _build_pascal_subrecord(text: str) -> bytes:
-        encoded = text.encode("latin-1")
+        encoded = text.encode("cp1252", errors="replace")
         subrecord = bytearray([len(encoded)]) + encoded
         return struct.pack("<I", len(subrecord)) + subrecord
 

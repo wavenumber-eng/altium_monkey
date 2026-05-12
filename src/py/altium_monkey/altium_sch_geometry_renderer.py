@@ -576,6 +576,12 @@ class SchGeometrySvgRenderer:
         record: object,
         rendered_stack: list[dict[str, Any]],
     ) -> str:
+        if str(getattr(record, "kind", "") or "") == "image":
+            extras = getattr(record, "extras", None)
+            if isinstance(extras, dict):
+                image_key = str(extras.get("image_key", "") or "")
+                if image_key:
+                    return image_key
         record_unique_id = str(getattr(record, "unique_id", "") or "")
         for frame in reversed(rendered_stack):
             group_id = str(frame.get("group_id", "") or "")

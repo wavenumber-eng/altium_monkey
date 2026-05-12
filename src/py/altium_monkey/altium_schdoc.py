@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from .altium_api_markers import public_api
 from .altium_json_apply_helpers import JsonApplyMixin
+from .altium_sch_display_mode import record_belongs_to_display_mode
 
 from . import (
     AltiumSchArc,
@@ -3581,6 +3582,14 @@ class AltiumSchDoc(JsonApplyMixin):
                 and not requested_render_options.fallback_project_parameters_for_star
             ):
                 continue
+            # Parent-bound primitives like harness entries and sheet entries are
+            # positioned relative to a parent connector/symbol and require
+            # parent_* kwargs that the generic template-child dispatch cannot
+            # supply. They should not appear as direct template children, so
+            # skip them defensively when their owner_index lands on the
+            # template index (observed on real-world projects such as mrx).
+            if isinstance(obj, (AltiumSchHarnessEntry, AltiumSchSheetEntry)):
+                continue
             to_geometry = getattr(obj, "to_geometry", None)
             if not callable(to_geometry):
                 continue
@@ -3783,10 +3792,13 @@ class AltiumSchDoc(JsonApplyMixin):
         """
         Append geometry for component graphics, parameters, and pins.
         """
+        component_display_mode = int(getattr(comp, "display_mode", 0) or 0)
         for graphic in sorted(
             getattr(comp, "graphics", []),
             key=lambda obj: str(getattr(obj, "unique_id", "")),
         ):
+            if not record_belongs_to_display_mode(graphic, component_display_mode):
+                continue
             owner_part = getattr(graphic, "owner_part_id", None)
             oracle_only_record = (
                 owner_part is not None
@@ -3816,6 +3828,8 @@ class AltiumSchDoc(JsonApplyMixin):
             getattr(comp, "parameters", []),
             key=lambda obj: str(getattr(obj, "unique_id", "")),
         ):
+            if not record_belongs_to_display_mode(param, component_display_mode):
+                continue
             to_geometry = getattr(param, "to_geometry", None)
             if not callable(to_geometry):
                 continue
@@ -3831,6 +3845,8 @@ class AltiumSchDoc(JsonApplyMixin):
             getattr(comp, "pins", []),
             key=lambda obj: str(getattr(obj, "unique_id", "")),
         ):
+            if not record_belongs_to_display_mode(pin, component_display_mode):
+                continue
             owner_part = getattr(pin, "owner_part_id", None)
             oracle_only_record = (
                 owner_part is not None
@@ -4661,7 +4677,12 @@ class AltiumSchDoc(JsonApplyMixin):
             }
         return render_hints
 
-    def _build_runtime_image_hrefs(self, geometry_ctx: Any) -> dict[str, str]:
+    def _build_runtime_image_hrefs(
+        self,
+        geometry_ctx: Any,
+        *,
+        doc_unique_id: str,
+    ) -> dict[str, str]:
         """
         Build runtime image data URIs for image-backed geometry records.
         """
@@ -4689,7 +4710,12 @@ class AltiumSchDoc(JsonApplyMixin):
             )
             if not png_data:
                 continue
-            runtime_image_hrefs[str(getattr(image, "unique_id", "") or "")] = (
+            runtime_key = (
+                image.runtime_image_key(doc_unique_id)
+                if hasattr(image, "runtime_image_key")
+                else str(getattr(image, "unique_id", "") or "")
+            )
+            runtime_image_hrefs[runtime_key] = (
                 "data:image/png;base64," + base64.b64encode(png_data).decode("ascii")
             )
         return runtime_image_hrefs
@@ -4745,7 +4771,10 @@ class AltiumSchDoc(JsonApplyMixin):
         object.__setattr__(
             document,
             "_runtime_image_hrefs",
-            self._build_runtime_image_hrefs(geometry_ctx),
+            self._build_runtime_image_hrefs(
+                geometry_ctx,
+                doc_unique_id=doc_unique_id,
+            ),
         )
         return document
 

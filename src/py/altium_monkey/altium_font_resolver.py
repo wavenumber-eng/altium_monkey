@@ -91,7 +91,31 @@ class FontResolution:
     tried_families: tuple[str, ...] = ()
 
 
-TEST_FONTS_DIR = Path(__file__).resolve().parents[3] / "tests" / "common" / "assets" / "fonts"
+def _resolve_test_fonts_dir() -> Path:
+    package_fonts_dir = (
+        Path(__file__).resolve().parents[3] / "tests" / "common" / "assets" / "fonts"
+    )
+    if package_fonts_dir.exists():
+        return package_fonts_dir
+
+    suites_root = os.environ.get("WN_TEST_SUITES_ROOT")
+    if suites_root:
+        external_fonts_dir = (
+            Path(suites_root).expanduser()
+            / "suites"
+            / "altium_monkey"
+            / "tests"
+            / "common"
+            / "assets"
+            / "fonts"
+        )
+        if external_fonts_dir.exists():
+            return external_fonts_dir
+
+    return package_fonts_dir
+
+
+TEST_FONTS_DIR = _resolve_test_fonts_dir()
 
 KNOWN_FONT_FILE_MAP: dict[str, str] = {
     "Arial": "arial.ttf",
@@ -199,8 +223,12 @@ KNOWN_FONT_FILE_MAP: dict[str, str] = {
 TEST_FONT_FILE_MAP: dict[str, Path] = {
     "Berkeley Mono": TEST_FONTS_DIR / "BerkeleyMono" / "BerkeleyMono-Regular.ttf",
     "BerkeleyMono": TEST_FONTS_DIR / "BerkeleyMono" / "BerkeleyMono-Regular.ttf",
-    "Berkeley Mono Regular": TEST_FONTS_DIR / "BerkeleyMono" / "BerkeleyMono-Regular.ttf",
-    "BerkeleyMono Regular": TEST_FONTS_DIR / "BerkeleyMono" / "BerkeleyMono-Regular.ttf",
+    "Berkeley Mono Regular": TEST_FONTS_DIR
+    / "BerkeleyMono"
+    / "BerkeleyMono-Regular.ttf",
+    "BerkeleyMono Regular": TEST_FONTS_DIR
+    / "BerkeleyMono"
+    / "BerkeleyMono-Regular.ttf",
     "Berkeley Mono Bold": TEST_FONTS_DIR / "BerkeleyMono" / "BerkeleyMono-Bold.ttf",
     "BerkeleyMono Bold": TEST_FONTS_DIR / "BerkeleyMono" / "BerkeleyMono-Bold.ttf",
     "Mooretronics": TEST_FONTS_DIR / "ElectronicSymbols.ttf",
@@ -281,7 +309,9 @@ def _style_suffix(bold: bool, italic: bool) -> str:
     return ""
 
 
-def _family_candidates_for_request(family: str, bold: bool, italic: bool) -> tuple[tuple[str, str, bool], ...]:
+def _family_candidates_for_request(
+    family: str, bold: bool, italic: bool
+) -> tuple[tuple[str, str, bool], ...]:
     normalized_family = _normalize_family_name(family)
     styled_name = f"{normalized_family}{_style_suffix(bold, italic)}"
     if styled_name == normalized_family:
@@ -336,7 +366,9 @@ def get_platform_font_search_dirs(
     return _dedupe_paths(paths)
 
 
-def get_configured_font_dirs(environ: Mapping[str, str] | None = None) -> tuple[Path, ...]:
+def get_configured_font_dirs(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[Path, ...]:
     """
     Return caller-configured font roots from ``ALTIUM_FONT_DIRS``.
     """
@@ -344,7 +376,9 @@ def get_configured_font_dirs(environ: Mapping[str, str] | None = None) -> tuple[
     raw_value = env.get("ALTIUM_FONT_DIRS", "").strip()
     if not raw_value:
         return ()
-    return _dedupe_paths([Path(part) for part in raw_value.split(os.pathsep) if part.strip()])
+    return _dedupe_paths(
+        [Path(part) for part in raw_value.split(os.pathsep) if part.strip()]
+    )
 
 
 def build_default_font_resolver_config(
@@ -355,13 +389,17 @@ def build_default_font_resolver_config(
     Build the default host-aware font resolver configuration.
     """
     env = os.environ if environ is None else environ
-    raw_mode = env.get("ALTIUM_FONT_MODE", FontResolutionMode.COMPATIBLE.value).strip().lower()
+    raw_mode = (
+        env.get("ALTIUM_FONT_MODE", FontResolutionMode.COMPATIBLE.value).strip().lower()
+    )
     try:
         mode = FontResolutionMode(raw_mode)
     except ValueError:
         mode = FontResolutionMode.COMPATIBLE
 
-    search_dirs = get_configured_font_dirs(env) + get_platform_font_search_dirs(system_name, env)
+    search_dirs = get_configured_font_dirs(env) + get_platform_font_search_dirs(
+        system_name, env
+    )
     return FontResolverConfig(
         mode=mode,
         search_dirs=search_dirs,
@@ -402,7 +440,11 @@ def configure_font_resolver(
     """
     parsed_mode: FontResolutionMode | None = None
     if mode is not None:
-        parsed_mode = mode if isinstance(mode, FontResolutionMode) else FontResolutionMode(str(mode))
+        parsed_mode = (
+            mode
+            if isinstance(mode, FontResolutionMode)
+            else FontResolutionMode(str(mode))
+        )
     set_default_font_resolver_config(
         FontResolverConfig(
             mode=parsed_mode,
@@ -432,7 +474,11 @@ def get_effective_font_resolver_config(
         return base
 
     mode = base.mode if override.mode is None else override.mode
-    search_dirs = base.search_dirs if override.search_dirs is None else _dedupe_paths(list(override.search_dirs))
+    search_dirs = (
+        base.search_dirs
+        if override.search_dirs is None
+        else _dedupe_paths(list(override.search_dirs))
+    )
     substitutions = dict(base.substitutions)
     substitutions.update(override.substitutions)
 
@@ -482,7 +528,9 @@ def _resolve_known_name_path(name: str, search_dirs: tuple[Path, ...]) -> Path |
     return None
 
 
-def _resolve_font_name_path(name: str, config: FontResolverConfig) -> tuple[Path | None, FontResolutionSource]:
+def _resolve_font_name_path(
+    name: str, config: FontResolverConfig
+) -> tuple[Path | None, FontResolutionSource]:
     path_candidate = Path(name).expanduser()
     if path_candidate.is_absolute() and path_candidate.exists():
         return path_candidate, FontResolutionSource.EXPLICIT_PATH
@@ -515,7 +563,9 @@ def _font_category(family: str) -> str:
     return "sans"
 
 
-def _generic_fallback_families(family: str, config: FontResolverConfig) -> tuple[str, ...]:
+def _generic_fallback_families(
+    family: str, config: FontResolverConfig
+) -> tuple[str, ...]:
     category = _font_category(family)
     if category == "mono":
         return config.generic_mono_fallbacks or ()
@@ -547,8 +597,14 @@ def resolve_font(
     tried_families: list[str] = []
     requested_family = _normalize_family_name(request.family)
 
-    def resolve_family(family: str) -> tuple[Path | None, str | None, FontResolutionSource, bool]:
-        for base_family, candidate_name, style_matched in _family_candidates_for_request(
+    def resolve_family(
+        family: str,
+    ) -> tuple[Path | None, str | None, FontResolutionSource, bool]:
+        for (
+            base_family,
+            candidate_name,
+            style_matched,
+        ) in _family_candidates_for_request(
             family,
             request.bold,
             request.italic,
@@ -566,13 +622,20 @@ def resolve_font(
             resolved_family=requested_family,
             resolved_name=resolved_name,
             path=path,
-            status=FontResolutionStatus.EXACT if style_matched else FontResolutionStatus.STYLE_FALLBACK,
+            status=FontResolutionStatus.EXACT
+            if style_matched
+            else FontResolutionStatus.STYLE_FALLBACK,
             source=source,
             tried_families=tuple(tried_families),
         )
 
-    if effective_config.mode in (FontResolutionMode.COMPATIBLE, FontResolutionMode.BEST_EFFORT):
-        substitution_chain = substitution_map.get(_normalize_family_key(requested_family), ())
+    if effective_config.mode in (
+        FontResolutionMode.COMPATIBLE,
+        FontResolutionMode.BEST_EFFORT,
+    ):
+        substitution_chain = substitution_map.get(
+            _normalize_family_key(requested_family), ()
+        )
         seen_substitutes: set[str] = set()
         for substitute in substitution_chain:
             normalized_substitute = _normalize_family_name(substitute)
@@ -593,9 +656,14 @@ def resolve_font(
 
     if effective_config.mode == FontResolutionMode.BEST_EFFORT:
         seen_fallbacks: set[str] = set()
-        for fallback_family in _generic_fallback_families(requested_family, effective_config):
+        for fallback_family in _generic_fallback_families(
+            requested_family, effective_config
+        ):
             normalized_fallback = _normalize_family_name(fallback_family)
-            if normalized_fallback in seen_fallbacks or normalized_fallback == requested_family:
+            if (
+                normalized_fallback in seen_fallbacks
+                or normalized_fallback == requested_family
+            ):
                 continue
             seen_fallbacks.add(normalized_fallback)
             path, resolved_name, source, _ = resolve_family(normalized_fallback)

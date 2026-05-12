@@ -12,7 +12,7 @@ from .altium_netlist_options import NetlistOptions
 from .altium_netlist_common import (
     CHASSIS_GND_MAPPINGS,
     POWER_PIN_NAMES,
-    _altium_net_sort_key,
+    _altium_net_total_sort_key,
     _emit_auto_named_nets,
     _emit_bridge_roots,
     _emit_named_roots,
@@ -1251,7 +1251,11 @@ class AltiumNetlistSingleSheetCompiler:
                 nets,
                 processed_roots,
                 create_net,
-                sorted(set(se_roots.keys()), key=_altium_net_sort_key, reverse=True),
+                sorted(
+                    set(se_roots.keys()),
+                    key=_altium_net_total_sort_key,
+                    reverse=True,
+                ),
                 final_name_to_root,
                 final_pin_groups,
                 allow_empty_pins=True,
@@ -1302,7 +1306,7 @@ class AltiumNetlistSingleSheetCompiler:
             | floating_net_labels
         )
         named_nets_sorted = sorted(
-            all_named_nets, key=_altium_net_sort_key, reverse=True
+            all_named_nets, key=_altium_net_total_sort_key, reverse=True
         )
         for name in named_nets_sorted:
             if name in final_name_to_root:

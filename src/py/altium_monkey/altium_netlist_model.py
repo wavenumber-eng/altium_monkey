@@ -1,7 +1,8 @@
 """Shared netlist data structures used by the netlist compilation pipeline."""
 
+import json
 import uuid
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
@@ -332,6 +333,77 @@ class NetEndpoint:
         )
 
 
+def _sort_string(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _sort_int(value: object) -> int:
+    return value if isinstance(value, int) else -1
+
+
+def _unique_sorted_strings(values: list[str]) -> list[str]:
+    return sorted(set(values))
+
+
+def _terminal_sort_key(row: dict) -> tuple[object, ...]:
+    return (
+        _sort_string(row.get("designator")),
+        _sort_string(row.get("pin")),
+        _sort_string(row.get("pin_name")),
+        _sort_string(row.get("pin_type")),
+    )
+
+
+def _pin_ref_sort_key(row: dict) -> tuple[object, ...]:
+    return (
+        _sort_string(row.get("designator")),
+        _sort_string(row.get("pin")),
+        _sort_string(row.get("svg_id")),
+    )
+
+
+def _endpoint_sort_key(endpoint: dict) -> tuple[object, ...]:
+    point_data = endpoint.get("connection_point")
+    point = point_data if isinstance(point_data, dict) else {}
+    return (
+        _sort_string(endpoint.get("endpoint_id")),
+        _sort_string(endpoint.get("role")),
+        _sort_string(endpoint.get("element_id")),
+        _sort_string(endpoint.get("object_id")),
+        _sort_string(endpoint.get("name")),
+        _sort_string(endpoint.get("source_sheet")),
+        _sort_string(endpoint.get("designator")),
+        _sort_string(endpoint.get("pin")),
+        _sort_string(endpoint.get("pin_name")),
+        _sort_string(endpoint.get("pin_type")),
+        _sort_int(endpoint.get("sheet_index")),
+        _sort_int(endpoint.get("compiled_sheet_index")),
+        isinstance(point_data, dict),
+        _sort_int(point.get("x")),
+        _sort_int(point.get("y")),
+    )
+
+
+def _unique_sorted_dicts(
+    values: list[dict], key_func: Callable[[dict], tuple[object, ...]]
+) -> list[dict]:
+    by_key = {}
+    for value in values:
+        by_key.setdefault(key_func(value), value)
+    return [by_key[key] for key in sorted(by_key)]
+
+
+def _stable_json_key(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _unique_sorted_json_values(values: list) -> list:
+    by_key = {}
+    for value in values:
+        by_key.setdefault(_stable_json_key(value), value)
+    return [by_key[key] for key in sorted(by_key)]
+
+
 @dataclass
 class NetGraphical:
     """
@@ -422,16 +494,19 @@ class NetGraphical:
         Serialize to JSON-compatible dict.
         """
         return {
-            "wires": self.wires,
-            "junctions": self.junctions,
-            "labels": self.labels,
-            "power_ports": self.power_ports,
-            "ports": self.ports,
-            "sheet_entries": self.sheet_entries,
-            "pins": [
-                {"designator": p.designator, "pin": p.pin, "svg_id": p.svg_id}
-                for p in self.pins
-            ],
+            "wires": _unique_sorted_strings(self.wires),
+            "junctions": _unique_sorted_strings(self.junctions),
+            "labels": _unique_sorted_strings(self.labels),
+            "power_ports": _unique_sorted_strings(self.power_ports),
+            "ports": _unique_sorted_strings(self.ports),
+            "sheet_entries": _unique_sorted_strings(self.sheet_entries),
+            "pins": _unique_sorted_dicts(
+                [
+                    {"designator": p.designator, "pin": p.pin, "svg_id": p.svg_id}
+                    for p in self.pins
+                ],
+                _pin_ref_sort_key,
+            ),
         }
 
     @classmethod
@@ -630,7 +705,7 @@ class PnpEntry:
             "center_y": self.center_y,
             "rotation": self.rotation,
             "description": self.description,
-            "parameters": self.parameters,
+            "parameters": dict(sorted(self.parameters.items())),
         }
 
 
@@ -899,24 +974,33 @@ class Netlist:
                     "uid": n.uid,
                     "name": n.name,
                     "auto_named": n.auto_named,
-                    "source_sheets": n.source_sheets,
-                    "terminals": [
-                        {
-                            "designator": t.designator,
-                            "pin": t.pin,
-                            "pin_name": t.pin_name,
-                            "pin_type": t.pin_type.name,
-                        }
-                        for t in n.terminals
-                    ],
+                    "source_sheets": _unique_sorted_strings(n.source_sheets),
+                    "terminals": _unique_sorted_dicts(
+                        [
+                            {
+                                "designator": t.designator,
+                                "pin": t.pin,
+                                "pin_name": t.pin_name,
+                                "pin_type": t.pin_type.name,
+                            }
+                            for t in n.terminals
+                        ],
+                        _terminal_sort_key,
+                    ),
                     "graphical": n.graphical.to_json(),
-                    "aliases": n.aliases,
-                    "endpoints": [endpoint.to_json() for endpoint in n.endpoints],
+                    "aliases": _unique_sorted_strings(n.aliases),
+                    "endpoints": _unique_sorted_dicts(
+                        [endpoint.to_json() for endpoint in n.endpoints],
+                        _endpoint_sort_key,
+                    ),
                     **(
                         {
-                            "hierarchy_paths": [
-                                _hierarchy_path_to_json(hp) for hp in n.hierarchy_paths
-                            ]
+                            "hierarchy_paths": _unique_sorted_json_values(
+                                [
+                                    _hierarchy_path_to_json(hp)
+                                    for hp in n.hierarchy_paths
+                                ]
+                            )
                         }
                         if n.hierarchy_paths
                         else {}

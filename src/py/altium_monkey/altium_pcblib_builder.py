@@ -86,7 +86,7 @@ def _build_library_data(header_bytes: bytes, footprint_names: list[str]) -> byte
     buf.extend(header_bytes)
     buf.extend(struct.pack("<I", len(footprint_names)))
     for name in footprint_names:
-        name_bytes = name.encode("latin-1")
+        name_bytes = name.encode("cp1252", errors="replace")
         subrecord = bytes([len(name_bytes)]) + name_bytes
         buf.extend(struct.pack("<I", len(subrecord)))
         buf.extend(subrecord)
@@ -590,7 +590,7 @@ class PcbLibLibraryData:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "PcbLibLibraryData":
-        text = data.decode("latin-1")
+        text = data.decode("cp1252", errors="replace")
         trailing_nul = text.endswith("\x00")
         if trailing_nul:
             text = text[:-1]
@@ -622,7 +622,7 @@ class PcbLibLibraryData:
             text = "|" + text
         if self.trailing_nul:
             text += "\x00"
-        return text.encode("latin-1")
+        return text.encode("cp1252", errors="replace")
 
     def build_stream(self, footprint_names: list[str]) -> bytes:
         return _build_library_data(self.serialize(), footprint_names)

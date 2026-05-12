@@ -2845,7 +2845,7 @@ class AltiumSchPin(SchPrimitive):
         ctx: SchSvgRenderContext,
     ) -> bool:
         """Return whether the pin name should render rotated."""
-        if ctx.schlib_mode:
+        if ctx.schlib_mode and not ctx.pin_text_follows_orientation:
             return False
         if effective_orient in (Rotation90.DEG_90, Rotation90.DEG_270):
             return self._vertical_pin_text_is_rotated(self.name_settings)
@@ -3277,7 +3277,7 @@ class AltiumSchPin(SchPrimitive):
 
     def _is_designator_text_rotated(self, ctx: SchSvgRenderContext) -> bool:
         """Return whether the pin designator should render rotated."""
-        if ctx.schlib_mode:
+        if ctx.schlib_mode and not ctx.pin_text_follows_orientation:
             return False
         if self.orientation in (Rotation90.DEG_90, Rotation90.DEG_270):
             return self._vertical_pin_text_is_rotated(self.designator_settings)

@@ -32,8 +32,15 @@ See [schema contracts](schemas/index.md) for field-level contract notes.
 
 ## Current Boundaries
 
-Variant processing includes DNP handling and parameter overrides in this
-release.
+Variant processing includes DNP/not-fitted handling, project current-variant
+state, variant metadata in design JSON, and per-designator parameter overrides.
+`to_bom(variant=...)` applies parameter overrides to component parameters,
+values, and descriptions while retaining DNP rows with a `dnp` flag.
+`to_pnp(variant=...)` omits DNP placements for the selected variant.
+
+Alternate fitted component rows are preserved in project variant metadata but
+are not applied as semantic component replacements in BOM, netlist, PNP, or SVG
+output yet.
 
 Complex hierarchical sheets, repeated channels, and annotation-file driven
 designator mapping may still have edge cases. This release emits resolved

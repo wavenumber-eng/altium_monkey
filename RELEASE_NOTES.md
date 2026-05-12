@@ -1,33 +1,82 @@
-# altium-monkey 2026.05.08 Release Notes
+# altium-monkey 2026.05.12 Release Notes
 
-Package version: `2026.5.8`
+Package version: `2026.5.12`
 
-`2026.05.08` is represented in Python package metadata as the PEP 440
-canonical form `2026.5.8`.
+`2026.05.12` is represented in Python package metadata as the PEP 440
+canonical form `2026.5.12`.
+
+This release focuses on parser, extraction, rendering, and deterministic-output
+fixes that landed after `2026.5.8`.
 
 ## Bug Fixes
 
-IntLib source extraction is more tolerant of vendor-generated integrated
-libraries with malformed `LibCrossRef.Txt` component metadata. `AltiumIntLib`
-now records the cross-reference parse failure on `component_parse_error` and
-continues to discover extractable `.SchLib`, `.PcbLib`, and `.PCB3DLib` source
-streams by scanning the OLE stream tree.
+### PCB metadata follows Windows-1252 text semantics
 
-PCB SVG rendering now keeps unlinked copper regions in the normal copper layer
-color. This improves previews for vendor custom pad shapes that arrive as
-unlinked `ShapeBasedRegion` or region primitives. Linked polygon pours still use
-the configured polygon overlay color.
+PcbDoc and PcbLib pipe-text metadata now uses Windows-1252 encoding and
+decoding to match Altium's native serializer. This fixes footprint extraction
+and library authoring for real-world files that contain Windows-1252
+punctuation bytes such as `0x96` in footprint descriptions.
 
-## Documentation
+The shared fix covers length-prefixed PCB text streams, PcbDoc board and record
+metadata, PcbLib footprint parameters, `ComponentParamsTOC`, `SectionKeys`,
+`Library/Data`, and footprint catalog names. Invalid source bytes are decoded
+with replacement, and write paths replace characters that cannot be represented
+in Windows-1252.
 
-The public docs now include an IntLib guide covering source extraction,
-metadata fallback behavior, and the extract-only support boundary.
+### Schematic rendering handles template-owned parent-bound records
+
+`SchDoc.to_geometry()` and `SchDoc.to_svg()` no longer crash when a template
+contains parent-bound harness entries or sheet entries. These records are
+positioned through their parent harness connector or sheet symbol, so the
+generic template-child rendering path now skips them defensively instead of
+calling their geometry methods without parent context.
+
+### Schematic rendering respects component display modes
+
+Schematic rendering now filters component body and child primitives by the
+active Altium display mode. Multi-mode components no longer render inactive
+mode graphics on top of the selected mode.
+
+### Schematic image rendering uses stable runtime image keys
+
+Image records without a stored `UniqueID` now get stable runtime image keys
+during geometry and SVG rendering. This prevents collisions when multiple image
+records are present and keeps generated image href maps aligned with rendered
+geometry. The image pipeline also has a more stable PNG path for background
+color to alpha conversion.
+
+### Schematic symbol extraction preserves designators
+
+`altium_schdoc_symbol_extractor` now preserves designator text when extracting
+symbol definitions from placed schematic components. Extracted symbols restore
+placed designators to their library-style prefix form, such as `R?` or `U?`,
+instead of dropping the designator during conversion.
+
+### Design and netlist JSON output is more deterministic
+
+Design JSON, netlist, and pick-and-place related output now uses stronger
+sorting and de-duplication for projects, components, variants, graphical
+references, terminals, aliases, endpoints, hierarchy paths, and PNP parameter
+maps. This reduces output jitter between runs and makes downstream diffs more
+stable.
+
+### SchLib preview parity improvements
+
+SchLib bounds, geometry, and SVG helpers now support display-mode selection for
+symbols with alternate graphics. SchLib SVG rendering also has an optional
+`pin_text_follows_orientation` mode for editor-style symbol previews, and empty
+symbol weighting is aligned with the canonical baseline used by the package.
 
 ## Public API Compatibility
 
-The `AltiumIntLib.component_parse_error` property is additive. Existing IntLib
-code that reads `components`, `get_source_entries()`, `read_stream(...)`, or
-`extract_sources(...)` should continue to work.
+Existing documented APIs remain compatible. The release adds optional keyword
+arguments for SchLib display-mode and pin-text preview behavior, so existing
+callers keep the previous defaults.
+
+Exact serialized ordering for design JSON, netlist, and PNP data may change in
+golden-file tests because output ordering is now more deterministic. PCB text
+metadata now normalizes Windows-1252 byte streams to Unicode strings on read and
+serializes those fields as Windows-1252 on write.
 
 We strive to maintain compatibility for documented public APIs between
 releases. The API surface may still change as more Altium capabilities are
@@ -99,16 +148,27 @@ correctly.
 
 ### Variant Processing
 
-Variant processing includes DNP handling and parameter overrides for this
-release.
+Project variant support includes `ProjectVariantN` parsing, current-variant
+selection, DNP/not-fitted designator lists, raw variation rows, variant-level
+parameter rows, per-designator `ParamVariation` parameter overrides, and
+variant metadata in design JSON.
 
-Other variant behaviors, such as alternate fitted components and variant-aware
-SVG presentation, are not part of the core public API yet.
+`AltiumDesign.to_bom(variant=...)` applies parameter overrides to component
+parameter maps, display values, and descriptions while retaining DNP rows with a
+`dnp` flag. `AltiumDesign.to_pnp(variant=...)` omits DNP placements for the
+selected variant. Native BOM and PNP CLI output is checked against the Python
+variant behavior.
+
+Alternate fitted component rows are preserved in raw variant metadata but are
+not applied as semantic component replacements in BOM, netlist, PNP, or SVG
+output yet. Variant-aware schematic SVG presentation is also outside the core
+public API for this release.
 
 ### Platform Coverage
 
-Primary release validation has been on Windows.
+Primary release validation remains on Windows.
 
-Linux and macOS testing is minimal for this release. The SVG font substitution
-path may need additional platform-specific validation because available system
-fonts and font fallback behavior vary by machine.
+Basic package operation has also been checked on macOS, including baseline
+functional SVG font substitution. Linux coverage remains limited, and exact SVG
+font metrics may still vary by installed system fonts and local fallback
+behavior.

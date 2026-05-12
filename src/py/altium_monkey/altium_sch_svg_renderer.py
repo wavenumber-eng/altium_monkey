@@ -2013,6 +2013,14 @@ class SchSvgRenderContext:
     # When False (default): Pin text follows rotation rules based on pin orientation
     schlib_mode: bool = False
 
+    # Editor-style override for SchLib pin text rotation.
+    # When True: even in schlib_mode, pin name/designator text follows the
+    # same rotation rules as SchDoc rendering - vertical pins get rotated
+    # text by default, matching the on-screen Altium SchLib editor view.
+    # When False (default): preserve the schlib_mode no-rotation behavior
+    # required for native Altium SchLib SVG-export parity.
+    pin_text_follows_orientation: bool = False
+
     # Component wrapping mode
     # When True: Wrap each component in a <g id="COMP_UNIQUE_ID" data-designator="R1">
     # When False (default): Flat SVG matching Altium's native output (for validation tests)

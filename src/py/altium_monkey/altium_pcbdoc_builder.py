@@ -759,7 +759,7 @@ def _extract_length_prefixed_ascii_body(data: bytes) -> str:
     length = struct.unpack("<I", data[:4])[0]
     if len(data) < 4 + length:
         raise ValueError("Invalid length-prefixed ASCII stream")
-    return data[4 : 4 + length].decode("latin-1").rstrip("\x00")
+    return data[4 : 4 + length].decode("cp1252", errors="replace").rstrip("\x00")
 
 
 def _extract_length_prefixed_utf16le_body(data: bytes) -> str:
@@ -1096,7 +1096,7 @@ class PcbDocBoardData:
         trailing_nul = body_bytes.endswith(b"\x00")
         if trailing_nul:
             body_bytes = body_bytes[:-1]
-        text = body_bytes.decode("latin-1")
+        text = body_bytes.decode("cp1252", errors="replace")
         return cls(
             segments=tuple(
                 PcbDocBoardDataSegment.from_text(part) for part in text.split("\r")
@@ -1716,7 +1716,9 @@ class PcbDocAsciiRecordData(_PcbDocAsciiBoardDataStreamMixin):
         if trailing_nul:
             body_bytes = body_bytes[:-1]
         return cls(
-            record=PcbDocBoardDataSegment.from_text(body_bytes.decode("latin-1")),
+            record=PcbDocBoardDataSegment.from_text(
+                body_bytes.decode("cp1252", errors="replace")
+            ),
             trailing_nul=trailing_nul,
         )
 
@@ -1753,7 +1755,9 @@ class PcbDocPadViaLibraryData(_PcbDocAsciiBoardDataStreamMixin):
         if trailing_nul:
             body_bytes = body_bytes[:-1]
         return cls(
-            record=PcbDocBoardDataSegment.from_text(body_bytes.decode("latin-1")),
+            record=PcbDocBoardDataSegment.from_text(
+                body_bytes.decode("cp1252", errors="replace")
+            ),
             trailing_nul=trailing_nul,
         )
 
@@ -1867,7 +1871,9 @@ class PcbDocSignalClassesData(_PcbDocAsciiBoardDataStreamMixin):
         if trailing_nul:
             body_bytes = body_bytes[:-1]
         return cls(
-            record=PcbDocBoardDataSegment.from_text(body_bytes.decode("latin-1")),
+            record=PcbDocBoardDataSegment.from_text(
+                body_bytes.decode("cp1252", errors="replace")
+            ),
             trailing_nul=trailing_nul,
         )
 
@@ -2338,7 +2344,7 @@ class PcbDocFileVersionInfoData(_PcbDocEntryLookupMixin):
         trailing_nul = body_bytes.endswith(b"\x00")
         if trailing_nul:
             body_bytes = body_bytes[:-1]
-        text = body_bytes.decode("latin-1")
+        text = body_bytes.decode("cp1252", errors="replace")
         leading_pipe = text.startswith("|")
         if leading_pipe:
             text = text[1:]

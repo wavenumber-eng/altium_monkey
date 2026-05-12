@@ -1175,7 +1175,7 @@ def _parse_length_prefixed_properties(data: bytes) -> dict[str, str]:
     if length <= 0 or 4 + length > len(data):
         return {}
 
-    body = data[4 : 4 + length].decode("latin-1", errors="replace").rstrip("\x00")
+    body = data[4 : 4 + length].decode("cp1252", errors="replace").rstrip("\x00")
     result: dict[str, str] = {}
     for pair in body.split("|"):
         if "=" not in pair:

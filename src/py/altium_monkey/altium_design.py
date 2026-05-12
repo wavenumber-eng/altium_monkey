@@ -79,6 +79,27 @@ def _lookup_case_insensitive(values: dict[str, str], name: str) -> str | None:
     return None
 
 
+def _sorted_json_mapping(values: dict) -> dict:
+    return dict(sorted(values.items(), key=lambda item: str(item[0])))
+
+
+def _sorted_json_rows(values: object) -> list:
+    if not isinstance(values, list):
+        return []
+    return [
+        _sorted_json_mapping(row) if isinstance(row, dict) else row for row in values
+    ]
+
+
+def _sorted_parameter_overrides(
+    overrides: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    return {
+        designator: dict(sorted(parameters.items()))
+        for designator, parameters in sorted(overrides.items())
+    }
+
+
 def _resolve_component_value_from_parameters(
     *,
     base_value: str,
@@ -325,7 +346,10 @@ class AltiumDesign:
         if pnp_data is not None:
             result["pnp"] = pnp_data
 
-        result["nets"] = netlist.to_json()["nets"]
+        nets_data = netlist.to_json()["nets"]
+        for index, net_data in enumerate(nets_data, start=1):
+            net_data["uid"] = f"{index:012x}"
+        result["nets"] = nets_data
 
         if include_indexes:
             result["indexes"] = self._build_indexes(netlist, components_data)
@@ -472,7 +496,7 @@ class AltiumDesign:
             "filename": str(self.project.filepath.name)
             if self.project.filepath
             else None,
-            "parameters": dict(self.project.parameters),
+            "parameters": dict(sorted(self.project.parameters.items())),
         }
 
     def _build_variants_data(self) -> list[dict]:
@@ -500,10 +524,12 @@ class AltiumDesign:
             for key in ("variations", "parameters", "param_variations"):
                 values = variant_data.get(key, [])
                 if values:
-                    variant_entry[key] = values
+                    variant_entry[key] = _sorted_json_rows(values)
             parameter_overrides = _coerce_variant_parameter_overrides(variant_data)
             if parameter_overrides:
-                variant_entry["parameter_overrides"] = parameter_overrides
+                variant_entry["parameter_overrides"] = _sorted_parameter_overrides(
+                    parameter_overrides
+                )
             variants_list.append(variant_entry)
 
         return variants_list
@@ -546,7 +572,7 @@ class AltiumDesign:
             "description": comp.description,
             "hierarchy": hierarchy.to_json(),
             "classification": classification.to_json(),
-            "parameters": comp.parameters,
+            "parameters": dict(sorted(comp.parameters.items())),
         }
 
     def _parse_hierarchy(self, designator: str, sheet: str) -> ComponentHierarchy:

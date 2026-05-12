@@ -43,6 +43,12 @@ def _altium_net_sort_key(s: str) -> list:
     return result
 
 
+def _altium_net_total_sort_key(s: str) -> tuple[list, str]:
+    """Deterministic net sort key with raw-name tie-break for case variants."""
+
+    return (_altium_net_sort_key(s), s)
+
+
 CHAR_REPLACEMENTS = {
     "Ω": "O",
 }
@@ -246,7 +252,7 @@ def _emit_port_named_nets(
 
     port_names_sorted = sorted(
         set(port_names_ordered),
-        key=_altium_net_sort_key,
+        key=_altium_net_total_sort_key,
         reverse=True,
     )
     for name in port_names_sorted:
@@ -363,7 +369,7 @@ def _emit_auto_named_nets(
             name = f"Net{first_pin.component_designator}_{first_pin.designator}"
             auto_nets.append((name, pins, root))
 
-    auto_nets.sort(key=lambda item: _altium_net_sort_key(item[0]), reverse=True)
+    auto_nets.sort(key=lambda item: _altium_net_total_sort_key(item[0]), reverse=True)
     for name, pins, root in auto_nets:
         nets.append(create_net(name, pins, root, is_auto_named=True))
         processed_roots.add(root)
@@ -373,6 +379,7 @@ __all__ = [
     "CHASSIS_GND_MAPPINGS",
     "POWER_PIN_NAMES",
     "_altium_net_sort_key",
+    "_altium_net_total_sort_key",
     "_emit_auto_named_nets",
     "_emit_bridge_roots",
     "_emit_named_roots",

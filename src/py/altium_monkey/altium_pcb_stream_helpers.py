@@ -6,19 +6,32 @@ import struct
 
 
 def build_length_prefixed_ascii(body: str) -> bytes:
-    """Encode an ASCII body as `[uint32 len][payload]`."""
-    body_bytes = body.encode("latin-1")
+    """Encode a Windows-MBCS body as `[uint32 len][payload]`.
+
+    Altium is a Windows application and writes parameter bodies in
+    Windows-1252 (cp1252), so byte 0x96 maps to U+2013 en-dash, 0x91-0x94
+    to smart quotes, etc. Encode with cp1252 to round-trip exactly with
+    Altium's native serializer (matches the schematic-side precedent in
+    `altium_record_sch__pin.py`).
+    """
+    body_bytes = body.encode("cp1252", errors="replace")
     return struct.pack("<I", len(body_bytes)) + body_bytes
 
 
 def extract_length_prefixed_ascii(data: bytes) -> str:
-    """Decode an ASCII `[uint32 len][payload]` stream body."""
+    """Decode a Windows-MBCS `[uint32 len][payload]` stream body.
+
+    Paired with `build_length_prefixed_ascii`; uses cp1252 so high bytes
+    decode to their Altium-canonical Unicode codepoints (e.g. byte 0x96
+    -> U+2013 en-dash) rather than the C1 control range U+0080-U+009F
+    that bare latin-1 would produce.
+    """
     if len(data) < 4:
         raise ValueError("Invalid length-prefixed stream")
     length = struct.unpack("<I", data[:4])[0]
     if len(data) < 4 + length:
         raise ValueError("Invalid length-prefixed stream")
-    return data[4 : 4 + length].decode("latin-1").rstrip("\x00")
+    return data[4 : 4 + length].decode("cp1252", errors="replace").rstrip("\x00")
 
 
 def count_length_prefixed_records(data: bytes | None) -> int:

@@ -1,7 +1,7 @@
 """Schematic record model for SchRecordType.IMAGE."""
 
 import re
-from typing import Any
+from typing import Any, Protocol
 from xml.etree import ElementTree
 
 from .altium_sch_enums import Rotation90
@@ -21,6 +21,150 @@ from .altium_sch_record_helpers import (
     detect_case_mode_method_from_dotted_uppercase_fields,
 )
 from .altium_sch_svg_renderer import SchSvgRenderContext
+
+
+class _RgbaImageBuffer(Protocol):
+    mode: str
+    size: tuple[int, int]
+
+    def convert(self, mode: str) -> "_RgbaImageBuffer": ...
+
+    def tobytes(self) -> bytes: ...
+
+
+def _png_u32(value: int) -> bytes:
+    return int(value).to_bytes(4, "big", signed=False)
+
+
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    import zlib
+
+    crc = zlib.crc32(kind)
+    crc = zlib.crc32(payload, crc)
+    return _png_u32(len(payload)) + kind + payload + _png_u32(crc & 0xFFFFFFFF)
+
+
+def _png_filter_score(value: int) -> int:
+    return value if value < 128 else 256 - value
+
+
+def _png_paeth_predictor(left: int, up: int, upper_left: int) -> int:
+    pa = abs(up - upper_left)
+    pb = abs(left - upper_left)
+    pc = abs(left + up - (2 * upper_left))
+    if pa <= pb and pa <= pc:
+        return left
+    if pb <= pc:
+        return up
+    return upper_left
+
+
+def _filter_rgba_rows_pillow_style(
+    rgba_pixels: bytes,
+    width: int,
+    height: int,
+) -> bytes:
+    bytes_per_pixel = 4
+    row_bytes = width * bytes_per_pixel
+    filtered = bytearray()
+    previous = bytearray(row_bytes + 1)
+
+    for y in range(height):
+        row_start = y * row_bytes
+        current = bytearray(1 + row_bytes)
+        current[1:] = rgba_pixels[row_start : row_start + row_bytes]
+
+        best_row = current
+        best_score = sum(_png_filter_score(value) for value in current[1:])
+
+        if best_score > 0:
+            up = bytearray(1 + row_bytes)
+            up[0] = 2
+            score = 0
+            for index in range(1, row_bytes + 1):
+                value = (current[index] - previous[index]) & 0xFF
+                up[index] = value
+                score += _png_filter_score(value)
+            if score < best_score:
+                best_row = up
+                best_score = score
+
+        if best_score > 0:
+            prior = bytearray(1 + row_bytes)
+            prior[0] = 1
+            score = 0
+            for index in range(1, min(row_bytes, bytes_per_pixel) + 1):
+                value = current[index]
+                prior[index] = value
+                score += _png_filter_score(value)
+            for index in range(bytes_per_pixel + 1, row_bytes + 1):
+                value = (current[index] - current[index - bytes_per_pixel]) & 0xFF
+                prior[index] = value
+                score += _png_filter_score(value)
+            if score < best_score:
+                best_row = prior
+                best_score = score
+
+        if best_score > 0:
+            paeth = bytearray(1 + row_bytes)
+            paeth[0] = 4
+            score = 0
+            for index in range(1, min(row_bytes, bytes_per_pixel) + 1):
+                value = (current[index] - previous[index]) & 0xFF
+                paeth[index] = value
+                score += _png_filter_score(value)
+            for index in range(bytes_per_pixel + 1, row_bytes + 1):
+                predictor = _png_paeth_predictor(
+                    current[index - bytes_per_pixel],
+                    previous[index],
+                    previous[index - bytes_per_pixel],
+                )
+                value = (current[index] - predictor) & 0xFF
+                paeth[index] = value
+                score += _png_filter_score(value)
+            if score < best_score:
+                best_row = paeth
+
+        filtered.extend(best_row)
+        previous = current
+
+    return bytes(filtered)
+
+
+def _encode_rgba_png_pillow_style(
+    rgba_pixels: bytes,
+    width: int,
+    height: int,
+) -> bytes:
+    import zlib
+
+    if width <= 0 or height <= 0 or len(rgba_pixels) != width * height * 4:
+        raise ValueError("invalid RGBA PNG buffer dimensions")
+
+    filtered = _filter_rgba_rows_pillow_style(rgba_pixels, width, height)
+    compressor = zlib.compressobj(
+        level=-1,
+        method=zlib.DEFLATED,
+        wbits=15,
+        memLevel=9,
+        strategy=zlib.Z_FILTERED,
+    )
+    compressed = compressor.compress(filtered) + compressor.flush()
+
+    png = bytearray(b"\x89PNG\r\n\x1a\n")
+    ihdr = _png_u32(width) + _png_u32(height) + bytes((8, 6, 0, 0, 0))
+    png.extend(_png_chunk(b"IHDR", ihdr))
+    for offset in range(0, len(compressed), 65536):
+        png.extend(_png_chunk(b"IDAT", compressed[offset : offset + 65536]))
+    png.extend(_png_chunk(b"IEND", b""))
+    return bytes(png)
+
+
+def _save_rgba_image_as_stable_png(img: _RgbaImageBuffer) -> bytes:
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    width, height = img.size
+    return _encode_rgba_png_pillow_style(img.tobytes(), int(width), int(height))
 
 
 class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
@@ -321,10 +465,10 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
         regardless of their original format. This includes JPG, BMP, GIF,
         EMF/WMF, and SVG inputs.
 
-        This means the base64 data in the SVG xlink:href is ALWAYS image/png, never the
-        original format. Different PNG encoders produce different (but visually equivalent)
-        output, so the base64 data won't match byte-for-byte between native Altium and
-        Python PIL encoding.
+        This means the base64 data in the SVG xlink:href is ALWAYS image/png,
+        never the original format. The background-to-alpha path uses a stable
+        PNG writer so native C++ and Python SVG output can match exactly even
+        when Pillow wheels are built with different zlib backends.
 
         When the original file is available, prefer it over embedded bytes so
         transparency and format metadata survive the conversion.
@@ -371,6 +515,7 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
                     img = self._apply_background_to_alpha(
                         img, background_color, alpha_tolerance
                     )
+                    return _save_rgba_image_as_stable_png(img)
                 output = io.BytesIO()
                 img.save(output, format="PNG")
                 return output.getvalue()
@@ -413,6 +558,7 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
                 img = self._apply_background_to_alpha(
                     img, background_color, alpha_tolerance
                 )
+                return _save_rgba_image_as_stable_png(img)
 
             # Save as PNG
             output = io.BytesIO()
@@ -619,6 +765,40 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
                 return original_size
         return self._get_embedded_image_size_px()
 
+    def runtime_image_key(self, document_id: str) -> str:
+        """
+        Return the runtime image href key for this image record.
+
+        Many legacy SchDoc title-block image records do not carry UniqueID.
+        Keep their IR identity fields anonymous, but give runtime resource
+        resolvers a stable per-record key so multiple anonymous images on the
+        same sheet do not collide.
+        """
+        unique_id = str(getattr(self, "unique_id", "") or "")
+        if unique_id:
+            return unique_id
+
+        index_in_sheet = getattr(self, "index_in_sheet", None)
+        if index_in_sheet is not None:
+            try:
+                return f"{document_id}\\image:{int(index_in_sheet)}"
+            except (TypeError, ValueError):
+                pass
+
+        location = getattr(self, "location", CoordPoint())
+        corner = getattr(self, "corner", CoordPoint())
+        owner_part_id = getattr(self, "owner_part_id", None)
+        owner_display_mode = getattr(self, "owner_part_display_mode", None)
+        return (
+            f"{document_id}\\image:"
+            f"{getattr(self, 'owner_index', 0)}:"
+            f"{owner_part_id if owner_part_id is not None else 'none'}:"
+            f"{owner_display_mode if owner_display_mode is not None else 'none'}:"
+            f"{location.x},{location.y},{location.x_frac},{location.y_frac}:"
+            f"{corner.x},{corner.y},{corner.x_frac},{corner.y_frac}:"
+            f"{getattr(self, 'filename', '') or ''}"
+        )
+
     def to_geometry(
         self,
         ctx: SchSvgRenderContext | None = None,
@@ -713,6 +893,12 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
         right_units = max(dest_x1, dest_x2)
         top_units = min(dest_y1, dest_y2)
         bottom_units = max(dest_y1, dest_y2)
+        unique_id = str(self.unique_id or "")
+        extras = (
+            {"image_key": self.runtime_image_key(document_id)}
+            if not unique_id
+            else {}
+        )
         return SchGeometryRecord(
             handle=f"{document_id}\\{self.unique_id}",
             unique_id=self.unique_id,
@@ -729,4 +915,5 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
                 operations,
                 units_per_px=units_per_px,
             ),
+            extras=extras,
         )

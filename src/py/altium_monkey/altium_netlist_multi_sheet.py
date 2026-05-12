@@ -11,7 +11,7 @@ from dataclasses import replace
 from copy import copy
 from typing import TYPE_CHECKING, Optional
 
-from .altium_netlist_common import _altium_net_sort_key
+from .altium_netlist_common import _altium_net_total_sort_key
 from .altium_netlist_multi_sheet_support import (
     SheetEntryLink,
     _bridge_power_keys_by_net_labels,
@@ -2234,7 +2234,7 @@ class AltiumNetlistMultiSheetCompiler:
         if self._channel_instances:
             final_nets = [net for net in final_nets if net.terminals]
 
-        final_nets.sort(key=lambda net: _altium_net_sort_key(net.name), reverse=True)
+        final_nets.sort(key=lambda net: _altium_net_total_sort_key(net.name), reverse=True)
         return final_nets
 
     def _paths_from_source_sheets(

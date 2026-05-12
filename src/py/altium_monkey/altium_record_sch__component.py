@@ -1448,6 +1448,29 @@ class AltiumSchComponent(SchGraphicalObject):
         except (TypeError, ValueError):
             return None
 
+    def _resolved_display_mode(self, display_mode: int | None = None) -> int | None:
+        if display_mode is None:
+            display_mode = getattr(self, "display_mode", None)
+        try:
+            return int(display_mode) if display_mode is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _display_mode_matches(
+        self,
+        record: object,
+        display_mode: int | None = None,
+    ) -> bool:
+        resolved_display_mode = self._resolved_display_mode(display_mode)
+        if resolved_display_mode is None:
+            return True
+        if not hasattr(record, "owner_part_display_mode"):
+            return True
+        record_mode = getattr(record, "owner_part_display_mode", None)
+        if record_mode is None:
+            record_mode = 0
+        return int(record_mode) == resolved_display_mode
+
     def _unique_records(self, records: list[object]) -> list[object]:
         result: list[object] = []
         seen: set[int] = set()
@@ -1465,6 +1488,7 @@ class AltiumSchComponent(SchGraphicalObject):
         part_id: int | None = None,
     ) -> list[object]:
         resolved_part_id = self._resolved_part_id(part_id)
+        resolved_display_mode = self._resolved_display_mode()
         pin_ids = {id(pin) for pin in getattr(self, "pins", []) or []}
         parameter_ids = {id(param) for param in getattr(self, "parameters", []) or []}
         body_records = self._unique_records(
@@ -1481,6 +1505,7 @@ class AltiumSchComponent(SchGraphicalObject):
             record
             for record in body_records
             if self._part_matches(record, resolved_part_id)
+            and self._display_mode_matches(record, resolved_display_mode)
         ]
 
     def display_body_element_ids(
@@ -1574,9 +1599,12 @@ class AltiumSchComponent(SchGraphicalObject):
                 records.append(child)
 
         resolved_part_id = self._resolved_part_id(part_id)
+        resolved_display_mode = self._resolved_display_mode()
         rects: list[SchRectMils] = []
         for record in self._unique_records(records):
             if not self._part_matches(record, resolved_part_id):
+                continue
+            if not self._display_mode_matches(record, resolved_display_mode):
                 continue
             bounds = self._record_bounds_mils(record)
             if bounds is not None:
@@ -1680,6 +1708,7 @@ class AltiumSchComponent(SchGraphicalObject):
         native_multipart_junction_wrappers = self.part_count > 1 and getattr(
             ctx, "native_svg_export", False
         )
+        resolved_display_mode = self._resolved_display_mode()
         component_children = sorted(
             [("graphic", child) for child in self.graphics]
             + [("pin", child) for child in self.pins]
@@ -1697,6 +1726,8 @@ class AltiumSchComponent(SchGraphicalObject):
                 and owner_part > 0
                 and owner_part != self.current_part_id
             ):
+                continue
+            if not self._display_mode_matches(child, resolved_display_mode):
                 continue
             if (
                 child_kind == "pin"

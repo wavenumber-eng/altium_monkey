@@ -33,6 +33,7 @@ from .altium_sch_implementation_helpers import (
     clean_implementation_child_record_fields,
     clean_implementation_record_fields,
 )
+from .altium_sch_display_mode import record_belongs_to_display_mode
 from .altium_sch_json_object_types import sch_json_object_type_from_record
 from .altium_sch_record_factory import (
     create_record_from_record,
@@ -1060,7 +1061,9 @@ class AltiumSymbol:
             self._update_bounds_point(bounds, obj.corner.x, obj.corner.y)
 
     def get_bounds(
-        self, part_id: int | None = None
+        self,
+        part_id: int | None = None,
+        display_mode: int | None = None,
     ) -> tuple[int, int, int, int] | None:
         """
         Calculate the bounding box for this symbol in internal units (10-mil).
@@ -1069,6 +1072,8 @@ class AltiumSymbol:
             part_id: For multi-part symbols, calculate bounds only for this part.
                      If None, calculates bounds for all parts combined.
                      Records with owner_part_id=0 or -1 are shared across all parts.
+            display_mode: Optional Altium symbol display mode/body style.
+                          If None, calculates bounds for all display modes.
 
         Returns:
             Tuple of (min_x, min_y, max_x, max_y) in internal units, or None if
@@ -1089,26 +1094,36 @@ class AltiumSymbol:
         for graphic in self.graphic_primitives:
             if not AltiumSchLib._record_belongs_to_part(graphic, part_id):
                 continue
+            if not record_belongs_to_display_mode(graphic, display_mode):
+                continue
             self._update_graphic_bounds(bounds, graphic)
 
         for pin in self.pins:
             if not AltiumSchLib._record_belongs_to_part(pin, part_id):
+                continue
+            if not record_belongs_to_display_mode(pin, display_mode):
                 continue
             self._update_pin_bounds(bounds, pin)
 
         for img in self.images:
             if not AltiumSchLib._record_belongs_to_part(img, part_id):
                 continue
+            if not record_belongs_to_display_mode(img, display_mode):
+                continue
             self._update_corner_bounds(bounds, img)
 
         for label in self.labels:
             if not AltiumSchLib._record_belongs_to_part(label, part_id):
+                continue
+            if not record_belongs_to_display_mode(label, display_mode):
                 continue
             if hasattr(label, "location"):
                 self._update_bounds_point(bounds, label.location.x, label.location.y)
 
         for text_frame in self.text_frames:
             if not AltiumSchLib._record_belongs_to_part(text_frame, part_id):
+                continue
+            if not record_belongs_to_display_mode(text_frame, display_mode):
                 continue
             self._update_corner_bounds(bounds, text_frame)
 
@@ -1141,6 +1156,9 @@ class AltiumSymbol:
         part_count_stored = int(record.get("PartCount", record.get("PARTCOUNT", 1)))
         self.part_count = part_count_stored - 1 if part_count_stored > 1 else 1
         self.display_mode = int(record.get("DisplayMode", record.get("DISPLAYMODE", 0)))
+        self.display_mode_count = int(
+            record.get("DisplayModeCount", record.get("DISPLAYMODECOUNT", 1))
+        )
 
     def _add_image_record(self, record: dict[str, Any]) -> None:
         image_obj = create_record_from_type(SchRecordType.IMAGE)
@@ -1832,10 +1850,13 @@ class AltiumSchLib(JsonApplyMixin):
     def _calculate_weight(self, minimal: bool = False) -> int:
         del minimal
 
-        total = 1
+        total = 1  # lib
         for symbol in self.symbols:
-            total += 1
-            total += 1
+            total += 1  # comp
+            total += 1  # designator baseline (always present in canonical empty symbol)
+            total += 1  # comment baseline (always present in canonical empty symbol)
+            total += 1  # implementation_list marker (always present)
+            total += 1  # implementation-list trailing baseline record
             total += len(symbol.pins)
             total += self._count_pin_synthetic_params(symbol.pins)
             total += self._count_graphics_weight(symbol.graphic_primitives)
@@ -2641,11 +2662,12 @@ class AltiumSchLib(JsonApplyMixin):
         padding: int,
         auto_fit: bool,
         part_id: int | None,
+        display_mode: int | None,
     ) -> tuple[int, int, float, float]:
         """
         Return (width, height, offset_x, offset_y) for symbol rendering.
         """
-        bounds = symbol.get_bounds(part_id=part_id)
+        bounds = symbol.get_bounds(part_id=part_id, display_mode=display_mode)
         if bounds is None:
             min_x, min_y, max_x, max_y = -10, -10, 10, 10
         else:
@@ -2675,6 +2697,7 @@ class AltiumSchLib(JsonApplyMixin):
         *,
         document_id: str,
         part_id: int | None,
+        display_mode: int | None,
         should_skip: Any | None = None,
     ) -> None:
         """
@@ -2682,6 +2705,8 @@ class AltiumSchLib(JsonApplyMixin):
         """
         for obj in objects:
             if not self._record_belongs_to_part(obj, part_id):
+                continue
+            if not record_belongs_to_display_mode(obj, display_mode):
                 continue
             if should_skip is not None and should_skip(obj):
                 continue
@@ -2704,6 +2729,7 @@ class AltiumSchLib(JsonApplyMixin):
         *,
         document_id: str,
         part_id: int | None,
+        display_mode: int | None,
     ) -> dict[str, str]:
         """
         Append image geometry records and return runtime image hrefs.
@@ -2715,6 +2741,8 @@ class AltiumSchLib(JsonApplyMixin):
         runtime_image_hrefs: dict[str, str] = {}
         for image in symbol.images:
             if not self._record_belongs_to_part(image, part_id):
+                continue
+            if not record_belongs_to_display_mode(image, display_mode):
                 continue
             geometry_record = image.to_geometry(
                 ctx,
@@ -2739,7 +2767,12 @@ class AltiumSchLib(JsonApplyMixin):
             )
             if not png_data:
                 continue
-            runtime_image_hrefs[str(getattr(image, "unique_id", "") or "")] = (
+            runtime_key = (
+                image.runtime_image_key(document_id)
+                if hasattr(image, "runtime_image_key")
+                else str(getattr(image, "unique_id", "") or "")
+            )
+            runtime_image_hrefs[runtime_key] = (
                 "data:image/png;base64," + base64.b64encode(png_data).decode("ascii")
             )
         return runtime_image_hrefs
@@ -2753,9 +2786,11 @@ class AltiumSchLib(JsonApplyMixin):
         background: str = "#FFFFFF",
         auto_fit: bool = True,
         part_id: int | None = None,
+        display_mode: int | None = None,
         *,
         profile: str = "onscreen",
         render_options: SchSvgRenderOptions | None = None,
+        pin_text_follows_orientation: bool = False,
     ) -> SchGeometryDocument:
         """
         Build a symbol-scoped IR document for a standalone SchLib symbol render.
@@ -2776,6 +2811,7 @@ class AltiumSchLib(JsonApplyMixin):
             padding=padding,
             auto_fit=auto_fit,
             part_id=part_id,
+            display_mode=display_mode,
         )
 
         if render_options is None:
@@ -2801,6 +2837,7 @@ class AltiumSchLib(JsonApplyMixin):
             background_color=background,
             document_path=str(self.filepath) if self.filepath else None,
             schlib_mode=True,
+            pin_text_follows_orientation=pin_text_follows_orientation,
             options=render_options,
             sheet_area_color=0xFFFFFF,
         )
@@ -2815,6 +2852,7 @@ class AltiumSchLib(JsonApplyMixin):
             ctx,
             document_id=doc_unique_id,
             part_id=part_id,
+            display_mode=display_mode,
             should_skip=lambda graphic: (
                 "Designator" in type(graphic).__name__
                 or "Parameter" in type(graphic).__name__
@@ -2827,6 +2865,7 @@ class AltiumSchLib(JsonApplyMixin):
             ctx,
             document_id=doc_unique_id,
             part_id=part_id,
+            display_mode=display_mode,
         )
         runtime_image_hrefs = self._append_symbol_image_geometry_records(
             records,
@@ -2834,6 +2873,7 @@ class AltiumSchLib(JsonApplyMixin):
             ctx,
             document_id=doc_unique_id,
             part_id=part_id,
+            display_mode=display_mode,
         )
         self._append_symbol_geometry_records(
             records,
@@ -2841,6 +2881,7 @@ class AltiumSchLib(JsonApplyMixin):
             ctx,
             document_id=doc_unique_id,
             part_id=part_id,
+            display_mode=display_mode,
         )
         self._append_symbol_geometry_records(
             records,
@@ -2848,6 +2889,7 @@ class AltiumSchLib(JsonApplyMixin):
             ctx,
             document_id=doc_unique_id,
             part_id=part_id,
+            display_mode=display_mode,
         )
 
         document = SchGeometryDocument(
@@ -2873,6 +2915,7 @@ class AltiumSchLib(JsonApplyMixin):
             extras={
                 "symbol_name": symbol.name,
                 "part_id": part_id,
+                "display_mode": display_mode,
                 "background_color": background,
             },
         )
@@ -2888,6 +2931,9 @@ class AltiumSchLib(JsonApplyMixin):
         background: str = "#FFFFFF",
         auto_fit: bool = True,
         part_id: int | None = None,
+        display_mode: int | None = None,
+        *,
+        pin_text_follows_orientation: bool = False,
     ) -> str:
         """
         Render a single symbol from this library as a standalone SVG.
@@ -2904,6 +2950,9 @@ class AltiumSchLib(JsonApplyMixin):
                       If False, use width/height (defaults to 800x600 if not specified).
             part_id: For multipart symbols, render only graphics/pins belonging to this part.
                      If None, renders all parts (original behavior). Part IDs start at 1.
+            display_mode: For symbols with alternate display modes, render only
+                          graphics/pins for this display mode. If None, renders
+                          all display modes.
 
         Returns:
             Complete SVG document as string
@@ -2924,7 +2973,9 @@ class AltiumSchLib(JsonApplyMixin):
             background=background,
             auto_fit=auto_fit,
             part_id=part_id,
+            display_mode=display_mode,
             profile="onscreen",
+            pin_text_follows_orientation=pin_text_follows_orientation,
         )
         return SchGeometrySvgRenderer(
             SchGeometrySvgRenderOptions(

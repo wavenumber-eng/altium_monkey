@@ -42,9 +42,18 @@ prj.add_variant("A", current=True)
 assert prj.get_current_variant() == "A"
 ```
 
-Variant processing in `AltiumDesign` is limited to DNP handling in this
-release. Alternate fitted components and variant parameter overrides are not
-fully modeled yet.
+`AltiumPrjPcb.variants` parses existing `ProjectVariantN` sections, including
+raw variation rows, DNP/not-fitted designators, variant-level parameter rows,
+per-designator `ParamVariation` rows, grouped parameter overrides, and the
+variant unique id / fabrication flag.
+
+`add_variant(...)` creates or updates an empty project variant. It does not
+author component-level fitted/not-fitted rows or alternate-part rows.
+
+`AltiumDesign` applies variant parameter overrides to BOM rows and uses
+DNP/not-fitted rows for BOM/PnP variant handling. Alternate fitted component
+rows are preserved in raw variant metadata but are not applied as semantic
+component replacements yet.
 
 ## Documents
 
