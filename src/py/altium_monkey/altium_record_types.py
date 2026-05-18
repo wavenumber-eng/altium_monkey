@@ -363,6 +363,14 @@ class PcbLayer(IntEnum):
         """
         return _LAYER_TO_JSON.get(self, f"UNKNOWN_{self.value}")
 
+    def to_display_name(self) -> str:
+        """
+        Return a human-readable display name (e.g. "Top Layer", "Top Overlay").
+        """
+        from .altium_resolved_layer_stack import _LEGACY_TO_DISPLAY
+
+        return _LEGACY_TO_DISPLAY.get(self.value, f"Unknown ({self.value})")
+
     @classmethod
     def from_json_name(cls, name: str) -> "PcbLayer":
         """

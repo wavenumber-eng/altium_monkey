@@ -1545,7 +1545,9 @@ class PcbSvgRenderer:
         layer_name_by_id = {
             int(layer.value): layer.to_json_name() for layer in all_layers_for_metadata
         }
-        layer_display_name_by_id = dict(layer_name_by_id)
+        layer_display_name_by_id = {
+            int(layer.value): layer.to_display_name() for layer in all_layers_for_metadata
+        }
         layer_key_by_id = {layer_id: f"L{layer_id}" for layer_id in all_layer_ids}
         if has_drill_holes:
             layer_name_by_id[PCB_SVG_DRILLS_LAYER_ID] = PCB_SVG_DRILLS_LAYER_NAME

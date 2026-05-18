@@ -292,6 +292,7 @@ class SchGeometrySvgRenderer:
             'xmlns:xlink="http://www.w3.org/1999/xlink" '
             'stroke-linecap="round" stroke-linejoin="round" fill="none" '
             f'width="{_fmt_num(width_px)}" height="{_fmt_num(height_px)}" '
+            f'viewBox="0 0 {_fmt_num(width_px)} {_fmt_num(height_px)}" '
             f'data-doc-id="{html.escape(doc_id)}" data-doc-ver="2">'
         )
         lines.append('<g id = "scene" >')
