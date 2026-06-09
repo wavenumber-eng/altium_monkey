@@ -241,10 +241,12 @@ class AltiumNetlistSingleSheetCompiler:
         Extract pins using clean SchDoc API.
 
                 Pins from components inside compile masks are excluded.
-                Pins from alternate display modes are excluded (only primary mode pins included).
+
+                Display-mode filtering is handled upstream: ``get_all_pins`` only
+                yields pins for each component's active display mode, so a symbol's
+                inactive alternate-representation pins never reach the netlist.
         """
         masked_count = 0
-        display_mode_count = 0
         for pin in self.schdoc.get_all_pins():
             # Check if the parent component is inside a compile mask
             comp = pin.component
@@ -257,27 +259,10 @@ class AltiumNetlistSingleSheetCompiler:
                     masked_count += 1
                     continue
 
-            # Exclude pins from alternate display modes (only include primary mode)
-            # Primary mode is owner_part_display_mode = None or 0
-            # Alternate modes (1, 2, etc.) are for different symbol representations
-            raw_pin = pin.pin
-            display_mode = getattr(raw_pin, "owner_part_display_mode", None)
-            if display_mode is not None and display_mode != 0:
-                log.debug(
-                    f"Pin {pin.component_designator}.{pin.designator} excluded "
-                    f"(display_mode={display_mode})"
-                )
-                display_mode_count += 1
-                continue
-
             self._pins.append(pin)
         if masked_count > 0:
             log.debug(
                 f"Excluded {masked_count} pins from components inside compile masks"
-            )
-        if display_mode_count > 0:
-            log.debug(
-                f"Excluded {display_mode_count} pins from alternate display modes"
             )
 
     def _extract_wires(self) -> None:

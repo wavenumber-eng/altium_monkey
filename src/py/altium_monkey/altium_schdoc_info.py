@@ -30,6 +30,7 @@ from .altium_record_sch__power_port import AltiumSchPowerPort
 from .altium_record_sch__sheet_entry import AltiumSchSheetEntry
 from .altium_record_sch__sheet_symbol import AltiumSchSheetSymbol
 from .altium_record_types import SchRectMils
+from .altium_sch_display_mode import record_belongs_to_display_mode
 from .altium_sch_enums import OffSheetConnectorStyle, PinElectrical
 
 
@@ -83,15 +84,37 @@ class SchComponentInfo(_RecordLocationInfoMixin):
         return ""
 
     @property
+    def display_mode(self) -> int:
+        """
+        Active display mode for this component (0 = primary/normal).
+
+        Altium symbols can carry an alternate representation with its own pin
+        geometry. The component records which one is active, and the schematic is
+        drawn and wired against that mode. Connectivity and pin counts must follow
+        the active mode rather than assuming the primary one.
+        """
+        return getattr(self.record, "display_mode", 0) or 0
+
+    @property
     def pins(self) -> list[AltiumSchPin]:
         """
-        Pins for this component, filtered for the active part.
+        Pins for this component, filtered for the active part and display mode.
+
+        Pins belonging to an inactive display mode are excluded: they are not
+        drawn or wired on the sheet, so including them would inflate pin counts
+        and break netlist connectivity (see ``display_mode``).
         """
         current_part = getattr(self.record, "current_part_id", 1)
+        active_display_mode = self.display_mode
         result: list[AltiumSchPin] = []
         for pin in self.record.pins:
             owner_part = getattr(pin, "owner_part_id", None)
-            if owner_part is None or owner_part <= 0 or owner_part == current_part:
+            part_matches = (
+                owner_part is None or owner_part <= 0 or owner_part == current_part
+            )
+            if part_matches and record_belongs_to_display_mode(
+                pin, active_display_mode
+            ):
                 result.append(pin)
         return result
 
