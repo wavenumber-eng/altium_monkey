@@ -67,6 +67,7 @@ def build_pcblib(output_path: Path = OUTPUT_PATH) -> Path:
         height=f"{FOOTPRINT_HEIGHT_MILS}mil",
         description="Resistor 0603 Medium Density",
     )
+    footprint.set_footprint_primitive_parameter("SampleParameter", "hello_pcblib")
 
     for designator, x_mils in (("1", -32.4803), ("2", 32.4803)):
         footprint.add_pad(

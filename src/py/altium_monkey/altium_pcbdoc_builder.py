@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import math
+import re
 import struct
 import uuid
 import zlib
@@ -41,15 +42,25 @@ from .altium_pcb_enums import (
     PcbLibIdentifierKind,
     PcbRegionKind,
     PcbTextAutoposition,
+    pcb_mechanical_layer_number_to_v7_saved_layer_id,
 )
 from .altium_pcb_extended_primitive_information import (
     AltiumPcbExtendedPrimitiveInformation,
     parse_extended_primitive_information_stream,
 )
+from .altium_pcb_custom_shapes import (
+    AltiumPcbCustomShapeRecord,
+    attach_custom_pad_shape,
+    build_pcblib_custom_pad_region_properties,
+    parse_custom_shapes_stream,
+    serialize_custom_shapes_stream,
+)
 from .altium_pcb_via_structure import (
     AltiumPcbViaStructure,
+    AltiumPcbViaStructureFeature,
     AltiumPcbViaStructureLink,
     VIA_STRUCTURE_STREAM_NAMES,
+    authored_via_structure_for_type,
     attach_via_structures_to_vias,
     build_via_structure_model_for_vias,
     via_model_owns_structure_streams,
@@ -1102,6 +1113,16 @@ class PcbDocBoardSheetFrame:
     height_mils: float
 
 
+@dataclass(frozen=True)
+class PcbCustomPadLayerShapeSpec:
+    """Additional layer-specific PcbDoc custom-pad body geometry."""
+
+    layer: int | PcbLayer
+    outline_points_mils: Sequence[tuple[float, float]]
+    hole_points_mils: Sequence[Sequence[tuple[float, float]]] = ()
+    outline_points_are_local: bool = True
+
+
 class PcbDocViewState(StrEnum):
     TWO_D = "2D"
     THREE_D = "3D"
@@ -1159,6 +1180,29 @@ class _PcbDocEntryLookupMixin:
                 return entry.value
             seen += 1
         return default
+
+
+def _coerce_mechanical_layer_id(layer: int | str | PcbLayer) -> int:
+    if isinstance(layer, PcbLayer):
+        layer_id = int(layer)
+    elif isinstance(layer, int):
+        layer_id = int(layer)
+    else:
+        token = "".join(ch for ch in str(layer or "").upper() if ch.isalnum())
+        if token.isdigit():
+            layer_id = int(token)
+        else:
+            try:
+                layer_id = int(PcbLayer.from_json_name(token))
+            except ValueError as exc:
+                raise ValueError(f"Unsupported mechanical layer: {layer!r}") from exc
+    if not PcbLayer.MECHANICAL_1.value <= layer_id <= PcbLayer.MECHANICAL_16.value:
+        raise ValueError(f"Layer is not Mechanical 1..16: {layer!r}")
+    return layer_id
+
+
+def _mechanical_layer_number(layer_id: int) -> int:
+    return int(layer_id) - PcbLayer.MECHANICAL_1.value + 1
 
 
 @dataclass(frozen=True)
@@ -1902,6 +1946,227 @@ class PcbDocBoardData:
                 entries=tuple(updated_entries),
                 leading_pipe=cache_segment.leading_pipe,
             ),
+        )
+
+    def _with_segment_value(
+        self,
+        key: str,
+        value: str,
+        *,
+        preferred_segment_key: str | None = None,
+    ) -> "PcbDocBoardData":
+        segment_index = self._segment_index_for_key(key)
+        if segment_index is not None:
+            return self.with_segment(
+                segment_index,
+                self.segments[segment_index].with_updated_value(key, value),
+            )
+
+        if preferred_segment_key is not None:
+            segment_index = self._segment_index_for_key(preferred_segment_key)
+        if segment_index is None:
+            segment_index = 0
+        segment = self.segments[segment_index]
+        return self.with_segment(
+            segment_index,
+            PcbDocBoardDataSegment(
+                entries=(
+                    *segment.entries,
+                    PcbDocBoardDataEntry(raw=f"{key}={value}"),
+                ),
+                leading_pipe=segment.leading_pipe,
+            ),
+        )
+
+    def _with_v9_cache_mechanical_layer(
+        self,
+        *,
+        v7_layer_id: int,
+        layer_name: str,
+        enabled: bool,
+    ) -> "PcbDocBoardData":
+        cache_segment_index = self._segment_index_for_entry_predicate(
+            lambda entry: bool(entry.key and LAYER_STACK_CACHE_RE.match(entry.key))
+        )
+        if cache_segment_index is None:
+            raise KeyError("Board6/Data V9 cache segment not found")
+
+        cache_segment = self.segments[cache_segment_index]
+        entries = list(cache_segment.entries)
+        groups: dict[int, dict[str, int]] = {}
+        max_index = -1
+        for index, entry in enumerate(entries):
+            key = entry.key or ""
+            match = LAYER_STACK_CACHE_RE.match(key)
+            if not match:
+                continue
+            cache_index = int(match.group(1))
+            suffix = match.group(2).upper()
+            max_index = max(max_index, cache_index)
+            groups.setdefault(cache_index, {})[suffix] = index
+
+        enabled_text = _format_bool_text(enabled)
+        found_group_index: int | None = None
+        for cache_index, positions in groups.items():
+            layerid_pos = positions.get("LAYERID")
+            if layerid_pos is None:
+                continue
+            if entries[layerid_pos].value != str(int(v7_layer_id)):
+                continue
+            found_group_index = cache_index
+            name_pos = positions.get("NAME")
+            if name_pos is not None:
+                entries[name_pos] = PcbDocBoardDataEntry(
+                    raw=f"V9_CACHE_LAYER{cache_index}_NAME={layer_name}"
+                )
+            else:
+                entries.append(
+                    PcbDocBoardDataEntry(
+                        raw=f"V9_CACHE_LAYER{cache_index}_NAME={layer_name}"
+                    )
+                )
+            enabled_pos = positions.get("MECHENABLED")
+            if enabled_pos is not None:
+                entries[enabled_pos] = PcbDocBoardDataEntry(
+                    raw=f"V9_CACHE_LAYER{cache_index}_MECHENABLED={enabled_text}"
+                )
+            else:
+                entries.append(
+                    PcbDocBoardDataEntry(
+                        raw=f"V9_CACHE_LAYER{cache_index}_MECHENABLED={enabled_text}"
+                    )
+                )
+            break
+
+        if found_group_index is None:
+            max_index += 1
+            entries.extend(
+                (
+                    PcbDocBoardDataEntry(
+                        raw=f"V9_CACHE_LAYER{max_index}_LAYERID={int(v7_layer_id)}"
+                    ),
+                    PcbDocBoardDataEntry(
+                        raw=f"V9_CACHE_LAYER{max_index}_NAME={layer_name}"
+                    ),
+                    PcbDocBoardDataEntry(
+                        raw=f"V9_CACHE_LAYER{max_index}_MECHENABLED={enabled_text}"
+                    ),
+                )
+            )
+
+        return self.with_segment(
+            cache_segment_index,
+            PcbDocBoardDataSegment(
+                entries=tuple(entries),
+                leading_pipe=cache_segment.leading_pipe,
+            ),
+        )
+
+    def with_mechanical_layer(
+        self,
+        layer: int | str | PcbLayer,
+        *,
+        name: str | None = None,
+        enabled: bool = True,
+    ) -> "PcbDocBoardData":
+        layer_id = _coerce_mechanical_layer_id(layer)
+        mechanical_number = _mechanical_layer_number(layer_id)
+        v7_layer_id = pcb_mechanical_layer_number_to_v7_saved_layer_id(
+            mechanical_number
+        )
+        if v7_layer_id is None:
+            raise ValueError(f"Unsupported mechanical layer: {layer!r}")
+
+        legacy_name_key = f"LAYER{layer_id}NAME"
+        existing_name = None
+        if name is None:
+            for segment in self.segments:
+                found = segment.get_value(legacy_name_key)
+                if found is not None and found.strip():
+                    existing_name = found.strip()
+                    break
+            if existing_name is None:
+                for segment in self.segments:
+                    for entry in segment.entries:
+                        key = entry.key or ""
+                        match = LAYER_STACK_CACHE_RE.match(key)
+                        if not match or match.group(2).upper() != "LAYERID":
+                            continue
+                        if entry.value != str(int(v7_layer_id)):
+                            continue
+                        name_key = f"V9_CACHE_LAYER{match.group(1)}_NAME"
+                        for candidate in segment.entries:
+                            if candidate.key == name_key and candidate.value:
+                                existing_name = candidate.value.strip()
+                                break
+                        break
+                    if existing_name is not None:
+                        break
+        layer_name = (
+            (name or "").strip() or existing_name or f"Mechanical {mechanical_number}"
+        )
+
+        prefix = f"LAYER{layer_id}"
+        updated = self._with_segment_value(
+            legacy_name_key,
+            layer_name,
+            preferred_segment_key="LAYER1NAME",
+        )
+        updated = updated._with_segment_value(
+            f"{prefix}MECHENABLED",
+            _format_bool_text(enabled),
+            preferred_segment_key="LAYER1NAME",
+        )
+        return updated._with_v9_cache_mechanical_layer(
+            v7_layer_id=v7_layer_id,
+            layer_name=layer_name,
+            enabled=enabled,
+        )
+
+    def _next_mechanical_pair_index(self) -> int:
+        pair_indices: set[int] = set()
+        for segment in self.segments:
+            for entry in segment.entries:
+                key = entry.key or ""
+                match = re.fullmatch(r"MECHPAIR(\d+)L[12]", key, re.IGNORECASE)
+                if match:
+                    pair_indices.add(int(match.group(1)))
+        candidate = 0
+        while candidate in pair_indices:
+            candidate += 1
+        return candidate
+
+    def with_mechanical_layer_pair(
+        self,
+        layer_1: int | str | PcbLayer,
+        layer_2: int | str | PcbLayer,
+        *,
+        pair_index: int | None = None,
+    ) -> "PcbDocBoardData":
+        layer_1_id = _coerce_mechanical_layer_id(layer_1)
+        layer_2_id = _coerce_mechanical_layer_id(layer_2)
+        if layer_1_id == layer_2_id:
+            raise ValueError("Mechanical layer pair endpoints must differ")
+        resolved_pair_index = (
+            self._next_mechanical_pair_index()
+            if pair_index is None
+            else int(pair_index)
+        )
+        if resolved_pair_index < 0:
+            raise ValueError("Mechanical layer pair index must be non-negative")
+
+        updated = self.with_mechanical_layer(layer_1_id, enabled=True)
+        updated = updated.with_mechanical_layer(layer_2_id, enabled=True)
+        prefix = f"MECHPAIR{resolved_pair_index}"
+        updated = updated._with_segment_value(
+            f"{prefix}L1",
+            f"MECHANICAL{_mechanical_layer_number(layer_1_id)}",
+            preferred_segment_key="LAYERPAIR0LOW",
+        )
+        return updated._with_segment_value(
+            f"{prefix}L2",
+            f"MECHANICAL{_mechanical_layer_number(layer_2_id)}",
+            preferred_segment_key=f"{prefix}L1",
         )
 
     def _segment_index_for_key(self, key: str) -> int | None:
@@ -3211,9 +3476,8 @@ class PcbDocBuilder:
             )
         )
         self.board_data: PcbDocBoardData = (
-            self.profile.board_data or PcbDocBoardData.from_bytes(
-            self.profile.raw_streams["Board6/Data"]
-            )
+            self.profile.board_data
+            or PcbDocBoardData.from_bytes(self.profile.raw_streams["Board6/Data"])
         )
         self.rules_data = self.profile.rules_data or PcbDocRulesData.from_bytes(
             self.profile.raw_streams["Rules6/Data"]
@@ -3325,6 +3589,11 @@ class PcbDocBuilder:
                 self.profile.raw_streams.get("ExtendedPrimitiveInformation/Data", b"")
             )
         )
+        self.custom_shapes = list(
+            parse_custom_shapes_stream(
+                self.profile.raw_streams.get("CustomShapes/Data", b"")
+            )
+        )
         self.via_structures: list[AltiumPcbViaStructure] = []
         self.via_structure_links: list[AltiumPcbViaStructureLink] = []
         self._via_structure_parse_failed = False
@@ -3383,6 +3652,7 @@ class PcbDocBuilder:
         self._texts_dirty = False
         self._vias_dirty = False
         self._extended_primitive_information_dirty = False
+        self._custom_shapes_dirty = False
         self._embedded_font_records: list[bytes] = []
         self._embedded_fonts_dirty = False
         self._authored_primitive_guids: list[tuple[PcbGuidType, uuid.UUID]] = []
@@ -3692,6 +3962,53 @@ class PcbDocBuilder:
         )
         self.board_regions_data = document.to_board_regions_data_for_new_pcbdoc(
             base_board_regions_data=self.board_regions_data,
+        )
+        return self
+
+    def set_mechanical_layer(
+        self,
+        layer: int | str | PcbLayer,
+        *,
+        name: str | None = None,
+        enabled: bool = True,
+    ) -> "PcbDocBuilder":
+        """
+        Set a mechanical layer display name and enabled state.
+
+        Args:
+            layer: Mechanical layer token, enum, or native id. Supported tokens
+                include `"MECHANICAL13"` and `PcbLayer.MECHANICAL_13`.
+            name: Optional display name. If omitted, Altium's default
+                `Mechanical N` label is used.
+            enabled: Whether the layer is enabled in the Board6 registry.
+        """
+        self.board_data = self.board_data.with_mechanical_layer(
+            layer,
+            name=name,
+            enabled=enabled,
+        )
+        return self
+
+    def set_mechanical_layer_pair(
+        self,
+        layer_1: int | str | PcbLayer,
+        layer_2: int | str | PcbLayer,
+        *,
+        pair_index: int | None = None,
+    ) -> "PcbDocBuilder":
+        """
+        Define a mechanical mirror pair used by component side flipping.
+
+        Args:
+            layer_1: First mechanical layer endpoint.
+            layer_2: Second mechanical layer endpoint.
+            pair_index: Optional native `MECHPAIR{N}` index. If omitted, the
+                first unused index is selected.
+        """
+        self.board_data = self.board_data.with_mechanical_layer_pair(
+            layer_1,
+            layer_2,
+            pair_index=pair_index,
         )
         return self
 
@@ -4174,6 +4491,10 @@ class PcbDocBuilder:
         paste_mask_expansion_mils: float | None = None,
         hole_positive_tolerance_mils: float | None = None,
         hole_negative_tolerance_mils: float | None = None,
+        is_test_fab_top: bool = False,
+        is_test_fab_bottom: bool = False,
+        is_assy_testpoint_top: bool = False,
+        is_assy_testpoint_bottom: bool = False,
         component_index: int | None = None,
     ) -> "PcbDocBuilder":
         pad = build_authored_pad(
@@ -4209,6 +4530,10 @@ class PcbDocBuilder:
             hole_positive_tolerance_mils=hole_positive_tolerance_mils,
             hole_negative_tolerance_mils=hole_negative_tolerance_mils,
         )
+        pad.is_test_fab_top = bool(is_test_fab_top)
+        pad.is_test_fab_bottom = bool(is_test_fab_bottom)
+        pad.is_assy_test_point_top = bool(is_assy_testpoint_top)
+        pad.is_assy_test_point_bottom = bool(is_assy_testpoint_bottom)
         pad.component_index = self._normalize_component_index(component_index)
         if net:
             self.add_net(net, preferred_width_mils=max(width_mils, height_mils))
@@ -4231,6 +4556,192 @@ class PcbDocBuilder:
         )
         return self
 
+    def _add_custom_pad_layer_shape(
+        self,
+        *,
+        pad: object,
+        zero_based_pad_index: int,
+        outline_points_mils: list[tuple[float, float]],
+        layer: int | PcbLayer,
+        hole_points_mils: list[list[tuple[float, float]]] | None = None,
+        component_index: int | None = None,
+        record: AltiumPcbCustomShapeRecord | None = None,
+    ) -> None:
+        self.add_region(
+            outline_points_mils=outline_points_mils,
+            layer=int(layer),
+            hole_points_mils=list(hole_points_mils or []),
+            is_shapebased=True,
+            component_index=component_index,
+        )
+        region = self.regions[-1]
+        shapebased_region = self.shapebased_regions[-1]
+        region_pad_index = int(zero_based_pad_index) + 1
+        custom_region_properties = build_pcblib_custom_pad_region_properties(
+            region=region,
+            shape_region=shapebased_region,
+            pad_index=region_pad_index,
+        )
+        region.properties = dict(custom_region_properties)
+        shapebased_region.properties = dict(custom_region_properties)
+        attach_custom_pad_shape(
+            pad,
+            source="builder",
+            region=region,
+            shape_region=shapebased_region,
+            record=record,
+            pad_index=zero_based_pad_index,
+            shape_kind=int(PadShape.CUSTOM),
+            layer=int(layer),
+            require_supported_layer=False,
+        )
+
+    def add_custom_pad(
+        self,
+        *,
+        designator: str,
+        position_mils: tuple[float, float],
+        outline_points_mils: list[tuple[float, float]],
+        layer: int | PcbLayer = PcbLayer.TOP,
+        offset_mils: tuple[float, float] = (0.0, 0.0),
+        anchor_diameter_mils: float = 1.0,
+        anchor_width_mils: float | None = None,
+        anchor_height_mils: float | None = None,
+        anchor_rotation_degrees: float = 0.0,
+        anchor_shape: int | str | PadShape = PadShape.CIRCLE,
+        pad_index: int | None = None,
+        hole_points_mils: list[list[tuple[float, float]]] | None = None,
+        outline_points_are_local: bool = True,
+        layer_shapes: Sequence[PcbCustomPadLayerShapeSpec] | None = None,
+        net: str | None = None,
+        solder_mask_expansion: PcbMaskExpansionInput = None,
+        solder_mask_expansion_mode: PcbMaskExpansionModeInput | None = None,
+        solder_mask_expansion_mils: float | None = None,
+        paste_mask_expansion: PcbMaskExpansionInput = None,
+        paste_mask_expansion_mode: PcbMaskExpansionModeInput | None = None,
+        paste_mask_expansion_mils: float | None = None,
+        component_index: int | None = None,
+    ) -> "PcbDocBuilder":
+        """
+        Add a custom pad using the native PcbDoc anchor-pad plus region shape.
+
+        `outline_points_mils` describes the primary custom body on `layer`.
+        Use `layer_shapes` for additional layer-specific bodies and holes that
+        share the same anchor pad.
+        """
+        if len(outline_points_mils) < 3:
+            raise ValueError("Custom pad outline requires at least 3 points")
+        anchor_width = (
+            float(anchor_diameter_mils)
+            if anchor_width_mils is None
+            else float(anchor_width_mils)
+        )
+        anchor_height = (
+            float(anchor_diameter_mils)
+            if anchor_height_mils is None
+            else float(anchor_height_mils)
+        )
+        if anchor_width <= 0.0 or anchor_height <= 0.0:
+            raise ValueError("Custom pad anchor dimensions must be positive")
+
+        layer_id = int(layer)
+        self.add_pad(
+            designator=designator,
+            position_mils=position_mils,
+            width_mils=anchor_width,
+            height_mils=anchor_height,
+            layer=layer_id,
+            shape=anchor_shape,
+            rotation_degrees=anchor_rotation_degrees,
+            hole_size_mils=0.0,
+            plated=False,
+            net=net,
+            solder_mask_expansion=solder_mask_expansion,
+            solder_mask_expansion_mode=solder_mask_expansion_mode,
+            solder_mask_expansion_mils=solder_mask_expansion_mils,
+            paste_mask_expansion=paste_mask_expansion,
+            paste_mask_expansion_mode=paste_mask_expansion_mode,
+            paste_mask_expansion_mils=paste_mask_expansion_mils,
+            component_index=component_index,
+        )
+        pad = self.pads[-1]
+        native_pad_index = len(self.pads)
+        if pad_index is not None and int(pad_index) != native_pad_index:
+            raise ValueError(
+                "PcbDoc custom pad pad_index must match the authored pad index"
+            )
+
+        offset_x_mils, offset_y_mils = offset_mils
+        offset_x_iu = pad._to_internal_units(offset_x_mils)
+        offset_y_iu = pad._to_internal_units(offset_y_mils)
+        if offset_x_iu or offset_y_iu:
+            pad.hole_offset_x = [offset_x_iu] * 32
+            pad.hole_offset_y = [offset_y_iu] * 32
+
+        center_x_mils = float(position_mils[0]) + float(offset_x_mils)
+        center_y_mils = float(position_mils[1]) + float(offset_y_mils)
+
+        def _to_absolute(
+            points: list[tuple[float, float]],
+        ) -> list[tuple[float, float]]:
+            if not outline_points_are_local:
+                return [(float(px), float(py)) for px, py in points]
+            return [
+                (center_x_mils + float(px), center_y_mils + float(py))
+                for px, py in points
+            ]
+
+        custom_record = AltiumPcbCustomShapeRecord()
+        custom_record.primitive_index = native_pad_index - 1
+        custom_record.properties = {"PRIMITIVEINDEX": str(native_pad_index - 1)}
+        self.custom_shapes.append(custom_record)
+        self._custom_shapes_dirty = True
+
+        self._add_custom_pad_layer_shape(
+            pad=pad,
+            zero_based_pad_index=native_pad_index - 1,
+            outline_points_mils=_to_absolute(outline_points_mils),
+            layer=layer_id,
+            hole_points_mils=[_to_absolute(hole) for hole in (hole_points_mils or [])],
+            component_index=component_index,
+            record=custom_record,
+        )
+        seen_layers = {layer_id}
+        for layer_shape in layer_shapes or ():
+            extra_layer_id = int(layer_shape.layer)
+            if extra_layer_id in seen_layers:
+                raise ValueError(
+                    "Custom pad layer_shapes must not repeat the primary layer"
+                )
+            if len(layer_shape.outline_points_mils) < 3:
+                raise ValueError(
+                    "Custom pad layer_shapes outline requires at least 3 points"
+                )
+            seen_layers.add(extra_layer_id)
+
+            def _extra_to_absolute(
+                points: Sequence[tuple[float, float]],
+            ) -> list[tuple[float, float]]:
+                if not bool(layer_shape.outline_points_are_local):
+                    return [(float(px), float(py)) for px, py in points]
+                return [
+                    (center_x_mils + float(px), center_y_mils + float(py))
+                    for px, py in points
+                ]
+
+            self._add_custom_pad_layer_shape(
+                pad=pad,
+                zero_based_pad_index=native_pad_index - 1,
+                outline_points_mils=_extra_to_absolute(layer_shape.outline_points_mils),
+                layer=extra_layer_id,
+                hole_points_mils=[
+                    _extra_to_absolute(hole) for hole in layer_shape.hole_points_mils
+                ],
+                component_index=component_index,
+                record=custom_record,
+            )
+        return self
+
     def add_via(
         self,
         *,
@@ -4241,6 +4752,7 @@ class PcbDocBuilder:
         layer_end: int | PcbLayer = PcbLayer.BOTTOM,
         net: str | None = None,
         ipc4761_via_type: int | PcbIpc4761ViaType = PcbIpc4761ViaType.NONE,
+        ipc4761_features: Sequence[AltiumPcbViaStructureFeature] | None = None,
         propagation_delay_ps: float | None = None,
         hole_positive_tolerance_mils: float | None = None,
         hole_negative_tolerance_mils: float | None = None,
@@ -4264,6 +4776,10 @@ class PcbDocBuilder:
             hole_negative_tolerance_mils=hole_negative_tolerance_mils,
         )
         via.ipc4761_via_type = PcbIpc4761ViaType(int(ipc4761_via_type))
+        via.via_structure = authored_via_structure_for_type(
+            via.ipc4761_via_type,
+            ipc4761_features,
+        )
         if propagation_delay_ps is not None:
             via.propagation_delay_ps = float(propagation_delay_ps)
         apply_authored_via_surface_policy(
@@ -4797,6 +5313,26 @@ class PcbDocBuilder:
             )
             streams["ExtendedPrimitiveInformation/Data"] = self._streams.get(
                 "ExtendedPrimitiveInformation/Data",
+                b"",
+            )
+        if self._custom_shapes_dirty or self.custom_shapes:
+            streams["CustomShapes/Header"] = struct.pack(
+                "<I",
+                len(self.custom_shapes),
+            )
+            streams["CustomShapes/Data"] = serialize_custom_shapes_stream(
+                self.custom_shapes
+            )
+        elif (
+            "CustomShapes/Header" in self._streams
+            or "CustomShapes/Data" in self._streams
+        ):
+            streams["CustomShapes/Header"] = self._streams.get(
+                "CustomShapes/Header",
+                _ZERO_HEADER,
+            )
+            streams["CustomShapes/Data"] = self._streams.get(
+                "CustomShapes/Data",
                 b"",
             )
         streams["Texts/Header"] = self.texts_data.build_header()

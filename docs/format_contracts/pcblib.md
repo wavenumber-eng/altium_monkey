@@ -18,6 +18,10 @@
   positive slot length; square holes require a positive drill size.
 - Author footprint vias with top/bottom tenting flags and independent
   top/bottom solder-mask expansion values.
+- Author footprint via IPC-4761 protection metadata, propagation delay, and
+  fabrication/assembly testpoint flags.
+- Author footprint-level primitive parameters through the PcbLib
+  `PrimitiveParameters` stream.
 - Author custom-pad anchor geometry with explicit anchor width, height,
   rotation, and shape. Custom-pad regions use the native 1-based `PADINDEX`
   that corresponds to the authored anchor pad.
@@ -32,6 +36,11 @@
 `AltiumPcbFootprint` owns its primitive lists and helper methods. Attach a
 footprint to a library before adding primitives that need library-owned streams
 or metadata.
+
+Footprint primitive parameters are exposed as
+`footprint.footprint_primitive_parameters` and authored with
+`set_footprint_primitive_parameter(...)`. They are separate from the ordinary
+footprint `parameters` dictionary.
 
 ## Units
 
@@ -60,5 +69,6 @@ See [SVG](svg.md) for the shared rendering contract.
 ## Test Gates
 
 The PcbLib contract is covered by footprint parsing, split/extract, authoring,
-3D model, SVG, public examples, and release signoff.
+primitive-parameter and via-structure fixture coverage, 3D model, SVG, public
+examples, and release signoff.
 

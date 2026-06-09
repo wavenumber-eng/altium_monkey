@@ -17,6 +17,9 @@
 - Read and write promoted via metadata such as IPC-4761 type, via feature
   rows, solder-mask tenting, hole tolerance, fabrication/assembly testpoint
   flags, and propagation delay.
+- Author custom pads through the native board custom-shape contract, including
+  primary and additional per-layer custom bodies, holes, net assignment,
+  component ownership, and pad-center offsets.
 - Author round, square, and slotted pad drill-hole shapes. Slotted holes
   require a positive slot length; square holes require a positive drill size.
 - Inspect user-defined PCB unions through union-name records, typed smart-union
@@ -32,6 +35,26 @@ document-owned helpers such as `add_track(...)`, `add_via(...)`,
 Direct record-list mutation remains an advanced escape hatch for narrow edits
 or preservation work.
 
+## Custom Pads
+
+PcbDoc custom pads are authored as an anchor pad plus one or more custom-pad
+region shapes. The board writer emits `CustomShapes/Header` and
+`CustomShapes/Data`; each `CustomShapes/Data` record uses zero-based
+`PRIMITIVEINDEX` to reference the pad record. The paired `Regions6` and
+`ShapeBasedRegions6` records carry native one-based `PADINDEX` metadata.
+
+`add_custom_pad(...)` takes the primary layer body through
+`outline_points_mils` and optional primary holes through `hole_points_mils`.
+Use `PcbCustomPadLayerShapeSpec` entries in `layer_shapes` when a board pad
+needs additional layer-specific custom bodies and holes that share the same
+anchor pad.
+
+This differs from PcbLib, where footprint custom pads use
+`ExtendedPrimitiveInformation` rather than board `CustomShapes/*`. Public
+PcbDoc and PcbLib APIs intentionally expose the same semantic
+`add_custom_pad(...)` shape while preserving the container-specific native
+storage contracts.
+
 ## User Unions
 
 `union_name_records` exposes the decoded `UnionNames/Data` catalog.
@@ -45,6 +68,10 @@ Use explicit mutation helpers such as `create_user_union(...)`,
 union authoring. Typed smart unions such as drill tables, layer-stack tables,
 via stitching, via shielding, OLE/object unions, rectangles, and length tuning
 are read-only in this contract.
+
+`create_user_union(...)` auto-allocates a native union id by default. Pass
+`union_index=...` only for deterministic replay/recreation workflows that need
+to preserve an existing native union id.
 
 Passing a component to `create_user_union(...)` includes the component record
 and its authorable child primitives. Shape-based region membership is kept in

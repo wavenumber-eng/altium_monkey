@@ -146,6 +146,8 @@ class AltiumPcbComponentBody(PcbGraphicalObject):
         self._properties_raw_signature: tuple | None = (
             None  # Snapshot of property fields at parse time
         )
+        self._geometry_raw: bytes | None = None
+        self._geometry_raw_signature: tuple | None = None
         # Native component-body records include the C-string terminator inside the
         # length-prefixed property payload. If it is emitted as an extra byte after
         # the payload, Altium reads the following outline count at the wrong offset.
@@ -296,6 +298,7 @@ class AltiumPcbComponentBody(PcbGraphicalObject):
 
         # Outline vertices count (stored count; some stream variants add a closing
         # vertex in payload and some do not).
+        geometry_payload_start = cursor
         outline_count_raw = _read_u32("outline_vertex_count")
         geometry_start = cursor
 
@@ -426,6 +429,8 @@ class AltiumPcbComponentBody(PcbGraphicalObject):
             self.holes = parsed_holes
 
         cursor = parsed_cursor
+        self._geometry_raw = bytes(content[geometry_payload_start:cursor])
+        self._geometry_raw_signature = self._geometry_field_signature()
 
         # Preserve any trailing bytes inside the declared record boundary.
         self._tail_payload = bytes(content[cursor:]) if cursor < len(content) else b""
@@ -683,6 +688,29 @@ class AltiumPcbComponentBody(PcbGraphicalObject):
             int(self.model_s0y),
             int(self.model_s0z),
             tuple(sorted((str(k), str(v)) for k, v in self.properties.items())),
+        )
+
+    def _geometry_field_signature(self) -> tuple:
+        """
+        Snapshot of parsed geometry fields that can invalidate raw geometry bytes.
+        """
+        return (
+            int(self.hole_count),
+            tuple(
+                (
+                    bool(v.is_round),
+                    int(v.x),
+                    int(v.y),
+                    int(v.center_x),
+                    int(v.center_y),
+                    int(v.radius),
+                    float(v.start_angle),
+                    float(v.end_angle),
+                )
+                for v in self.outline
+            ),
+            tuple(tuple((float(v.x), float(v.y)) for v in hole) for hole in self.holes),
+            self._geometry_variant,
         )
 
     def _state_signature(self) -> tuple:
@@ -953,41 +981,50 @@ class AltiumPcbComponentBody(PcbGraphicalObject):
         if self._props_has_null_terminator:
             subrecord.extend(b"\x00")
 
-        # Use parsed geometry variant to determine format
-        use_extended = self.is_shapebased
-        include_closing = True  # default
-        if self._geometry_variant is not None:
-            use_extended, include_closing = self._geometry_variant
-
-        if use_extended:
-            # For shapebased: write count as stored count (excluding closing vertex)
-            # If parsed WITH closing vertex, outline already has it - stored count = len - 1
-            # If parsed WITHOUT closing vertex, outline has no extra - stored count = len
-            if include_closing:
-                stored_count = max(0, len(self.outline) - 1)
-            else:
-                stored_count = len(self.outline)
-            subrecord.extend(struct.pack("<I", stored_count))
-            for vertex in self.outline:
-                subrecord.append(1 if vertex.is_round else 0)
-                subrecord.extend(struct.pack("<i", int(vertex.x)))
-                subrecord.extend(struct.pack("<i", int(vertex.y)))
-                subrecord.extend(struct.pack("<i", int(vertex.center_x)))
-                subrecord.extend(struct.pack("<i", int(vertex.center_y)))
-                subrecord.extend(struct.pack("<i", int(vertex.radius)))
-                subrecord.extend(struct.pack("<d", float(vertex.start_angle)))
-                subrecord.extend(struct.pack("<d", float(vertex.end_angle)))
+        raw_geometry = self._geometry_raw
+        geometry_unchanged = (
+            raw_geometry is not None
+            and self._geometry_raw_signature is not None
+            and self._geometry_field_signature() == self._geometry_raw_signature
+        )
+        if geometry_unchanged and raw_geometry is not None:
+            subrecord.extend(raw_geometry)
         else:
-            subrecord.extend(struct.pack("<I", len(self.outline)))
-            for vertex in self.outline:
-                subrecord.extend(struct.pack("<d", float(vertex.x)))
-                subrecord.extend(struct.pack("<d", float(vertex.y)))
+            # Use parsed geometry variant to determine format
+            use_extended = self.is_shapebased
+            include_closing = True  # default
+            if self._geometry_variant is not None:
+                use_extended, include_closing = self._geometry_variant
 
-        for hole in holes:
-            subrecord.extend(struct.pack("<I", len(hole)))
-            for vertex in hole:
-                subrecord.extend(struct.pack("<d", float(vertex.x)))
-                subrecord.extend(struct.pack("<d", float(vertex.y)))
+            if use_extended:
+                # For shapebased: write count as stored count (excluding closing vertex)
+                # If parsed WITH closing vertex, outline already has it - stored count = len - 1
+                # If parsed WITHOUT closing vertex, outline has no extra - stored count = len
+                if include_closing:
+                    stored_count = max(0, len(self.outline) - 1)
+                else:
+                    stored_count = len(self.outline)
+                subrecord.extend(struct.pack("<I", stored_count))
+                for vertex in self.outline:
+                    subrecord.append(1 if vertex.is_round else 0)
+                    subrecord.extend(struct.pack("<i", int(vertex.x)))
+                    subrecord.extend(struct.pack("<i", int(vertex.y)))
+                    subrecord.extend(struct.pack("<i", int(vertex.center_x)))
+                    subrecord.extend(struct.pack("<i", int(vertex.center_y)))
+                    subrecord.extend(struct.pack("<i", int(vertex.radius)))
+                    subrecord.extend(struct.pack("<d", float(vertex.start_angle)))
+                    subrecord.extend(struct.pack("<d", float(vertex.end_angle)))
+            else:
+                subrecord.extend(struct.pack("<I", len(self.outline)))
+                for vertex in self.outline:
+                    subrecord.extend(struct.pack("<d", float(vertex.x)))
+                    subrecord.extend(struct.pack("<d", float(vertex.y)))
+
+            for hole in holes:
+                subrecord.extend(struct.pack("<I", len(hole)))
+                for vertex in hole:
+                    subrecord.extend(struct.pack("<d", float(vertex.x)))
+                    subrecord.extend(struct.pack("<d", float(vertex.y)))
 
         if self._tail_payload:
             subrecord.extend(self._tail_payload)

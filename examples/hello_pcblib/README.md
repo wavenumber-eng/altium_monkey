@@ -17,10 +17,11 @@ footprint pads.
 1. `AltiumPcbLib()`
 2. `AltiumPcbLib.add_embedded_model(...)`
 3. `AltiumPcbLib.add_footprint(...)`
-4. `AltiumPcbFootprint.add_pad(...)`
-5. `AltiumPcbFootprint.add_track(...)`
-6. `AltiumPcbFootprint.add_embedded_3d_model(...)`
-7. `AltiumPcbLib.save(...)`
+4. `AltiumPcbFootprint.set_footprint_primitive_parameter(...)`
+5. `AltiumPcbFootprint.add_pad(...)`
+6. `AltiumPcbFootprint.add_track(...)`
+7. `AltiumPcbFootprint.add_embedded_3d_model(...)`
+8. `AltiumPcbLib.save(...)`
 
 ## Run
 

@@ -663,7 +663,8 @@ class AltiumPcbText(PcbGraphicalObject):
         subrecord2_text = self.text_content or ""
         if getattr(self, "_subrecord2_pascal", False):
             str_bytes = subrecord2_text.encode("ascii", errors="replace")
-            return bytes([len(str_bytes)]) + str_bytes
+            if len(str_bytes) <= 0xFF:
+                return bytes([len(str_bytes)]) + str_bytes
         return subrecord2_text.encode("utf-8", errors="replace") + b"\x00"
 
     def serialize_to_binary(self) -> bytes:

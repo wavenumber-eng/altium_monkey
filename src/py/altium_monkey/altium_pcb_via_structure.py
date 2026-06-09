@@ -11,8 +11,10 @@ from .altium_pcb_enums import (
     PcbViaStructureFeatureType,
 )
 from .altium_pcb_property_helpers import (
+    iter_pcb_length_prefixed_property_records,
     parse_pcb_int_token,
     parse_pcb_property_payload,
+    serialize_pcb_length_prefixed_property_records,
 )
 
 if TYPE_CHECKING:
@@ -108,35 +110,9 @@ def _required_int(props: dict[str, str], key: str) -> int:
     return int(value)
 
 
-def _length_prefixed_property_records(
-    data: bytes,
-) -> list[tuple[bytes, dict[str, str]]]:
-    records: list[tuple[bytes, dict[str, str]]] = []
-    offset = 0
-    while offset < len(data):
-        if offset + 4 > len(data):
-            raise ValueError("Truncated length-prefixed property record")
-        payload_length = int.from_bytes(data[offset : offset + 4], byteorder="little")
-        offset += 4
-        end = offset + payload_length
-        if end > len(data):
-            raise ValueError(
-                "Length-prefixed property record exceeds stream length: "
-                f"{payload_length} bytes at offset {offset - 4}"
-            )
-        payload = bytes(data[offset:end])
-        records.append((payload, parse_pcb_property_payload(payload)))
-        offset = end
-    return records
-
-
 def _property_payload(items: Sequence[tuple[str, object]]) -> bytes:
     text = "".join(f"|{key}={value}" for key, value in items)
     return text.encode("ascii") + b"\x00"
-
-
-def _length_prefixed_payload(payload: bytes) -> bytes:
-    return len(payload).to_bytes(4, byteorder="little") + payload
 
 
 @dataclass(frozen=True)
@@ -278,6 +254,38 @@ def default_via_structure_for_type(
     )
 
 
+def authored_via_structure_for_type(
+    via_type: PcbIpc4761ViaTypeValue,
+    features: Sequence[AltiumPcbViaStructureFeature] | None = None,
+) -> AltiumPcbViaStructure | None:
+    """
+    Build an authored via-structure record with optional explicit feature rows.
+
+    Omitted features use Altium's default rows for the requested IPC-4761 type.
+    Supplying rows with `PcbIpc4761ViaType.NONE` is rejected because Altium does
+    not emit a side-table structure for unprotected vias.
+    """
+    structure = default_via_structure_for_type(via_type)
+    if not features:
+        return structure
+    if structure is None:
+        raise ValueError("IPC-4761 feature rows require a non-NONE via type")
+
+    updated = AltiumPcbViaStructure(
+        structure_type=structure.structure_type,
+        features=tuple(features),
+        properties={},
+        raw_payload=b"",
+    )
+    payload = updated.to_payload()
+    return AltiumPcbViaStructure(
+        structure_type=updated.structure_type,
+        features=updated.features,
+        properties=dict(parse_pcb_property_payload(payload)),
+        raw_payload=payload,
+    )
+
+
 def serialize_via_structure_payload(structure: AltiumPcbViaStructure) -> bytes:
     """Serialize one `ViaStructureManager/Data` property payload."""
     items: list[tuple[str, object]] = [
@@ -309,8 +317,8 @@ def serialize_via_structure_manager_stream(
     structures: Sequence[AltiumPcbViaStructure],
 ) -> bytes:
     """Serialize the `ViaStructureManager/Data` stream."""
-    return b"".join(
-        _length_prefixed_payload(structure.to_payload()) for structure in structures
+    return serialize_pcb_length_prefixed_property_records(
+        [structure.to_payload() for structure in structures]
     )
 
 
@@ -318,7 +326,9 @@ def serialize_via_structure_links_stream(
     links: Sequence[AltiumPcbViaStructureLink],
 ) -> bytes:
     """Serialize the `ViaStructures/Data` stream."""
-    return b"".join(_length_prefixed_payload(link.to_payload()) for link in links)
+    return serialize_pcb_length_prefixed_property_records(
+        [link.to_payload() for link in links]
+    )
 
 
 def _matching_existing_structure_index(
@@ -347,6 +357,7 @@ def build_via_structure_model_for_vias(
     vias: Sequence["AltiumPcbVia"],
     *,
     existing_structures: Sequence[AltiumPcbViaStructure] = (),
+    primitive_indexes: Sequence[int] | None = None,
 ) -> tuple[list[AltiumPcbViaStructure], list[AltiumPcbViaStructureLink]]:
     """
     Build side-table records from the current VIA objects.
@@ -354,18 +365,34 @@ def build_via_structure_model_for_vias(
     Existing structures are kept first and reused by `via_structure_index` when
     still compatible, which preserves Altium's structure ordering on no-op
     read/write saves. New authored IPC-4761 types append default structures.
+
+    `primitive_indexes` is optional because PcbDoc `ViaStructures` indexes the
+    board `Vias6/Data` stream, while PcbLib indexes the full mixed footprint
+    `Data` stream. When omitted, indexes are the VIA list order.
     """
+    if primitive_indexes is not None and len(primitive_indexes) != len(vias):
+        raise ValueError("primitive_indexes length must match vias length")
+
     structures = list(existing_structures)
+    existing_structure_count = len(structures)
     links: list[AltiumPcbViaStructureLink] = []
     existing_index_ref_counts: dict[int, int] = {}
     for via in vias:
         existing_index = getattr(via, "via_structure_index", None)
-        if isinstance(existing_index, int) and 0 <= existing_index < len(structures):
+        if (
+            isinstance(existing_index, int)
+            and 0 <= existing_index < existing_structure_count
+        ):
             existing_index_ref_counts[existing_index] = (
                 existing_index_ref_counts.get(existing_index, 0) + 1
             )
 
-    for primitive_index, via in enumerate(vias):
+    for via_ordinal, via in enumerate(vias):
+        primitive_index = (
+            via_ordinal
+            if primitive_indexes is None
+            else int(primitive_indexes[via_ordinal])
+        )
         via_type = _via_type_to_int(
             getattr(via, "ipc4761_via_type", PcbIpc4761ViaType.NONE)
         )
@@ -381,8 +408,9 @@ def build_via_structure_model_for_vias(
             via_structure is not None
             and _via_type_to_int(via_structure.structure_type) == via_type
         ):
-            if isinstance(existing_index, int) and 0 <= existing_index < len(
-                structures
+            if (
+                isinstance(existing_index, int)
+                and 0 <= existing_index < existing_structure_count
             ):
                 existing_structure = structures[existing_index]
                 if (
@@ -402,7 +430,7 @@ def build_via_structure_model_for_vias(
         if (
             structure_index is None
             and isinstance(existing_index, int)
-            and 0 <= existing_index < len(structures)
+            and 0 <= existing_index < existing_structure_count
         ):
             if _via_type_to_int(structures[existing_index].structure_type) == via_type:
                 structure_index = existing_index
@@ -440,11 +468,13 @@ def build_via_structure_streams_for_vias(
     vias: Sequence["AltiumPcbVia"],
     *,
     existing_structures: Sequence[AltiumPcbViaStructure] = (),
+    primitive_indexes: Sequence[int] | None = None,
 ) -> dict[str, bytes]:
     """Build all IPC-4761 side-table streams for the current VIA model."""
     structures, links = build_via_structure_model_for_vias(
         vias,
         existing_structures=existing_structures,
+        primitive_indexes=primitive_indexes,
     )
     if not structures and not links:
         return {}
@@ -480,7 +510,7 @@ def parse_via_structure_manager_stream(
 ) -> tuple[AltiumPcbViaStructure, ...]:
     """Parse `ViaStructureManager/Data` records."""
     structures: list[AltiumPcbViaStructure] = []
-    for payload, props in _length_prefixed_property_records(data):
+    for payload, props in iter_pcb_length_prefixed_property_records(data):
         structure_type = _coerce_ipc4761_via_type(_required_int(props, "STRUCTURETYPE"))
         feature_count = _required_int(props, "FEATURESCOUNT")
         features: list[AltiumPcbViaStructureFeature] = []
@@ -510,7 +540,7 @@ def parse_via_structure_links_stream(
 ) -> tuple[AltiumPcbViaStructureLink, ...]:
     """Parse `ViaStructures/Data` primitive-to-structure links."""
     links: list[AltiumPcbViaStructureLink] = []
-    for payload, props in _length_prefixed_property_records(data):
+    for payload, props in iter_pcb_length_prefixed_property_records(data):
         links.append(
             AltiumPcbViaStructureLink(
                 primitive_index=_required_int(props, "PRIMITIVEINDEX"),
@@ -533,20 +563,39 @@ def attach_via_structures_to_vias(
     vias: list["AltiumPcbVia"],
     structures: tuple[AltiumPcbViaStructure, ...],
     links: tuple[AltiumPcbViaStructureLink, ...],
+    *,
+    primitive_records: Sequence[object] | None = None,
 ) -> None:
-    """Attach parsed IPC-4761 structures to VIA objects by primitive index."""
+    """Attach parsed IPC-4761 structures to VIA objects by primitive index.
+
+    PcbDoc side-table links index the `Vias6/Data` table, so callers can omit
+    `primitive_records`. PcbLib links index the full mixed footprint `Data`
+    stream, so PcbLib callers pass the footprint record order.
+    """
     for via in vias:
         via.ipc4761_via_type = PcbIpc4761ViaType.NONE
         via.via_structure = None
         via.via_structure_index = None
 
+    via_by_identity = {id(via): via for via in vias}
     for link in links:
-        if link.primitive_index < 0 or link.primitive_index >= len(vias):
-            continue
+        if primitive_records is None:
+            if link.primitive_index < 0 or link.primitive_index >= len(vias):
+                continue
+            via = vias[link.primitive_index]
+        else:
+            if link.primitive_index < 0 or link.primitive_index >= len(
+                primitive_records
+            ):
+                continue
+            primitive = primitive_records[link.primitive_index]
+            via = via_by_identity.get(id(primitive))
+            if via is None:
+                continue
+
         if link.via_structure_index < 0 or link.via_structure_index >= len(structures):
             continue
         structure = structures[link.via_structure_index]
-        via = vias[link.primitive_index]
         via.via_structure = structure
         via.via_structure_index = link.via_structure_index
         via.ipc4761_via_type = structure.ipc4761_via_type

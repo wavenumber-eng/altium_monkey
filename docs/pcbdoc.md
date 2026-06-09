@@ -54,6 +54,10 @@ Use `create_user_union(...)`, `rename_user_union(...)`,
 including drill tables, layer-stack tables, via stitching, via shielding,
 OLE/object unions, rectangles, and length tuning, are read-only.
 
+`create_user_union(...)` auto-allocates a native union id by default. Use the
+optional `union_index=...` argument only when recreating an existing PcbDoc and
+preserving deterministic native union ids matters.
+
 Passing a component to `create_user_union(...)` includes the component record
 and its authorable child primitives. Shape-based region membership is kept in
 sync with the paired standard region record when that pair exists.
@@ -123,6 +127,12 @@ public helper methods for authored geometry.
 `AltiumPcbDoc.add_pad(...)` accepts `hole_shape="round"`, `"square"`, or
 `"slot"` through `PadHoleShape`. Square holes require a positive drill size.
 Slotted holes require `slot_length_mils`.
+
+`AltiumPcbDoc.add_custom_pad(...)` authors a board custom pad as an anchor pad
+plus native custom-shape region records. `outline_points_mils` and
+`hole_points_mils` describe the primary layer body and holes. Use
+`PcbCustomPadLayerShapeSpec` entries in `layer_shapes` for additional
+layer-specific bodies and holes that share the same anchor pad.
 
 ## Text
 

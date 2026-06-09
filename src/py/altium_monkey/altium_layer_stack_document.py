@@ -1521,6 +1521,133 @@ class AltiumLayerStackDocument:
             PcbDocLayerStackTemplate.four_layer_fr4()
         )
 
+    def with_layer_pair(
+        self,
+        low_layer: object,
+        high_layer: object,
+        *,
+        pair_index: int | None = None,
+        source_substack_refs: Sequence[str] | None = None,
+        drill_pair_type_raw: int | None = None,
+        is_backdrill: bool | None = None,
+        is_inverted: bool | None = None,
+        drill_guide: bool | None = False,
+        drill_drawing: bool | None = False,
+    ) -> "AltiumLayerStackDocument":
+        """
+        Return a document with one authored layer-pair / drill-span row.
+
+        This edits the Layer Stack Manager span metadata (`LAYERPAIR*`), not
+        via binary tails. Historical native-save research showed direct
+        backdrill/counterhole via-tail mutation is unsafe; authored backdrills
+        should be represented as stack spans through this document model.
+        """
+        resolved_low = _resolve_authored_layer_pair_token(self, low_layer)
+        resolved_high = _resolve_authored_layer_pair_token(self, high_layer)
+        resolved_pair_index = (
+            pair_index
+            if pair_index is not None
+            else max((pair.pair_index for pair in self.layer_pairs), default=-1) + 1
+        )
+        if resolved_pair_index < 0:
+            raise ValueError("Layer-pair index must be non-negative")
+
+        existing_pair = next(
+            (
+                pair
+                for pair in self.layer_pairs
+                if pair.pair_index == resolved_pair_index
+            ),
+            None,
+        )
+        if source_substack_refs is None:
+            resolved_substacks = (
+                existing_pair.source_substack_refs
+                if existing_pair is not None
+                else _default_layer_pair_substack_refs(self)
+            )
+        else:
+            resolved_substacks = tuple(
+                substack_ref
+                for substack_ref in (_text(ref) for ref in source_substack_refs)
+                if substack_ref
+            )
+
+        authored_pair = AltiumLayerPair(
+            pair_index=resolved_pair_index,
+            low_layer_token=resolved_low,
+            high_layer_token=resolved_high,
+            source_substack_refs=resolved_substacks,
+            drill_pair_type_raw=drill_pair_type_raw,
+            is_backdrill=is_backdrill,
+            is_inverted=is_inverted,
+            drill_guide=drill_guide,
+            drill_drawing=drill_drawing,
+        )
+        pairs = [
+            pair
+            for pair in self.layer_pairs
+            if pair.pair_index != authored_pair.pair_index
+        ]
+        pairs.append(authored_pair)
+        return replace(
+            self, layer_pairs=tuple(sorted(pairs, key=lambda pair: pair.pair_index))
+        )
+
+    def with_via_span(
+        self,
+        low_layer: object,
+        high_layer: object,
+        *,
+        pair_index: int | None = None,
+        source_substack_refs: Sequence[str] | None = None,
+        drill_pair_type_raw: int | None = None,
+        is_inverted: bool | None = None,
+        drill_guide: bool | None = False,
+        drill_drawing: bool | None = False,
+    ) -> "AltiumLayerStackDocument":
+        """
+        Return a document with one authored non-backdrill via span.
+        """
+        return self.with_layer_pair(
+            low_layer,
+            high_layer,
+            pair_index=pair_index,
+            source_substack_refs=source_substack_refs,
+            drill_pair_type_raw=drill_pair_type_raw,
+            is_backdrill=False,
+            is_inverted=is_inverted,
+            drill_guide=drill_guide,
+            drill_drawing=drill_drawing,
+        )
+
+    def with_backdrill_span(
+        self,
+        low_layer: object,
+        high_layer: object,
+        *,
+        pair_index: int | None = None,
+        source_substack_refs: Sequence[str] | None = None,
+        drill_pair_type_raw: int | None = None,
+        is_inverted: bool | None = None,
+        drill_guide: bool | None = False,
+        drill_drawing: bool | None = False,
+    ) -> "AltiumLayerStackDocument":
+        """
+        Return a document with one authored Layer Stack Manager backdrill span.
+        """
+        return self.with_layer_pair(
+            low_layer,
+            high_layer,
+            pair_index=pair_index,
+            source_substack_refs=source_substack_refs,
+            drill_pair_type_raw=drill_pair_type_raw,
+            is_backdrill=True,
+            is_inverted=is_inverted,
+            drill_guide=drill_guide,
+            drill_drawing=drill_drawing,
+        )
+
     @classmethod
     def from_board_data(
         cls,
@@ -1849,12 +1976,20 @@ class AltiumLayerStackDocument:
         """
         authored_values = self._authored_stack_values()
         entries: list[str] = []
+        emitted_keys: set[str] = set()
         for raw in self.source.board_stack_entry_texts:
             key = raw.split("=", 1)[0] if "=" in raw else raw
             if key in authored_values:
                 entries.append(f"{key}={authored_values[key]}")
+                emitted_keys.add(key)
             else:
                 entries.append(raw)
+                emitted_keys.add(key)
+        _append_missing_authored_layer_pair_entries(
+            entries,
+            authored_values,
+            emitted_keys,
+        )
         return tuple(entries)
 
     def to_canonical_empty_board_data(self) -> "PcbDocBoardData":
@@ -3442,6 +3577,29 @@ def _filter_stack_entries(
         if key_predicate(key):
             result.append(raw)
     return tuple(result)
+
+
+def _append_missing_authored_layer_pair_entries(
+    entries: list[str],
+    authored_values: Mapping[str, str],
+    emitted_keys: set[str],
+) -> None:
+    missing_entries = [
+        f"{key}={value}"
+        for key, value in authored_values.items()
+        if key.startswith("LAYERPAIR") and key not in emitted_keys
+    ]
+    if not missing_entries:
+        return
+
+    insert_index = len(entries)
+    for index, entry in enumerate(entries):
+        key = entry.split("=", 1)[0] if "=" in entry else entry
+        if key.startswith("LAYERPAIR"):
+            insert_index = index + 1
+    entries[insert_index:insert_index] = missing_entries
+    for entry in missing_entries:
+        emitted_keys.add(entry.split("=", 1)[0])
 
 
 def _filter_primary_stack_core_entries(
@@ -5163,6 +5321,73 @@ def _layer_pair_token(layer: AltiumStackLayer) -> str:
         or _text(layer.display_name)
         or _text(layer.registry_ref)
     )
+
+
+def _resolve_authored_layer_pair_token(
+    document: AltiumLayerStackDocument,
+    value: object,
+) -> str:
+    if isinstance(value, PcbLayer):
+        token = _standard_token_from_legacy(value.value)
+        if token:
+            return token
+    if isinstance(value, int):
+        token = _standard_token_from_legacy(value)
+        if token:
+            return token
+
+    text = _text(value).strip()
+    if not text:
+        raise ValueError("Layer-pair endpoint must not be empty")
+
+    compact = _compact_layer_pair_endpoint(text)
+    if compact in {"TOP", "TOPLAYER"}:
+        return "TOP"
+    if compact in {"BOTTOM", "BOTTOMLAYER", "BOT", "BOTLAYER"}:
+        return "BOTTOM"
+    if re.fullmatch(r"MID\d+", compact):
+        return compact
+    if re.fullmatch(r"PLANE\d+", compact):
+        return compact
+
+    for stack in document.physical_stacks:
+        for layer in stack.layers:
+            token = _layer_pair_token(layer)
+            candidates = (
+                token,
+                layer.display_name,
+                layer.registry_ref,
+                str(layer.legacy_layer_id) if layer.legacy_layer_id else "",
+            )
+            if any(
+                candidate
+                and (
+                    text.upper() == candidate.upper()
+                    or compact == _compact_layer_pair_endpoint(candidate)
+                )
+                for candidate in candidates
+            ):
+                return token
+
+    return text.upper()
+
+
+def _compact_layer_pair_endpoint(value: str) -> str:
+    return re.sub(r"[\s_-]+", "", value).upper()
+
+
+def _default_layer_pair_substack_refs(
+    document: AltiumLayerStackDocument,
+) -> tuple[str, ...]:
+    if document.active_stack_ref:
+        return (document.active_stack_ref,)
+    for substack in document.substacks:
+        if substack.source_stackup_ref:
+            return (substack.source_stackup_ref,)
+    for stack in document.physical_stacks:
+        if stack.stack_ref:
+            return (stack.stack_ref,)
+    return ()
 
 
 def _layer_tokens_by_source_id(

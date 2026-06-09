@@ -10,6 +10,7 @@ builder-owned footprint-placement path:
 
 The goal of this first slice is common library footprints made of:
 - pads
+- custom pads
 - tracks
 - arcs
 - fills
@@ -18,8 +19,6 @@ The goal of this first slice is common library footprints made of:
 - logical regions
 
 What is intentionally deferred:
-- component-body / model placement
-- board-side custom-pad `CustomShapes/*` synthesis
 - polygon pour definition/pour-state handling
 """
 
@@ -28,7 +27,7 @@ from __future__ import annotations
 import copy
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, TypedDict
+from typing import TYPE_CHECKING, Mapping, Sequence, TypedDict, cast
 
 from .altium_pcb_embedded_model_compose import (
     collect_pcblib_embedded_model_entries,
@@ -36,6 +35,7 @@ from .altium_pcb_embedded_model_compose import (
 )
 from .altium_pcbdoc_builder_components import _normalize_component_layer
 from .altium_pcbdoc_layers import _build_component_layer_flip_map, _flip_layer
+from .altium_pcb_enums import PcbBodyProjection
 from .altium_record_types import PcbLayer
 
 if TYPE_CHECKING:
@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from .altium_pcbdoc_builder import PcbDocBuilder
     from .altium_record_pcb__component_body import AltiumPcbComponentBody
     from .altium_record_pcb__model import AltiumPcbModel
+    from .altium_record_pcb__pad import AltiumPcbPad
 
 
 class _ComponentTextSpec(TypedDict):
@@ -250,6 +251,11 @@ def _transform_component_body_into_board(
     placed.layer = _transform_layer(
         placed.layer, flipped=flipped, layer_flip_map=layer_flip_map
     )
+    if flipped:
+        if placed.body_projection == PcbBodyProjection.TOP:
+            placed.body_projection = PcbBodyProjection.BOTTOM
+        elif placed.body_projection == PcbBodyProjection.BOTTOM:
+            placed.body_projection = PcbBodyProjection.TOP
 
     for vertex in placed.outline:
         tx, ty = _forward_transform_point(
@@ -590,10 +596,21 @@ def _add_placed_pads(
     placement_copper_layer_id: int | None,
 ) -> None:
     for pad in footprint.pads:
-        if getattr(pad, "custom_shape", None) is not None:
-            raise NotImplementedError(
-                "Footprint placement for custom pads needs board-side CustomShapes/Data synthesis"
+        custom_shape = getattr(pad, "custom_shape", None)
+        if custom_shape is not None:
+            _add_placed_custom_pad(
+                builder,
+                pad,
+                component_index=component_index,
+                cx_mils=cx_mils,
+                cy_mils=cy_mils,
+                rotation_degrees=rotation_degrees,
+                flipped=flipped,
+                layer_flip_map=layer_flip_map,
+                pad_nets=pad_nets,
+                placement_copper_layer_id=placement_copper_layer_id,
             )
+            continue
         position = _forward_transform_point(
             pad.x_mils,
             pad.y_mils,
@@ -624,6 +641,204 @@ def _add_placed_pads(
         )
 
 
+def _vertices_to_points_mils(
+    vertices: Sequence[object] | None,
+) -> list[tuple[float, float]]:
+    points = [
+        (float(getattr(vertex, "x_mils")), float(getattr(vertex, "y_mils")))
+        for vertex in list(vertices or [])
+    ]
+    if len(points) >= 2 and points[0] == points[-1]:
+        return points[:-1]
+    return points
+
+
+def _custom_shape_region_ids(footprint: "AltiumPcbFootprint") -> set[int]:
+    region_ids: set[int] = set()
+    for pad in footprint.pads:
+        custom_shape = getattr(pad, "custom_shape", None)
+        if custom_shape is None:
+            continue
+        iter_layer_shapes = getattr(custom_shape, "iter_layer_shapes", None)
+        if not callable(iter_layer_shapes):
+            continue
+        for layer_shape in cast(Sequence[object], iter_layer_shapes()):
+            region = getattr(layer_shape, "region", None)
+            if region is not None:
+                region_ids.add(id(region))
+            shape_region = getattr(layer_shape, "shape_region", None)
+            if shape_region is not None:
+                region_ids.add(id(shape_region))
+    return region_ids
+
+
+def _custom_pad_layer_shape_geometry(
+    layer_shape: object,
+) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
+    source_region = getattr(layer_shape, "region", None) or getattr(
+        layer_shape,
+        "shape_region",
+        None,
+    )
+    if source_region is None:
+        return [], []
+    raw_outline = getattr(source_region, "outline_vertices", None)
+    outline = _vertices_to_points_mils(
+        raw_outline if isinstance(raw_outline, Sequence) else None
+    )
+    raw_holes = getattr(source_region, "hole_vertices", None)
+    holes = []
+    if isinstance(raw_holes, Sequence):
+        holes = [
+            _vertices_to_points_mils(hole if isinstance(hole, Sequence) else None)
+            for hole in raw_holes
+        ]
+    return outline, holes
+
+
+def _transform_points(
+    points: list[tuple[float, float]],
+    *,
+    cx_mils: float,
+    cy_mils: float,
+    rotation_degrees: float,
+    flipped: bool,
+) -> list[tuple[float, float]]:
+    return [
+        _forward_transform_point(
+            point_x,
+            point_y,
+            cx_mils,
+            cy_mils,
+            rotation_degrees,
+            flipped,
+        )
+        for point_x, point_y in points
+    ]
+
+
+def _ordered_custom_pad_layer_shapes(pad: "AltiumPcbPad") -> list[object]:
+    custom_shape = getattr(pad, "custom_shape", None)
+    if custom_shape is None:
+        return []
+    iter_layer_shapes = getattr(custom_shape, "iter_layer_shapes", None)
+    if not callable(iter_layer_shapes):
+        return []
+    shapes = list(cast(Sequence[object], iter_layer_shapes()))
+    primary = getattr(custom_shape, "primary_layer_shape", None)
+    if primary is not None and primary in shapes:
+        return [primary] + [shape for shape in shapes if shape is not primary]
+    return shapes
+
+
+def _add_placed_custom_pad(
+    builder: "PcbDocBuilder",
+    pad: "AltiumPcbPad",
+    *,
+    component_index: int,
+    cx_mils: float,
+    cy_mils: float,
+    rotation_degrees: float,
+    flipped: bool,
+    layer_flip_map: dict[int, int],
+    pad_nets: Mapping[str, str] | None,
+    placement_copper_layer_id: int | None,
+) -> None:
+    layer_shapes = _ordered_custom_pad_layer_shapes(pad)
+    if not layer_shapes:
+        raise NotImplementedError("Custom pad has no source layer shape")
+
+    primary_shape = layer_shapes[0]
+    outline, holes = _custom_pad_layer_shape_geometry(primary_shape)
+    if len(outline) < 3:
+        raise NotImplementedError("Custom pad outline requires at least 3 points")
+    position = _forward_transform_point(
+        float(getattr(pad, "x_mils")),
+        float(getattr(pad, "y_mils")),
+        cx_mils,
+        cy_mils,
+        rotation_degrees,
+        flipped,
+    )
+    primary_layer = _transform_placed_primitive_layer(
+        int(getattr(primary_shape, "layer", getattr(pad, "layer", PcbLayer.TOP))),
+        flipped=flipped,
+        layer_flip_map=layer_flip_map,
+        placement_copper_layer_id=placement_copper_layer_id,
+    )
+    builder.add_custom_pad(
+        designator=str(getattr(pad, "designator", "")),
+        position_mils=position,
+        outline_points_mils=_transform_points(
+            outline,
+            cx_mils=cx_mils,
+            cy_mils=cy_mils,
+            rotation_degrees=rotation_degrees,
+            flipped=flipped,
+        ),
+        layer=primary_layer,
+        anchor_width_mils=float(pad._from_internal_units(pad.top_width)),
+        anchor_height_mils=float(pad._from_internal_units(pad.top_height)),
+        anchor_rotation_degrees=_forward_transform_angle(
+            float(getattr(pad, "rotation", 0.0)),
+            rotation_degrees,
+            flipped,
+        ),
+        anchor_shape=int(getattr(pad, "effective_top_shape", 1)),
+        hole_points_mils=[
+            _transform_points(
+                hole,
+                cx_mils=cx_mils,
+                cy_mils=cy_mils,
+                rotation_degrees=rotation_degrees,
+                flipped=flipped,
+            )
+            for hole in holes
+        ],
+        outline_points_are_local=False,
+        net=None
+        if pad_nets is None
+        else pad_nets.get(str(getattr(pad, "designator", ""))),
+        component_index=component_index,
+    )
+
+    authored_pad = builder.pads[-1]
+    zero_based_pad_index = len(builder.pads) - 1
+    for layer_shape in layer_shapes[1:]:
+        extra_outline, extra_holes = _custom_pad_layer_shape_geometry(layer_shape)
+        if len(extra_outline) < 3:
+            continue
+        builder._add_custom_pad_layer_shape(
+            pad=authored_pad,
+            zero_based_pad_index=zero_based_pad_index,
+            outline_points_mils=_transform_points(
+                extra_outline,
+                cx_mils=cx_mils,
+                cy_mils=cy_mils,
+                rotation_degrees=rotation_degrees,
+                flipped=flipped,
+            ),
+            layer=_transform_placed_primitive_layer(
+                int(getattr(layer_shape, "layer", primary_layer)),
+                flipped=flipped,
+                layer_flip_map=layer_flip_map,
+                placement_copper_layer_id=placement_copper_layer_id,
+            ),
+            hole_points_mils=[
+                _transform_points(
+                    hole,
+                    cx_mils=cx_mils,
+                    cy_mils=cy_mils,
+                    rotation_degrees=rotation_degrees,
+                    flipped=flipped,
+                )
+                for hole in extra_holes
+            ],
+            component_index=component_index,
+            record=builder.custom_shapes[-1],
+        )
+
+
 def _add_placed_vias(
     builder: "PcbDocBuilder",
     footprint: "AltiumPcbFootprint",
@@ -649,6 +864,29 @@ def _add_placed_vias(
             hole_size_mils=via.hole_size_mils,
             layer_start=via.layer_start,
             layer_end=via.layer_end,
+            ipc4761_via_type=via.ipc4761_via_type,
+            ipc4761_features=()
+            if via.via_structure is None
+            else tuple(via.via_structure.features),
+            propagation_delay_ps=via.propagation_delay_ps,
+            hole_positive_tolerance_mils=via.hole_positive_tolerance_mils,
+            hole_negative_tolerance_mils=via.hole_negative_tolerance_mils,
+            is_tent_top=via.is_tent_top,
+            is_tent_bottom=via.is_tent_bottom,
+            solder_mask_expansion_top_mils=(
+                via.soldermask_expansion_front / 10000.0
+                if getattr(via, "_has_soldermask_expansion_front", False)
+                else None
+            ),
+            solder_mask_expansion_bottom_mils=(
+                via.soldermask_expansion_back / 10000.0
+                if getattr(via, "_has_soldermask_expansion_back", False)
+                else None
+            ),
+            is_test_fab_top=via.is_test_fab_top,
+            is_test_fab_bottom=via.is_test_fab_bottom,
+            is_assy_testpoint_top=via.is_assy_testpoint_top,
+            is_assy_testpoint_bottom=via.is_assy_testpoint_bottom,
             component_index=component_index,
         )
 
@@ -665,7 +903,10 @@ def _add_placed_regions(
     layer_flip_map: dict[int, int],
     placement_copper_layer_id: int | None,
 ) -> None:
+    custom_region_ids = _custom_shape_region_ids(footprint)
     for region in footprint.regions:
+        if id(region) in custom_region_ids:
+            continue
         outline = [
             _forward_transform_point(
                 vertex.x_mils,
@@ -795,9 +1036,8 @@ def place_footprint_into_builder(
     """
     Place one `AltiumPcbFootprint` onto the board through the builder path.
 
-    This first slice is intentionally explicit about unsupported features:
-    - custom pads raise `NotImplementedError`
-    - embedded 3D model placement requires `source_pcblib`
+    Embedded 3D model placement requires `source_pcblib` so model payloads can
+    be resolved from the source library.
     """
     layer_token = _normalize_component_layer(layer)
     flipped = layer_token == "BOTTOM"

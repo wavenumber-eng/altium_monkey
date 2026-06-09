@@ -1,3 +1,104 @@
+# altium-monkey 2026.06.08 Release Notes
+
+Package version: `2026.6.8`
+
+`2026.06.08` is represented in Python package metadata as the PEP 440
+canonical form `2026.6.8`.
+
+This release expands PcbDoc/PcbLib writer parity for downstream board
+generation and transcode workflows. The changes are additive and preserve
+existing documented APIs.
+
+## PcbLib Via Feature Authoring
+
+PcbLib now reads, preserves, and authors footprint-level
+`PrimitiveParameters`, via IPC-4761 side tables, propagation delay,
+fabrication and assembly testpoint flags, and mixed-footprint via-structure
+links through the public `add_via(...)` API.
+
+Via-structure links in PcbLib footprints now resolve against the full native
+`Data` record order, not the via-only list. This fixes IPC-4761 feature rows
+for footprints that contain pads, tracks, arcs, text, fills, regions, or
+component bodies before linked vias. Footprints also expose a read-only
+`primitives` aggregate view in native record order for workflows that need to
+replay mixed primitive ordering.
+
+## PcbDoc And PcbLib Writer Parity
+
+PcbDoc and PcbLib pad authoring now expose matching fabrication and assembly
+testpoint flags on the clean public `add_pad(...)` APIs.
+
+PcbDoc and PcbLib via authoring now accepts explicit IPC-4761 feature rows on
+the clean public `add_via(...)` APIs, so callers can author non-default side
+and material rows without mutating returned records.
+
+PcbDoc custom-pad authoring is now available through
+`AltiumPcbDoc.add_custom_pad(...)` and `PcbDocBuilder.add_custom_pad(...)`,
+including custom bodies, custom holes, pad-center offsets, net assignment, and
+custom-pad footprint placement without duplicate region replay. Direct PcbDoc
+custom-pad authoring also accepts additional per-layer custom bodies and holes
+through Python `PcbCustomPadLayerShapeSpec` / `layer_shapes=...` and native
+C++ `PcbCustomPadOptions.layer_shapes`.
+
+Placing PcbLib footprints into PcbDoc now preserves footprint-local via
+identity through PcbDoc-to-PcbLib extraction, including IPC-4761 feature side
+tables, feature materials, propagation delay, hole tolerances, mask and tenting
+flags, and fabrication/assembly testpoint flags.
+
+PcbDoc authoring now includes Python and native C++ helpers for mechanical
+layer display names, enabled-state registry fields, and mechanical mirror
+pairing used by component side flipping.
+
+PcbDoc user-union creation now supports explicit native union-id replay in
+Python and native C++, enabling deterministic read/mutate/write recreation of
+named user unions while preserving auto-allocation for normal use.
+
+Layer-stack document authoring now includes via-span and backdrill-span
+helpers, with native C++ parity for the same `LAYERPAIR*` Board6/Data contract.
+Direct via-tail and counterhole mutation remains intentionally outside this
+API.
+
+## PcbDoc Long Text Fix
+
+PcbDoc text writing now emits long authored text through a wide-safe
+`Texts6/Data` fallback payload instead of the legacy one-byte Pascal-length
+payload. This fixes downstream PcbDoc transcodes that generate PCB text longer
+than 255 bytes.
+
+The release includes fixture-backed coverage for an AD-authored board with one
+ordinary PCB text object and one text-frame object containing the same
+292-byte string. The tests verify no-op preservation of Altium's legacy
+256-byte fallback payload and fresh authoring through the long-safe writer
+path.
+
+## Public Examples
+
+New and updated public examples demonstrate direct via IPC-4761 feature-row
+authoring, footprint primitive parameters, and fixture-backed PcbLib
+via-feature recreation through the public `add_footprint(...)`, `add_via(...)`,
+and primitive authoring helpers.
+
+## Validation
+
+The release diff was audited against `altium-monkey/v2026.6.7`. The
+user-facing changed surfaces are: layer-stack document authoring and
+interchange docs, PcbDoc/PcbLib writer parity, PcbLib via feature and
+`PrimitiveParameters` support, public PcbLib examples, long PcbDoc text
+serialization, generated public example docs, and native C++ parity for the
+promoted writer controls.
+
+The release candidate was tested with focused package authoring tests, public
+example tests, private PcbDoc/PcbLib fixture lanes, native C++
+parity lanes for the promoted writer surfaces, AD26 interop open/save smoke for
+the generated PcbLib samples, and strict package Pyright with zero diagnostics.
+
+## Public API Compatibility
+
+Existing documented APIs remain compatible. The new writer controls,
+metadata-preservation paths, and text serialization fix are additive.
+
+---
+
 # altium-monkey 2026.06.07 Release Notes
 
 Package version: `2026.6.7`

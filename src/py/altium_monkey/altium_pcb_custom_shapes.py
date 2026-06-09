@@ -436,12 +436,6 @@ def _attach_explicit_padindex_regions(
             continue
         pad = pads[pad_index]
         layer = _coerce_layer_id(getattr(region, "layer", None))
-        if not _supports_custom_pad_layer(
-            pad,
-            layer,
-            include_inner_multilayer=include_inner_multilayer,
-        ):
-            continue
         shape_region = None
         if shape_regions:
             shape_region = find_best_pad_region(shape_regions, pad, target_layer=layer)
@@ -452,6 +446,7 @@ def _attach_explicit_padindex_regions(
             shape_region=shape_region,
             pad_index=pad_index,
             layer=layer,
+            require_supported_layer=False,
         )
 
 
@@ -498,6 +493,7 @@ def attach_custom_pad_shape(
     shape_kind: int | None = 10,
     arcs: list[object] | None = None,
     layer: int | None = None,
+    require_supported_layer: bool = True,
 ) -> None:
     """
     Attach first-class custom-pad semantics to a pad.
@@ -507,7 +503,7 @@ def attach_custom_pad_shape(
     layer_id = _coerce_layer_id(layer)
     if layer_id is None:
         layer_id = _coerce_layer_id(getattr(region, "layer", None))
-    if not _supports_custom_pad_layer(pad, layer_id):
+    if require_supported_layer and not _supports_custom_pad_layer(pad, layer_id):
         return
 
     custom_shape = getattr(pad, "custom_shape", None)

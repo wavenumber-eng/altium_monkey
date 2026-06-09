@@ -148,6 +148,7 @@ def build_authored_region_pair(
     region.keepout_restrictions = int(keepout_restrictions)
     region.subpoly_index = int(subpoly_index)
     region.cavity_height = cavity_height_internal
+    region.union_index = int(union_index)
     region._flags1_raw = 0x0C
     region._skip_bytes_9 = b"\xff\xff\xff\xff\x00"
     region._skip_bytes_16 = b"\x00\x00"

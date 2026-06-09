@@ -42,8 +42,12 @@ if TYPE_CHECKING:
         DraftsmanVerticalAlignment,
     )
     from .altium_pcbdoc import AltiumPcbDoc
-    from .altium_pcbdoc_builder import PcbDocBuilder
-    from .altium_pcblib import AltiumPcbFootprint, AltiumPcbLib
+    from .altium_pcbdoc_builder import PcbCustomPadLayerShapeSpec, PcbDocBuilder
+    from .altium_pcblib import (
+        AltiumPcbFootprint,
+        AltiumPcbLib,
+        AltiumPcbLibPrimitiveParameterGroup,
+    )
     from .altium_schdoc import AltiumSchDoc
     from .altium_schlib import AltiumSchLib
 
@@ -525,6 +529,7 @@ __all__ = [
     "AltiumPcbDoc",
     "AltiumPcbLib",
     "AltiumPcbFootprint",
+    "AltiumPcbLibPrimitiveParameterGroup",
     "AltiumDraftsmanDocument",
     "AltiumDraftsmanPage",
     "AltiumDraftsmanItem",
@@ -556,6 +561,7 @@ __all__ = [
     "PcbStepModelBounds",
     "compute_step_model_bounds_mils",
     "PcbDocBuilder",
+    "PcbCustomPadLayerShapeSpec",
 ]
 
 _EXTRA_PUBLIC_SURFACES: dict[str, tuple[str, ...]] = {
@@ -698,6 +704,11 @@ def __getattr__(name: str) -> Any:
 
         public_api(PcbDocBuilder)
         return PcbDocBuilder
+    if name == "PcbCustomPadLayerShapeSpec":
+        from .altium_pcbdoc_builder import PcbCustomPadLayerShapeSpec
+
+        public_api(PcbCustomPadLayerShapeSpec)
+        return PcbCustomPadLayerShapeSpec
     if name == "AltiumPcbLib":
         from .altium_pcblib import AltiumPcbLib
 
@@ -708,6 +719,11 @@ def __getattr__(name: str) -> Any:
 
         public_api(AltiumPcbFootprint)
         return AltiumPcbFootprint
+    if name == "AltiumPcbLibPrimitiveParameterGroup":
+        from .altium_pcblib import AltiumPcbLibPrimitiveParameterGroup
+
+        public_api(AltiumPcbLibPrimitiveParameterGroup)
+        return AltiumPcbLibPrimitiveParameterGroup
     if name == "AltiumSchDoc":
         from .altium_schdoc import AltiumSchDoc
 

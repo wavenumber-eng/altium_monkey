@@ -72,20 +72,39 @@ region writes the correct 1-based native `PADINDEX`.
 
 ## Vias
 
-`AltiumPcbFootprint.add_via(...)` supports top/bottom tenting and independent
-manual solder-mask expansion values:
+`AltiumPcbFootprint.add_via(...)` supports top/bottom tenting, independent
+manual solder-mask expansion values, propagation delay, fabrication/assembly
+testpoint flags, and IPC-4761 via-protection types:
 
 ```python
 footprint.add_via(
     position_mils=(100, 0),
     diameter_mils=24,
     hole_size_mils=10,
+    ipc4761_via_type=PcbIpc4761ViaType.TYPE_7_FILLING_AND_CAPPING,
+    propagation_delay_ps=12.5,
     is_tent_top=True,
     is_tent_bottom=False,
     solder_mask_expansion_top_mils=-3,
     solder_mask_expansion_bottom_mils=5,
 )
 ```
+
+Use `set_ipc4761_feature_side(...)` and
+`set_ipc4761_feature_material(...)` on the returned via to customize IPC-4761
+feature rows such as filling or capping material.
+
+## Footprint Primitive Parameters
+
+`AltiumPcbFootprint.set_footprint_primitive_parameter(...)` writes
+footprint-level user parameters to the PcbLib `PrimitiveParameters` side stream:
+
+```python
+footprint.set_footprint_primitive_parameter("TEST_PARAMETER", "sample")
+```
+
+These parameters are separate from the standard footprint `Parameters` stream
+used for pattern, description, height, and item ids.
 
 ## Text
 
@@ -155,12 +174,13 @@ high-level helper methods should be preferred for authored output.
 Start with:
 
 1. [`hello_pcblib`](../examples/hello_pcblib/README.md)
-2. [`pcblib_find_footprint`](../examples/pcblib_find_footprint/README.md)
-3. [`pcblib_split`](../examples/pcblib_split/README.md)
-4. [`pcblib_footprint_svg`](../examples/pcblib_footprint_svg/README.md)
-5. [`pcblib_extract_3d_models`](../examples/pcblib_extract_3d_models/README.md)
-6. [`pcblib_add_free_3d_extruded`](../examples/pcblib_add_free_3d_extruded/README.md)
-7. [`pcblib_synthesize_power_resistor_lib`](../examples/pcblib_synthesize_power_resistor_lib/README.md)
+2. [`pcblib_add_via_ipc4761_matrix`](../examples/pcblib_add_via_ipc4761_matrix/README.md)
+3. [`pcblib_find_footprint`](../examples/pcblib_find_footprint/README.md)
+4. [`pcblib_split`](../examples/pcblib_split/README.md)
+5. [`pcblib_footprint_svg`](../examples/pcblib_footprint_svg/README.md)
+6. [`pcblib_extract_3d_models`](../examples/pcblib_extract_3d_models/README.md)
+7. [`pcblib_add_free_3d_extruded`](../examples/pcblib_add_free_3d_extruded/README.md)
+8. [`pcblib_synthesize_power_resistor_lib`](../examples/pcblib_synthesize_power_resistor_lib/README.md)
 
 See [API patterns](api_patterns/index.md) for the differences between schematic
 and PCB object systems.

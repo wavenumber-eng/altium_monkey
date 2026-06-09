@@ -232,5 +232,5 @@ def _apply_one_mask_expansion(
     manual_value = 0
     if expansion.mode == PcbMaskExpansionMode.MANUAL:
         assert expansion.expansion_mils is not None
-        manual_value = pad._to_internal_units(expansion.expansion_mils)
+        manual_value = int(round(float(expansion.expansion_mils) * 10000.0))
     setattr(pad, manual_attr, manual_value)

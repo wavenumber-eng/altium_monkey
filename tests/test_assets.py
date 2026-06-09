@@ -3871,6 +3871,148 @@ def test_pcblib_create_cavity_region_writes_native_cavity(
     assert manifest["embedded_model_names"] == ["RESC1005X04L.step"]
 
 
+def test_pcblib_via_ipc4761_example_writes_expected_side_tables(
+    check_examples_root: Path,
+) -> None:
+    example = next(
+        item
+        for item in _load_examples()
+        if item["id"] == "pcblib_add_via_ipc4761_matrix"
+    )
+    result = _run_example_entrypoint(example, check_examples_root)
+    assert result.returncode == 0, result.stderr
+
+    from altium_monkey import (
+        AltiumPcbLib,
+        PcbIpc4761ViaType,
+        PcbViaStructureFeatureSide,
+        PcbViaStructureFeatureType,
+    )
+
+    output_root = check_examples_root / "pcblib_add_via_ipc4761_matrix" / "output"
+    output_path = output_root / "pcblib_add_via_ipc4761_matrix.PcbLib"
+    manifest_path = output_root / "pcblib_add_via_ipc4761_matrix.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    pcblib = AltiumPcbLib.from_file(output_path)
+    assert len(pcblib.footprints) == 1
+    footprint = pcblib.footprints[0]
+    assert footprint.name == "PCBLIB_VIA_IPC4761_MATRIX"
+    assert footprint.footprint_primitive_parameters == {
+        "TEST_PARAMETER": "pcblib_add_via_ipc4761_matrix"
+    }
+    assert len(footprint.vias) == 14
+    assert {int(via.ipc4761_via_type) for via in footprint.vias} == set(range(13))
+    assert len(footprint.via_structures) == 13
+    assert len(footprint.via_structure_links) == 13
+
+    custom_via = footprint.vias[-1]
+    assert custom_via.ipc4761_via_type == PcbIpc4761ViaType.TYPE_7_FILLING_AND_CAPPING
+    assert custom_via.propagation_delay_ps == pytest.approx(12.5)
+    assert custom_via.is_test_fab_top is True
+    assert custom_via.is_assy_testpoint_bottom is True
+    assert custom_via.via_structure is not None
+    assert len(custom_via.via_structure.features) == 5
+    filling = custom_via.get_ipc4761_feature(PcbViaStructureFeatureType.FILLING)
+    capping = custom_via.get_ipc4761_feature(PcbViaStructureFeatureType.CAPPING)
+    assert filling is not None
+    assert capping is not None
+    assert filling.side == PcbViaStructureFeatureSide.BOTH
+    assert filling.material == "EPOXY"
+    assert capping.side == PcbViaStructureFeatureSide.BOTH
+    assert capping.material == "COPPER"
+
+    assert manifest["via_count"] == len(footprint.vias)
+    assert manifest["via_structure_count"] == len(footprint.via_structures)
+    assert manifest["via_structure_link_count"] == len(footprint.via_structure_links)
+    assert manifest["footprint_primitive_parameters"] == (
+        footprint.footprint_primitive_parameters
+    )
+    assert manifest["custom_type7"]["filling_material"] == "EPOXY"
+    assert manifest["custom_type7"]["capping_material"] == "COPPER"
+
+
+def test_pcblib_recreate_via_feature_libraries_replays_public_authoring_api(
+    check_examples_root: Path,
+) -> None:
+    example = next(
+        item
+        for item in _load_examples()
+        if item["id"] == "pcblib_recreate_via_feature_libraries"
+    )
+    result = _run_example_entrypoint(example, check_examples_root)
+    assert result.returncode == 0, result.stderr
+
+    from altium_monkey import AltiumPcbLib
+
+    output_root = (
+        check_examples_root / "pcblib_recreate_via_feature_libraries" / "output"
+    )
+    manifest_path = output_root / "pcblib_recreate_via_feature_libraries.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    libraries = {entry["footprint"]: entry for entry in manifest["libraries"]}
+
+    assert set(libraries) == {
+        "via_ipc4761_type_matrix",
+        "via_propagation_delay_matrix",
+        "via_features_and_all_primitives",
+        "via_test_point_flags",
+        "footprint_parameters",
+    }
+    for entry in libraries.values():
+        assert all(entry["semantic_match"].values())
+        output_path = (
+            check_examples_root
+            / "pcblib_recreate_via_feature_libraries"
+            / (entry["output"])
+        )
+        assert output_path.exists()
+        reparsed = AltiumPcbLib.from_file(output_path)
+        assert len(reparsed.footprints) == 1
+        assert reparsed.footprints[0].name == entry["footprint"]
+
+    mixed = libraries["via_features_and_all_primitives"]
+    assert mixed["record_count"] == 156
+    assert mixed["pad_count"] == 2
+    assert mixed["via_count"] == 60
+    assert mixed["via_structure_count"] == 39
+    assert mixed["via_structure_link_count"] == 51
+    assert mixed["footprint_primitive_parameters"] == {
+        "TEST_PARAMETER": "via_features_and_all_primitives"
+    }
+    assert mixed["parameters"]["SMARTUNIONSSTORAGE"] == "2"
+    assert sum(1 for via in mixed["vias"] if via["ipc4761_via_type"] != 0) == 51
+
+    flags = libraries["via_test_point_flags"]
+    assert [
+        (
+            via["is_test_fab_top"],
+            via["is_test_fab_bottom"],
+            via["is_assy_testpoint_top"],
+            via["is_assy_testpoint_bottom"],
+        )
+        for via in flags["vias"]
+    ] == [
+        (True, False, False, False),
+        (False, True, False, False),
+        (True, True, False, False),
+        (False, False, True, False),
+        (False, True, False, True),
+        (False, False, False, True),
+        (True, True, True, True),
+    ]
+
+    footprint_parameters = libraries["footprint_parameters"]
+    assert footprint_parameters["record_count"] == 0
+    assert footprint_parameters["parameters"]["HEIGHT"] == "123mil"
+    assert footprint_parameters["parameters"]["AREA"] == "314000000000001.728000"
+    assert footprint_parameters["footprint_primitive_parameters"] == {
+        "TEST_PARAMETER1": "1st_param",
+        "TEST_PARAMETER3": "3rd_param",
+        "TEST_PARAMETER2": "2nd_param",
+    }
+
+
 def test_pcbdoc_create_cavity_placements_writes_board_side_cavities(
     check_examples_root: Path,
 ) -> None:

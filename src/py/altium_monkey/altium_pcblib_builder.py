@@ -17,6 +17,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Sequence
 
 from .altium_pcblib_defaults import DEFAULT_PCBLIB_FILE_HEADER_MAGIC
 from .altium_pcblib_defaults import DEFAULT_PCBLIB_PAD_VIA_LIBRARY_GUID
@@ -51,11 +52,16 @@ from .altium_pcblib import (
     AltiumPcbLib,
     _altium_ole_truncate,
     _sanitize_ole_name,
+    _footprint_parameter_signature,
+    _serialize_footprint_parameters,
+    _sync_footprint_primitive_parameter_stream,
+    _sync_footprint_via_structure_streams,
 )
 from .altium_pcb_pad_authoring import (
     ROUND_HOLE_SHAPE,
     SQUARE_HOLE_SHAPE,
     SLOT_HOLE_SHAPE,
+    apply_authored_pad_local_stack,
     apply_authored_pad_shape,
     normalize_pad_hole_shape,
     normalize_pad_shape,
@@ -69,6 +75,10 @@ from .altium_pcb_mask_expansion import (
     resolve_pcb_mask_expansion_with_legacy_alias,
 )
 from .altium_pcb_via_authoring import apply_authored_via_surface_policy
+from .altium_pcb_via_structure import (
+    AltiumPcbViaStructureFeature,
+    authored_via_structure_for_type,
+)
 from .altium_pcbdoc_builder_text import (
     PCB_TEXT_BARCODE_MARGIN_MILS,
     PCB_TEXT_BARCODE_MIN_WIDTH_MILS,
@@ -79,6 +89,7 @@ from .altium_record_pcb__arc import AltiumPcbArc
 from .altium_pcb_enums import PcbBarcodeKind
 from .altium_pcb_enums import PcbBarcodeRenderMode
 from .altium_pcb_enums import PcbBodyProjection
+from .altium_pcb_enums import PcbIpc4761ViaType
 from .altium_pcb_enums import PcbRegionKind
 from .altium_pcb_enums import pcb_region_kind_from_native_kind
 from .altium_pcb_enums import pcb_region_kind_to_native_kind
@@ -117,14 +128,19 @@ def _build_library_data(header_bytes: bytes, footprint_names: list[str]) -> byte
 
 
 def _build_footprint_parameters(spec: "PcbLibFootprintSpec") -> bytes:
-    body = (
-        f"|PATTERN={spec.footprint.name}"
-        f"|HEIGHT={spec.height}"
-        f"|DESCRIPTION={spec.description}"
-        f"|ITEMGUID={spec.item_guid}"
-        f"|REVISIONGUID={spec.revision_guid}\x00"
+    parameters = dict(spec.footprint.parameters)
+    parameters.update(
+        {
+            "PATTERN": spec.footprint.name,
+            "HEIGHT": spec.height,
+            "DESCRIPTION": spec.description,
+            "ITEMGUID": spec.item_guid,
+            "REVISIONGUID": spec.revision_guid,
+        }
     )
-    return _build_length_prefixed_ascii(body)
+    spec.footprint.parameters = parameters
+    spec.footprint._parameter_signature = _footprint_parameter_signature(spec.footprint)
+    return _serialize_footprint_parameters(parameters)
 
 
 def _build_footprint_widestrings(strings: dict[int, str] | None = None) -> bytes:
@@ -2236,6 +2252,16 @@ class PcbLibBuilder:
         hole_size_mil: float = 0.0,
         plated: bool | None = None,
         corner_radius_percent: int | None = None,
+        top_shape: int | str | PadShape | None = None,
+        top_width_mils: float | None = None,
+        top_height_mils: float | None = None,
+        mid_shape: int | str | PadShape | None = None,
+        mid_width_mils: float | None = None,
+        mid_height_mils: float | None = None,
+        bottom_shape: int | str | PadShape | None = None,
+        bottom_width_mils: float | None = None,
+        bottom_height_mils: float | None = None,
+        pad_mode: int | None = None,
         slot_length_mil: float = 0.0,
         slot_rotation_degrees: float = 0.0,
         hole_shape: int | str | PadHoleShape = PadHoleShape.ROUND,
@@ -2247,6 +2273,10 @@ class PcbLibBuilder:
         paste_mask_expansion_mils: float | None = None,
         hole_positive_tolerance_mil: float | None = None,
         hole_negative_tolerance_mil: float | None = None,
+        is_test_fab_top: bool = False,
+        is_test_fab_bottom: bool = False,
+        is_assy_testpoint_top: bool = False,
+        is_assy_testpoint_bottom: bool = False,
     ) -> AltiumPcbPad:
         """
         Add a simple pad primitive to a footprint.
@@ -2301,6 +2331,10 @@ class PcbLibBuilder:
         pad.is_plated = bool(plated) if plated is not None else False
         pad.net_index = None
         pad.component_index = None
+        pad.is_test_fab_top = bool(is_test_fab_top)
+        pad.is_test_fab_bottom = bool(is_test_fab_bottom)
+        pad.is_assy_test_point_top = bool(is_assy_testpoint_top)
+        pad.is_assy_test_point_bottom = bool(is_assy_testpoint_bottom)
         pad.polygon_index = 0xFFFF
         pad.union_index = 0xFFFFFFFF
         pad.pad_mode = 0
@@ -2309,6 +2343,47 @@ class PcbLibBuilder:
         pad._subrecord2_data = _PAD_SUBRECORD2_DEFAULT
         pad._subrecord3_data = _PAD_SUBRECORD3_DEFAULT
         pad._subrecord4_data = _PAD_SUBRECORD4_DEFAULT
+        apply_authored_pad_local_stack(
+            pad,
+            base_shape=shape,
+            base_width_iu=width_iu,
+            base_height_iu=height_iu,
+            top_shape=top_shape,
+            top_width_iu=(
+                None
+                if top_width_mils is None
+                else self._mil_to_internal_units(top_width_mils)
+            ),
+            top_height_iu=(
+                None
+                if top_height_mils is None
+                else self._mil_to_internal_units(top_height_mils)
+            ),
+            mid_shape=mid_shape,
+            mid_width_iu=(
+                None
+                if mid_width_mils is None
+                else self._mil_to_internal_units(mid_width_mils)
+            ),
+            mid_height_iu=(
+                None
+                if mid_height_mils is None
+                else self._mil_to_internal_units(mid_height_mils)
+            ),
+            bottom_shape=bottom_shape,
+            bottom_width_iu=(
+                None
+                if bottom_width_mils is None
+                else self._mil_to_internal_units(bottom_width_mils)
+            ),
+            bottom_height_iu=(
+                None
+                if bottom_height_mils is None
+                else self._mil_to_internal_units(bottom_height_mils)
+            ),
+            pad_mode=pad_mode,
+            corner_radius_percent=corner_radius_percent,
+        )
         apply_pcb_mask_expansion_to_pad(
             pad,
             paste=resolve_pcb_mask_expansion(
@@ -2684,12 +2759,19 @@ class PcbLibBuilder:
         hole_size_mil: float,
         layer_start: int | PcbLayer = PcbLayer.TOP,
         layer_end: int | PcbLayer = PcbLayer.BOTTOM,
+        ipc4761_via_type: int | PcbIpc4761ViaType = PcbIpc4761ViaType.NONE,
+        ipc4761_features: Sequence[AltiumPcbViaStructureFeature] | None = None,
+        propagation_delay_ps: float | None = None,
         hole_positive_tolerance_mil: float | None = None,
         hole_negative_tolerance_mil: float | None = None,
         is_tent_top: bool | None = None,
         is_tent_bottom: bool | None = None,
         solder_mask_expansion_top_mil: float | None = None,
         solder_mask_expansion_bottom_mil: float | None = None,
+        is_test_fab_top: bool = False,
+        is_test_fab_bottom: bool = False,
+        is_assy_testpoint_top: bool = False,
+        is_assy_testpoint_bottom: bool = False,
     ) -> AltiumPcbVia:
         via = AltiumPcbVia()
         via.layer = int(PcbLayer.MULTI_LAYER)
@@ -2704,6 +2786,17 @@ class PcbLibBuilder:
         via.layer_end = int(layer_end)
         via.via_mode = 0
         via.union_index = 0
+        via.ipc4761_via_type = PcbIpc4761ViaType(int(ipc4761_via_type))
+        via.via_structure = authored_via_structure_for_type(
+            via.ipc4761_via_type,
+            ipc4761_features,
+        )
+        if propagation_delay_ps is not None:
+            via.propagation_delay_ps = float(propagation_delay_ps)
+        via.is_test_fab_top = bool(is_test_fab_top)
+        via.is_test_fab_bottom = bool(is_test_fab_bottom)
+        via.is_assy_testpoint_top = bool(is_assy_testpoint_top)
+        via.is_assy_testpoint_bottom = bool(is_assy_testpoint_bottom)
         via.diameter_by_layer = [0] * 32
         for layer_id in range(
             min(via.layer_start, via.layer_end), max(via.layer_start, via.layer_end) + 1
@@ -2746,6 +2839,7 @@ class PcbLibBuilder:
         keepout_restrictions: int = 0,
         subpoly_index: int = 0,
         cavity_height_mil: float = 0.0,
+        v7_layer: str | None = None,
     ) -> AltiumPcbRegion:
         if len(outline_points_mil) < 3:
             raise ValueError("Region outline requires at least 3 points")
@@ -2776,8 +2870,14 @@ class PcbLibBuilder:
         region.subpoly_index = int(subpoly_index)
         region.cavity_height = self._mil_to_internal_units(cavity_height_mil)
         region.properties = {}
+        if v7_layer is not None:
+            region.properties["V7_LAYER"] = str(v7_layer)
         if region.cavity_height or semantic_kind == PcbRegionKind.CAVITY_DEFINITION:
-            region.properties["V7_LAYER"] = PcbLayer(int(layer)).to_json_name()
+            region.properties["V7_LAYER"] = str(
+                v7_layer
+                if v7_layer is not None
+                else PcbLayer(int(layer)).to_json_name()
+            )
             region.properties["NAME"] = ""
             region.properties["ARCRESOLUTION"] = "0.5mil"
             region.properties["CAVITYHEIGHT"] = _format_mil_value(
@@ -3173,6 +3273,8 @@ class PcbLibBuilder:
                 if footprint.raw_uniqueid_info is not None
                 else None
             )
+            _sync_footprint_primitive_parameter_stream(footprint)
+            _sync_footprint_via_structure_streams(footprint)
             pcblib.footprints.append(footprint)
 
         return pcblib

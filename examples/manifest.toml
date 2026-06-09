@@ -1041,7 +1041,7 @@ tags = ["schdoc", "schlib", "component", "dblib-style", "parameters", "footprint
 [[examples]]
 id = "hello_pcblib"
 title = "Create a hello PcbLib"
-summary = "Create a real 0603 resistor footprint from scratch and embed a STEP model from disk through the public PcbLib API."
+summary = "Create a real 0603 resistor footprint from scratch, add a footprint primitive parameter, and embed a STEP model from disk through the public PcbLib API."
 areas = ["pcblib"]
 status = "ready"
 entrypoint = "hello_pcblib/hello_pcblib.py"
@@ -1053,6 +1053,50 @@ outputs = [
 ]
 requires_extra = []
 tags = ["hello-world", "generation", "library", "footprint", "embedded-model", "step"]
+
+[[examples]]
+id = "pcblib_add_via_ipc4761_matrix"
+title = "Add PcbLib IPC-4761 via variants"
+summary = "Create a PcbLib footprint with IPC-4761 via structure variants, explicit Type7 feature rows passed through add_via, and a footprint-level primitive parameter."
+areas = ["pcblib"]
+status = "ready"
+entrypoint = "pcblib_add_via_ipc4761_matrix/pcblib_add_via_ipc4761_matrix.py"
+doc = "pcblib_add_via_ipc4761_matrix/README.md"
+inputs = []
+assets = []
+outputs = [
+  "pcblib_add_via_ipc4761_matrix/output/pcblib_add_via_ipc4761_matrix.PcbLib",
+  "pcblib_add_via_ipc4761_matrix/output/pcblib_add_via_ipc4761_matrix.json",
+]
+requires_extra = []
+tags = ["pcblib", "generation", "via", "ipc4761", "primitive-parameters"]
+
+[[examples]]
+id = "pcblib_recreate_via_feature_libraries"
+title = "Recreate PcbLib via feature libraries"
+summary = "Load synthetic PcbLib via-feature libraries, rebuild them through add_footprint/add_via and the other public primitive authoring helpers, and verify via-feature semantics after reparse."
+areas = ["pcblib"]
+status = "ready"
+entrypoint = "pcblib_recreate_via_feature_libraries/pcblib_recreate_via_feature_libraries.py"
+doc = "pcblib_recreate_via_feature_libraries/README.md"
+inputs = [
+  "pcblib_recreate_via_feature_libraries/assets/via_ipc4761_type_matrix.PcbLib",
+  "pcblib_recreate_via_feature_libraries/assets/via_propagation_delay_matrix.PcbLib",
+  "pcblib_recreate_via_feature_libraries/assets/via_features_and_all_primitives.PcbLib",
+  "pcblib_recreate_via_feature_libraries/assets/via_test_point_flags.PcbLib",
+  "pcblib_recreate_via_feature_libraries/assets/footprint_parameters.PcbLib",
+]
+assets = []
+outputs = [
+  "pcblib_recreate_via_feature_libraries/output/via_ipc4761_type_matrix.PcbLib",
+  "pcblib_recreate_via_feature_libraries/output/via_propagation_delay_matrix.PcbLib",
+  "pcblib_recreate_via_feature_libraries/output/via_features_and_all_primitives.PcbLib",
+  "pcblib_recreate_via_feature_libraries/output/via_test_point_flags.PcbLib",
+  "pcblib_recreate_via_feature_libraries/output/footprint_parameters.PcbLib",
+  "pcblib_recreate_via_feature_libraries/output/pcblib_recreate_via_feature_libraries.json",
+]
+requires_extra = []
+tags = ["pcblib", "generation", "via", "ipc4761", "propagation-delay", "testpoint", "primitive-parameters"]
 
 [[examples]]
 id = "pcblib_add_free_3d_extruded"
