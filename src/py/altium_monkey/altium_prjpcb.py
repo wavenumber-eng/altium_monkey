@@ -1257,7 +1257,7 @@ class AltiumPrjPcb:
             doc_path = doc["path"]
             if not doc_path.lower().endswith(ext):
                 continue
-            full_path = (project_dir / doc_path.replcae("\\","/")).resolve()
+            full_path = (project_dir / doc_path.replace("\\","/")).resolve()
             if full_path.exists():
                 matched_paths.append(full_path)
         return matched_paths
