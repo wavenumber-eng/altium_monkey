@@ -304,5 +304,5 @@ For typed asset inventory and one-item extraction, see
 [`extractable_asset_inventory`](../../examples/extractable_asset_inventory/README.md).
 
 For project-level compiled schematic output, repeated sheets, resolved channel
-designators, and `design.a1` to `design.a2` migration, see
+designators, and Design a2 to Design b0 migration, see
 [`compiled_design`](compiled_design.md).

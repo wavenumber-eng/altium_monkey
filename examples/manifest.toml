@@ -1364,7 +1364,7 @@ assets = []
 outputs = [
   "hello_altium_design/output/project_summary.json",
   "hello_altium_design/output/altium_design.json",
-  "hello_altium_design/output/physical_pages_summary.json",
+  "hello_altium_design/output/compiled_schematic_graph_summary.json",
   "hello_altium_design/output/physical_svg_manifest.json",
   "hello_altium_design/output/physical_svgs/",
   "hello_altium_design/output/netlist.json",

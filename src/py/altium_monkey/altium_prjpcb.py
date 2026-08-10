@@ -379,8 +379,12 @@ def _altium_path_name(path: str | Path) -> str:
     `.PrjPcb` paths use Windows separators even when parsed on macOS/Linux, so
     `Path(...).name` is not sufficient for project-relative paths.
     """
-    normalized = str(path).replace("\\", "/")
-    return normalized.rsplit("/", 1)[-1]
+    return _altium_path_for_host(path).name
+
+
+def _altium_path_for_host(path: str | Path) -> Path:
+    """Convert Altium separators before using a project path on this host."""
+    return Path(str(path).replace("\\", "/"))
 
 
 def _numbered_section_index(section: str, prefix: str) -> int | None:
@@ -548,6 +552,7 @@ class AltiumPrjPcb:
         self.config = configparser.ConfigParser(interpolation=None)
         self.config.optionxform = _preserve_option_case
         self.documents: list[DocumentEntry] = []
+        self._document_source_sections: dict[int, str] = {}
         self._loaded_encoding: str | None = None
 
         if filepath is not None:
@@ -574,6 +579,7 @@ class AltiumPrjPcb:
         references and must participate in project-level compile loading.
         """
         self.documents = []
+        self._document_source_sections = {}
         doc_num = 1
 
         while True:
@@ -612,17 +618,17 @@ class AltiumPrjPcb:
             if not doc_path:
                 continue
             options = [(key, value) for key, value in self.config.items(section)]
-            self.documents.append(
-                {
-                    "path": doc_path,
-                    "unique_id": self.config.get(
-                        section,
-                        "DocumentUniqueId",
-                        fallback="",
-                    ),
-                    "options": options,
-                }
-            )
+            document: DocumentEntry = {
+                "path": doc_path,
+                "unique_id": self.config.get(
+                    section,
+                    "DocumentUniqueId",
+                    fallback="",
+                ),
+                "options": options,
+            }
+            self.documents.append(document)
+            self._document_source_sections[id(document)] = section
 
     def add_document(self, path: str | Path, unique_id: str | None = None) -> None:
         """
@@ -713,7 +719,14 @@ class AltiumPrjPcb:
             doc_num += 1
 
         # Add document sections
-        for idx, doc in enumerate(self.documents, start=1):
+        writable_documents = (
+            document
+            for document in self.documents
+            if not self._document_source_sections.get(id(document), "")
+            .lower()
+            .startswith("devicesheet")
+        )
+        for idx, doc in enumerate(writable_documents, start=1):
             section = f"Document{idx}"
             self.config.add_section(section)
 
@@ -1121,15 +1134,23 @@ class AltiumPrjPcb:
         Returns:
             List of absolute Path objects for active SchDocs in project order.
         """
+        filepath = self.filepath
+        if filepath is None:
+            raise ValueError("Cannot get SchDoc paths: project has no filepath context")
+
         all_paths = self.get_schdoc_paths()
         if not all_paths:
             return []
 
-        path_by_name = {path.name.lower(): path for path in all_paths}
+        path_by_project_path = {
+            str(path).replace("\\", "/").casefold(): path for path in all_paths
+        }
+        project_dir = filepath.parent
         active_paths: list[Path] = []
         for document in self.documents:
             doc_path = str(document.get("path", ""))
-            if Path(doc_path).suffix.lower() != ".schdoc":
+            host_path = _altium_path_for_host(doc_path)
+            if host_path.suffix.lower() != ".schdoc":
                 continue
 
             option_keys = {key for key, _ in document["options"]}
@@ -1137,7 +1158,9 @@ class AltiumPrjPcb:
             if not extra_keys:
                 continue
 
-            full_path = path_by_name.get(Path(doc_path).name.lower())
+            resolved_path = (project_dir / host_path).resolve()
+            path_key = str(resolved_path).replace("\\", "/").casefold()
+            full_path = path_by_project_path.get(path_key)
             if full_path is not None:
                 active_paths.append(full_path)
 
@@ -1199,14 +1222,9 @@ class AltiumPrjPcb:
         _top_level, names = self._saved_structure_schdoc_names()
         if not names:
             return []
-        path_by_name = {
-            path.name.lower(): path
-            for path in self.get_schdoc_paths()
-        }
+        path_by_name = {path.name.lower(): path for path in self.get_schdoc_paths()}
         return [
-            path_by_name[name.lower()]
-            for name in names
-            if name.lower() in path_by_name
+            path_by_name[name.lower()] for name in names if name.lower() in path_by_name
         ]
 
     def get_pcbdoc_paths(self) -> list[Path]:
@@ -1257,7 +1275,7 @@ class AltiumPrjPcb:
             doc_path = doc["path"]
             if not doc_path.lower().endswith(ext):
                 continue
-            full_path = (project_dir / doc_path).resolve()
+            full_path = (project_dir / _altium_path_for_host(doc_path)).resolve()
             if full_path.exists():
                 matched_paths.append(full_path)
         return matched_paths

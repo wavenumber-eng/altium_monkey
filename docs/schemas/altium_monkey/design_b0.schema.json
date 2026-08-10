@@ -1,0 +1,1345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:design_b0",
+  "title": "Altium Monkey design b0",
+  "description": "Full Altium design analysis emitted by AltiumDesign.to_json().",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generator",
+    "project",
+    "variants",
+    "options",
+    "sheets",
+    "components",
+    "schematic_hierarchy",
+    "nets",
+    "compiled_schematic_graph",
+    "physical_page_metadata"
+  ],
+  "properties": {
+    "schema": {
+      "const": "altium_monkey.design.b0"
+    },
+    "generator": {
+      "const": "altium_monkey"
+    },
+    "project": {
+      "$ref": "#/$defs/project"
+    },
+    "variants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variant"
+      }
+    },
+    "options": {
+      "$ref": "#/$defs/options"
+    },
+    "sheets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sheet"
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/design_component"
+      }
+    },
+    "schematic_hierarchy": {
+      "$ref": "#/$defs/schematic_hierarchy"
+    },
+    "pnp": {
+      "$ref": "#/$defs/pnp"
+    },
+    "compile": {
+      "$ref": "#/$defs/compile"
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    },
+    "nets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/design_net"
+      }
+    },
+    "indexes": {
+      "$ref": "#/$defs/indexes"
+    },
+    "compiled_schematic_graph": {
+      "$ref": "#/$defs/compiled_schematic_graph"
+    },
+    "physical_page_metadata": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/physical_page_metadata"
+      }
+    }
+  },
+  "$defs": {
+    "string_or_null": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "string_list": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "string_list_map": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/string_list"
+      }
+    },
+    "sheet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sheet_number"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string"
+        },
+        "sheet_number": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Canonical decimal sheet numbers are emitted as integers for compatibility; non-canonical Altium SheetNumber parameter values are emitted as exact strings."
+        }
+      }
+    },
+    "parameter_map": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "variant_key_values": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "dnp"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "dnp": {
+          "$ref": "#/$defs/string_list"
+        },
+        "variations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variant_key_values"
+          }
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variant_key_values"
+          }
+        },
+        "param_variations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variant_key_values"
+          }
+        },
+        "parameter_overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/parameter_map"
+          }
+        },
+        "is_current": {
+          "type": "boolean"
+        }
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "filename",
+        "parameters"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "filename": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameter_map"
+        },
+        "current_variant": {
+          "$ref": "#/$defs/string_or_null"
+        }
+      }
+    },
+    "design_component": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "designator"
+      ],
+      "properties": {
+        "designator": {
+          "type": "string"
+        },
+        "svg_id": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "value": {
+          "type": "string"
+        },
+        "footprint": {
+          "type": "string"
+        },
+        "library_ref": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "hierarchy": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "classification": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameter_map"
+        },
+        "compiled_component_id": {
+          "type": "string"
+        },
+        "physical_document_id": {
+          "type": "string"
+        },
+        "physical_page_id": {
+          "type": "string"
+        },
+        "source_unique_id": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "source_unique_id_path": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "dnp": {
+          "type": "boolean"
+        },
+        "fitted": {
+          "type": "boolean"
+        },
+        "ambiguous_physical_designator": {
+          "type": "boolean"
+        }
+      }
+    },
+    "pnp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "units",
+        "position_mode",
+        "source_pcbdoc",
+        "placements"
+      ],
+      "properties": {
+        "units": {
+          "const": "mm"
+        },
+        "position_mode": {
+          "enum": [
+            "altium-pick-place",
+            "component-origin"
+          ]
+        },
+        "source_pcbdoc": {
+          "type": "string"
+        },
+        "placements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pnp_placement"
+          }
+        }
+      }
+    },
+    "compile": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "summary": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "options": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "annotation": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "stats": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "design_net": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "uid",
+        "name",
+        "auto_named",
+        "source_sheets",
+        "terminals",
+        "graphical",
+        "aliases"
+      ],
+      "properties": {
+        "uid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "auto_named": {
+          "type": "boolean"
+        },
+        "source_sheets": {
+          "$ref": "#/$defs/string_list"
+        },
+        "terminals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/terminal"
+          }
+        },
+        "graphical": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "aliases": {
+          "$ref": "#/$defs/string_list"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/endpoint"
+          }
+        },
+        "hierarchy_paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/net_hierarchy_path"
+          }
+        },
+        "name_sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/name_source"
+          }
+        }
+      }
+    },
+    "name_source": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name",
+        "role",
+        "source"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    },
+    "indexes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "svg_to_component": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "svg_to_components": {
+          "$ref": "#/$defs/string_list_map"
+        },
+        "component_to_nets": {
+          "$ref": "#/$defs/string_list_map"
+        },
+        "net_to_components": {
+          "$ref": "#/$defs/string_list_map"
+        }
+      }
+    },
+    "schematic_hierarchy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "requested_scope",
+        "effective_scope",
+        "documents",
+        "sheet_symbols",
+        "hierarchy_paths",
+        "channels",
+        "links",
+        "unresolved"
+      ],
+      "properties": {
+        "schema": {
+          "const": "altium_monkey.schematic_hierarchy.a1"
+        },
+        "requested_scope": {
+          "type": "string"
+        },
+        "effective_scope": {
+          "type": "string"
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_document"
+          }
+        },
+        "sheet_symbols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_sheet_symbol"
+          }
+        },
+        "hierarchy_paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_path_record"
+          }
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_channel"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_link"
+          }
+        },
+        "harness_bundle_links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/harness_bundle_link"
+          }
+        },
+        "unresolved": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/freeform_object"
+          }
+        }
+      }
+    },
+    "hierarchy_document": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sheet_index",
+        "filename",
+        "path",
+        "is_top_level",
+        "metadata"
+      ],
+      "properties": {
+        "sheet_index": {
+          "type": "integer"
+        },
+        "filename": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "is_top_level": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "hierarchy_sheet_symbol": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "parent_sheet_index",
+        "designator",
+        "child_filename",
+        "child_sheet_indices",
+        "entries",
+        "metadata"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parent_sheet_index": {
+          "type": "integer"
+        },
+        "designator": {
+          "type": "string"
+        },
+        "child_filename": {
+          "type": "string"
+        },
+        "child_sheet_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "repeat": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/freeform_object"
+          }
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "hierarchy_path_record": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "levels"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "source_sheet_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "compiled_sheet_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hierarchy_level"
+          }
+        }
+      }
+    },
+    "hierarchy_channel": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "sheet_symbol_id",
+        "parent_sheet_index",
+        "child_sheet_index",
+        "instance_index",
+        "hierarchy_path_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sheet_symbol_id": {
+          "type": "string"
+        },
+        "parent_sheet_index": {
+          "type": "integer"
+        },
+        "child_sheet_index": {
+          "type": "integer"
+        },
+        "compiled_child_sheet_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "instance_index": {
+          "type": "integer"
+        },
+        "channel_name": {
+          "type": "string"
+        },
+        "hierarchy_path_id": {
+          "type": "string"
+        }
+      }
+    },
+    "hierarchy_link": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind",
+        "parent",
+        "child",
+        "match_kind",
+        "hierarchy_path_id",
+        "metadata"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "parent": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "child": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "match_kind": {
+          "type": "string"
+        },
+        "hierarchy_path_id": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "harness_bundle_link": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind",
+        "topology",
+        "name",
+        "parent",
+        "child",
+        "bundle",
+        "match_kind",
+        "metadata"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "harness_bundle"
+        },
+        "topology": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "child": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "bundle": {
+          "$ref": "#/$defs/freeform_object"
+        },
+        "match_kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeform_object"
+        }
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "net_identifier_scope",
+        "allow_ports_to_name_nets",
+        "allow_sheet_entries_to_name_nets",
+        "allow_single_pin_nets",
+        "append_sheet_numbers_to_local_nets",
+        "power_port_names_take_priority",
+        "higher_level_names_take_priority",
+        "auto_sheet_numbering"
+      ],
+      "properties": {
+        "net_identifier_scope": {
+          "type": "string"
+        },
+        "allow_ports_to_name_nets": {
+          "type": "boolean"
+        },
+        "allow_sheet_entries_to_name_nets": {
+          "type": "boolean"
+        },
+        "allow_single_pin_nets": {
+          "type": "boolean"
+        },
+        "append_sheet_numbers_to_local_nets": {
+          "type": "boolean"
+        },
+        "power_port_names_take_priority": {
+          "type": "boolean"
+        },
+        "higher_level_names_take_priority": {
+          "type": "boolean"
+        },
+        "auto_sheet_numbering": {
+          "type": "boolean"
+        }
+      }
+    },
+    "pnp_placement": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "designator"
+      ],
+      "properties": {
+        "designator": {
+          "type": "string"
+        }
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "designator",
+        "pin"
+      ],
+      "properties": {
+        "designator": {
+          "type": "string"
+        },
+        "pin": {
+          "type": "string"
+        },
+        "pin_name": {
+          "type": "string"
+        },
+        "pin_type": {
+          "type": "string"
+        }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "net_hierarchy_path": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "hierarchy_level": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "freeform_object": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "graph_source_identity": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": [
+          "string",
+          "integer",
+          "number",
+          "boolean",
+          "array"
+        ]
+      }
+    },
+    "graph_unit_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "display_name",
+        "page_definition_refs",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.unit_definition"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "page_definition_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_page_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "unit_definition_ref",
+        "display_name",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.page_definition"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit_definition_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_unit_occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "unit_definition_ref",
+        "display_name",
+        "page_occurrence_refs",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.unit_occurrence"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit_definition_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "page_occurrence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "parent_hierarchy_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_page_occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "page_definition_ref",
+        "unit_occurrence_ref",
+        "display_name",
+        "sheet_number",
+        "instance_order",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.page_occurrence"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_definition_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "sheet_number": {
+          "type": "string"
+        },
+        "instance_order": {
+          "type": "integer"
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_hierarchy_occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "parent_unit_occurrence_ref",
+        "parent_page_occurrence_ref",
+        "child_unit_occurrence_ref",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.hierarchy_occurrence"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_unit_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_page_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "child_unit_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_component_occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "page_occurrence_ref",
+        "source_designator",
+        "physical_designator",
+        "display_designator",
+        "unit",
+        "body_style",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.component_occurrence"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_designator": {
+          "type": "string"
+        },
+        "physical_designator": {
+          "type": "string"
+        },
+        "display_designator": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "integer"
+        },
+        "body_style": {
+          "type": "integer"
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_local_net_occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "page_occurrence_ref",
+        "display_name",
+        "qualified_name",
+        "aliases",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.local_net_occurrence"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "qualified_name": {
+          "type": "string"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_terminal_occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "page_occurrence_ref",
+        "local_net_occurrence_ref",
+        "role",
+        "name",
+        "pin_designator",
+        "resolution_diagnostics",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.terminal_occurrence"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "local_net_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "component_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "pin_designator": {
+          "type": "string"
+        },
+        "resolution_diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_hierarchy_terminal_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "hierarchy_occurrence_ref",
+        "parent_terminal_occurrence_ref",
+        "child_terminal_occurrence_ref",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.hierarchy_terminal_binding"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hierarchy_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_terminal_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "child_terminal_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "graph_graphical_artifact_link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "page_occurrence_ref",
+        "target_type",
+        "target_ref",
+        "artifact_key",
+        "element_id",
+        "source_identity"
+      ],
+      "properties": {
+        "type": {
+          "const": "sch.graphical_artifact_link"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_type": {
+          "type": "string"
+        },
+        "target_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_key": {
+          "const": "sch.dwg_scene"
+        },
+        "element_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_identity": {
+          "$ref": "#/$defs/graph_source_identity"
+        }
+      }
+    },
+    "compiled_schematic_graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "identity_namespace",
+        "unit_definitions",
+        "page_definitions",
+        "unit_occurrences",
+        "page_occurrences",
+        "hierarchy_occurrences",
+        "component_occurrences",
+        "local_net_occurrences",
+        "terminal_occurrences",
+        "hierarchy_terminal_bindings",
+        "graphical_artifact_links"
+      ],
+      "properties": {
+        "schema": {
+          "const": "altium_monkey.compiled_schematic_graph.a0"
+        },
+        "type": {
+          "const": "sch.compiled_schematic_graph"
+        },
+        "identity_namespace": {
+          "const": "sch.compiled_schematic_graph.a0"
+        },
+        "unit_definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_unit_definition"
+          }
+        },
+        "page_definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_page_definition"
+          }
+        },
+        "unit_occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_unit_occurrence"
+          }
+        },
+        "page_occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_page_occurrence"
+          }
+        },
+        "hierarchy_occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_hierarchy_occurrence"
+          }
+        },
+        "component_occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_component_occurrence"
+          }
+        },
+        "local_net_occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_local_net_occurrence"
+          }
+        },
+        "terminal_occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_terminal_occurrence"
+          }
+        },
+        "hierarchy_terminal_bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_hierarchy_terminal_binding"
+          }
+        },
+        "graphical_artifact_links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graph_graphical_artifact_link"
+          }
+        }
+      }
+    },
+    "physical_page_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "page_occurrence_ref",
+        "physical_instance_path",
+        "channel_index",
+        "channel_prefix",
+        "channel_alpha",
+        "room_name",
+        "physical_room_name",
+        "document_number"
+      ],
+      "properties": {
+        "page_occurrence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "physical_instance_path": {
+          "type": "string"
+        },
+        "channel_index": {
+          "type": "integer"
+        },
+        "channel_prefix": {
+          "type": "string"
+        },
+        "channel_alpha": {
+          "type": "string"
+        },
+        "room_name": {
+          "type": "string"
+        },
+        "physical_room_name": {
+          "type": "string"
+        },
+        "document_number": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

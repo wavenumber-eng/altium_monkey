@@ -29,87 +29,76 @@ def _safe_variant_filename(variant: str) -> str:
 
 def _safe_output_stem(value: str) -> str:
     safe = [
-        char if char.isalnum() or char in {"-", "_"} else "_"
-        for char in value.strip()
+        char if char.isalnum() or char in {"-", "_"} else "_" for char in value.strip()
     ]
     return "".join(safe) or "page"
 
 
 def _compiled_net_name_examples(design_json: dict) -> list[dict]:
     examples: list[dict] = []
-    for page in design_json.get("physical_pages", []):
-        for net in page.get("nets", []):
-            aliases = list(net.get("aliases") or [])
-            name_sources = list(net.get("name_sources") or [])
-            if not aliases and len(name_sources) <= 1:
-                continue
-            examples.append(
-                {
-                    "physical_page_id": page.get("id", ""),
-                    "physical_page": page.get("physical_instance_path", ""),
-                    "winning_name": net.get("name", ""),
-                    "alternate_names": aliases,
-                    "name_sources": name_sources,
-                }
-            )
+    for net in design_json.get("nets", []):
+        aliases = list(net.get("aliases") or [])
+        name_sources = list(net.get("name_sources") or [])
+        if not aliases and len(name_sources) <= 1:
+            continue
+        examples.append(
+            {
+                "uid": net.get("uid", ""),
+                "winning_name": net.get("name", ""),
+                "alternate_names": aliases,
+                "name_sources": name_sources,
+            }
+        )
     return examples
 
 
-def _physical_page_summary(design_json: dict) -> dict:
+def _compiled_schematic_graph_summary(design_json: dict) -> dict:
+    graph = design_json["compiled_schematic_graph"]
+    metadata_by_page = {
+        row["page_occurrence_ref"]: row for row in design_json["physical_page_metadata"]
+    }
+    component_counts: dict[str, int] = {}
+    net_counts: dict[str, int] = {}
+    terminal_counts: dict[str, int] = {}
+    drawing_link_counts: dict[str, int] = {}
+    for collection, counts in (
+        (graph["component_occurrences"], component_counts),
+        (graph["local_net_occurrences"], net_counts),
+        (graph["terminal_occurrences"], terminal_counts),
+        (graph["graphical_artifact_links"], drawing_link_counts),
+    ):
+        for row in collection:
+            page_ref = row["page_occurrence_ref"]
+            counts[page_ref] = counts.get(page_ref, 0) + 1
+
     pages: list[dict] = []
-    indexes = design_json.get("indexes", {})
-    for page in design_json.get("physical_pages", []):
+    for page in graph["page_occurrences"]:
+        page_ref = page["id"]
+        metadata = metadata_by_page.get(page_ref, {})
         pages.append(
             {
-                "id": page.get("id", ""),
-                "physical_instance_path": page.get("physical_instance_path", ""),
-                "source_sheet": page.get("source_sheet", ""),
-                "source_path": page.get("source_path", ""),
-                "is_top_level": page.get("is_top_level", False),
-                "component_count": len(page.get("components", [])),
-                "net_count": len(page.get("nets", [])),
-                "components": [
-                    {
-                        "designator": component.get("designator", ""),
-                        "logical_designator": component.get(
-                            "logical_designator", ""
-                        ),
-                        "svg_id": component.get("svg_id", ""),
-                        "dnp": component.get("dnp", False),
-                        "fitted": component.get("fitted", True),
-                    }
-                    for component in page.get("components", [])
-                ],
-                "nets": [
-                    {
-                        "name": net.get("name", ""),
-                        "aliases": list(net.get("aliases") or []),
-                        "name_source_count": len(net.get("name_sources") or []),
-                        "terminal_count": len(net.get("terminals") or []),
-                        "graphical_pin_count": len(
-                            net.get("graphical", {}).get("pins", [])
-                        ),
-                        "graphical_object_count": len(
-                            net.get("graphical", {}).get("object_ids", [])
-                        ),
-                    }
-                    for net in page.get("nets", [])
-                ],
+                "page_occurrence_ref": page_ref,
+                "display_name": page.get("display_name", ""),
+                "sheet_number": page.get("sheet_number", ""),
+                "instance_order": page.get("instance_order", 0),
+                "unit_occurrence_ref": page.get("unit_occurrence_ref", ""),
+                "page_definition_ref": page.get("page_definition_ref", ""),
+                "physical_instance_path": metadata.get("physical_instance_path", ""),
+                "channel_index": metadata.get("channel_index", 0),
+                "room_name": metadata.get("physical_room_name", ""),
+                "component_count": component_counts.get(page_ref, 0),
+                "local_net_count": net_counts.get(page_ref, 0),
+                "terminal_count": terminal_counts.get(page_ref, 0),
+                "drawing_link_count": drawing_link_counts.get(page_ref, 0),
             }
         )
     return {
         "schema": design_json.get("schema", ""),
-        "identity_rule": "physical_page.id + svg_id",
-        "physical_page_count": len(pages),
+        "graph_schema": graph["schema"],
+        "identity_namespace": graph["identity_namespace"],
+        "drawing_identity_rule": ("page_occurrence_ref + artifact_key + element_id"),
+        "page_occurrence_count": len(pages),
         "pages": pages,
-        "indexes_present": {
-            "svg_to_component": "svg_to_component" in indexes,
-            "svg_to_components": "svg_to_components" in indexes,
-            "physical_svg_to_components": "physical_svg_to_components" in indexes,
-            "component_to_physical_page": "component_to_physical_page" in indexes,
-            "physical_page_to_components": "physical_page_to_components" in indexes,
-            "physical_page_to_nets": "physical_page_to_nets" in indexes,
-        },
     }
 
 
@@ -119,13 +108,18 @@ def _write_physical_svgs(design: AltiumDesign, design_json: dict) -> dict:
         stale_svg.unlink()
 
     pages: list[dict] = []
-    for ordinal, page in enumerate(design_json.get("physical_pages", [])):
-        page_id = str(page.get("id", ""))
+    graph = design_json["compiled_schematic_graph"]
+    metadata_by_page = {
+        row["page_occurrence_ref"]: row for row in design_json["physical_page_metadata"]
+    }
+    for ordinal, page in enumerate(graph["page_occurrences"]):
+        page_id = str(page["id"])
         if not page_id:
             continue
+        metadata = metadata_by_page.get(page_id, {})
         page_name = str(
-            page.get("physical_instance_path")
-            or page.get("source_sheet")
+            metadata.get("physical_instance_path")
+            or page.get("display_name")
             or f"page_{ordinal}"
         )
         output_name = f"{ordinal:02d}_{_safe_output_stem(page_name)}.svg"
@@ -133,11 +127,11 @@ def _write_physical_svgs(design: AltiumDesign, design_json: dict) -> dict:
         output_path.write_text(design.to_physical_svg(page_id), encoding="utf-8")
         pages.append(
             {
-                "physical_page_id": page_id,
-                "physical_instance_path": page.get("physical_instance_path", ""),
-                "source_sheet": page.get("source_sheet", ""),
+                "page_occurrence_ref": page_id,
+                "physical_instance_path": metadata.get("physical_instance_path", ""),
+                "display_name": page.get("display_name", ""),
                 "svg_path": f"physical_svgs/{output_name}",
-                "identity_rule": "physical_page.id + svg_id",
+                "identity_rule": ("page_occurrence_ref + artifact_key + element_id"),
             }
         )
 
@@ -162,7 +156,7 @@ def main() -> None:
 
     design = AltiumDesign.from_prjpcb(PROJECT_FILE)
     design_json = design.to_json(include_indexes=True)
-    physical_page_summary = _physical_page_summary(design_json)
+    graph_summary = _compiled_schematic_graph_summary(design_json)
     physical_svg_manifest = _write_physical_svgs(design, design_json)
     project = design.project
     if project is None:
@@ -206,7 +200,7 @@ def main() -> None:
 
     _write_json(OUTPUT_DIR / "project_summary.json", summary)
     _write_json(OUTPUT_DIR / "altium_design.json", design_json)
-    _write_json(OUTPUT_DIR / "physical_pages_summary.json", physical_page_summary)
+    _write_json(OUTPUT_DIR / "compiled_schematic_graph_summary.json", graph_summary)
     _write_json(OUTPUT_DIR / "physical_svg_manifest.json", physical_svg_manifest)
     _write_json(OUTPUT_DIR / "netlist.json", netlist.to_json())
     _write_json(
@@ -221,7 +215,7 @@ def main() -> None:
     print("Wrote:")
     print("  output/project_summary.json")
     print("  output/altium_design.json")
-    print("  output/physical_pages_summary.json")
+    print("  output/compiled_schematic_graph_summary.json")
     print("  output/physical_svg_manifest.json")
     print("  output/netlist.json")
     print("  output/compiled_net_name_examples.json")

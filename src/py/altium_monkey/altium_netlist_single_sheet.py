@@ -6,20 +6,20 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import TYPE_CHECKING, Callable, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Callable, Protocol, TypeAlias, cast
 
 from .altium_netlist_options import NetlistOptions
 from .altium_netlist_common import (
     CHASSIS_GND_MAPPINGS,
     PinGroup,
     POWER_PIN_NAMES,
+    _NetPinLike,
     _altium_net_total_sort_key,
     _emit_auto_named_nets,
     _emit_bridge_roots,
     _emit_named_roots,
     _emit_port_named_nets,
     _pin_electrical_to_pintype,
-    _points_connected,
     _resolve_component_display_value,
 )
 from .altium_netlist_model import (
@@ -33,9 +33,25 @@ from .altium_netlist_model import (
     UnionFind,
 )
 from .altium_netlist_wire_connectivity import (
+    ALTIUM_COORD_SCALE,
+    AnalyserNetItemKind,
+    RootPoint,
     WireGeometryIndex,
+    altium_internal_tolerance_for_display_unit,
+    analyser_net_item_kind,
     build_wire_graph as _build_wire_graph,
     group_pins_by_network as _group_pins_by_network,
+    precise_points_connected,
+    _power_bus_net_label_text,
+)
+from .altium_compiled_design_support import _harness_connector_master_entry_point
+from .altium_sch_record_helpers import (
+    _basic_entry_distance_to_rounded_native_units,
+    _coord_scalar_to_native_parts,
+    _coord_scalar_to_rounded_native_units,
+    _coord_scalar_with_basic_entry_distance_to_native_parts,
+    _coord_scalar_with_basic_entry_distance_to_rounded_native_units,
+    _effective_basic_entry_distance_frac1,
 )
 
 if TYPE_CHECKING:
@@ -53,7 +69,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-RootPoint: TypeAlias = tuple[int, int]
 PinGroupsByRoot: TypeAlias = dict[RootPoint, PinGroup]
 
 
@@ -65,6 +80,87 @@ class _CreateNetFn(Protocol):
         root: RootPoint,
         is_auto_named: bool = False,
     ) -> Net: ...
+
+
+def _sheet_entry_precise_connection_point(
+    sheet_symbol: SchSheetSymbolInfo,
+    entry: object,
+) -> tuple[int, int, int, int]:
+    """Return the entry location represented in SchDoc coordinate fields."""
+    record = sheet_symbol.record
+    sym_x_parts = _coord_scalar_to_native_parts(
+        record.location.x,
+        getattr(record.location, "x_frac", 0),
+    )
+    sym_y_parts = _coord_scalar_to_native_parts(
+        record.location.y,
+        getattr(record.location, "y_frac", 0),
+    )
+    right_x_parts = _coord_scalar_to_native_parts(
+        record.location.x + record.x_size,
+        getattr(record.location, "x_frac", 0) + getattr(record, "x_size_frac", 0),
+    )
+    bottom_y_parts = _coord_scalar_to_native_parts(
+        record.location.y - record.y_size,
+        getattr(record.location, "y_frac", 0) - getattr(record, "y_size_frac", 0),
+    )
+    distance_from_top = getattr(entry, "distance_from_top", None)
+    if distance_from_top is None:
+        distance = _basic_entry_distance_to_rounded_native_units(entry)
+        entry_x_parts = _coord_scalar_to_native_parts(
+            record.location.x + distance,
+            getattr(record.location, "x_frac", 0),
+        )
+        entry_y_parts = _coord_scalar_to_native_parts(
+            record.location.y - distance,
+            getattr(record.location, "y_frac", 0),
+        )
+    else:
+        distance_from_top_frac1 = _effective_basic_entry_distance_frac1(entry)
+        entry_x_parts = _coord_scalar_with_basic_entry_distance_to_native_parts(
+            record.location.x,
+            getattr(record.location, "x_frac", 0),
+            distance_from_top,
+            distance_from_top_frac1,
+            direction=1,
+        )
+        entry_y_parts = _coord_scalar_with_basic_entry_distance_to_native_parts(
+            record.location.y,
+            getattr(record.location, "y_frac", 0),
+            distance_from_top,
+            distance_from_top_frac1,
+            direction=-1,
+        )
+    side = int(getattr(entry, "side", -1))
+    if side == 0:
+        return (
+            sym_x_parts[0],
+            entry_y_parts[0],
+            sym_x_parts[1],
+            entry_y_parts[1],
+        )
+    if side == 1:
+        return (
+            right_x_parts[0],
+            entry_y_parts[0],
+            right_x_parts[1],
+            entry_y_parts[1],
+        )
+    if side == 2:
+        return (
+            entry_x_parts[0],
+            sym_y_parts[0],
+            entry_x_parts[1],
+            sym_y_parts[1],
+        )
+    if side == 3:
+        return (
+            entry_x_parts[0],
+            bottom_y_parts[0],
+            entry_x_parts[1],
+            bottom_y_parts[1],
+        )
+    raise ValueError(f"Unknown sheet entry side {side}")
 
 
 class AltiumNetlistSingleSheetCompiler:
@@ -98,28 +194,30 @@ class AltiumNetlistSingleSheetCompiler:
         self.options = options or NetlistOptions()
 
         self.tolerance = tolerance
+        display_unit = int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0))
+        self.internal_tolerance = (
+            tolerance * ALTIUM_COORD_SCALE
+            if tolerance > 0
+            else altium_internal_tolerance_for_display_unit(display_unit)
+        )
 
         # Internal storage
         self._components: dict[str, SchComponentInfo] = {}
         self._pins: list[SchPinInfo] = []
         self._wires: list = []  # Wire objects
-        self._junctions: list[tuple[int, int]] = []
-        self._net_labels: dict[tuple[int, int], str] = {}
-        self._power_ports: dict[tuple[int, int], str] = {}
-        self._ports: dict[tuple[int, int], str] = {}
+        self._junctions: list[RootPoint] = []
+        self._net_labels: list[tuple[RootPoint, str, SchNetLabelInfo]] = []
+        self._power_ports: list[
+            tuple[RootPoint, str, SchPowerPortInfo | SchCrossSheetConnectorInfo]
+        ] = []
+        self._ports: list[tuple[RootPoint, str, SchPortInfo]] = []
+        self._inferred_port_segments: list[tuple[RootPoint, RootPoint]] = []
 
         # Sheet entry tracking (for hierarchical connectivity)
         # Maps connection hotspot -> (entry_name, sheet_symbol_info)
-        self._sheet_entries: dict[tuple[int, int], tuple[str, SchSheetSymbolInfo]] = {}
-
-        # Graphical ID tracking (for SVG highlighting)
-        self._net_label_objects: dict[tuple[int, int], SchNetLabelInfo] = {}
-        self._power_port_objects: dict[
-            tuple[int, int],
-            SchPowerPortInfo | SchCrossSheetConnectorInfo,
-        ] = {}
-        self._port_objects: dict[tuple[int, int], SchPortInfo] = {}
-        self._sheet_entry_objects: dict[tuple[int, int], object] = {}
+        self._sheet_entries: list[
+            tuple[RootPoint, str, SchSheetSymbolInfo, object]
+        ] = []
 
         # Order tracking
         self._net_label_names_ordered: list[str] = []
@@ -128,6 +226,15 @@ class AltiumNetlistSingleSheetCompiler:
 
         # Spatial index for wire geometry (built in _build_wire_connectivity)
         self._geo_index: WireGeometryIndex | None = None
+        self._net_item_roots: dict[RootPoint, tuple[RootPoint, bool]] = {}
+        self._compiled_pin_roots: dict[tuple[str, str], tuple[SchPinInfo, ...]] = {}
+        self._nonwire_net_label_object_ids: set[int] = set()
+        self._active_pin_designators_by_component: dict[str, set[str]] = defaultdict(
+            set
+        )
+        self._masked_pin_designators_by_component: dict[str, set[str]] = defaultdict(
+            set
+        )
 
         # Compile mask bounds - components inside are excluded from netlist
         # Each bound is (min_x, min_y, max_x, max_y)
@@ -174,6 +281,7 @@ class AltiumNetlistSingleSheetCompiler:
         self._extract_power_ports()
         self._extract_ports()
         self._extract_sheet_entries()
+        self._separate_analyser_items()
 
         log.debug(
             f"Extracted: {len(self._components)} components, "
@@ -243,7 +351,8 @@ class AltiumNetlistSingleSheetCompiler:
         """
         masked_count = 0
         for pin in self.schdoc.get_all_pins():
-            # Check if the parent component is inside a compile mask
+            # AD eliminates a pin when either the component or the pin hotspot is
+            # inside a compile mask. A mask may cover only part of a large symbol.
             comp = pin.component
             if comp:
                 x, y = comp.location
@@ -252,9 +361,30 @@ class AltiumNetlistSingleSheetCompiler:
                         f"Pin {pin.designator}.{pin.name} excluded (parent inside compile mask)"
                     )
                     masked_count += 1
+                    self._masked_pin_designators_by_component[
+                        pin.component_designator.lower()
+                    ].add(pin.designator)
                     continue
 
+            pin_x, pin_y = pin.connection_point
+            if self._is_inside_compile_mask(pin_x, pin_y):
+                log.debug(
+                    "Pin %s.%s excluded by compile mask at (%s, %s)",
+                    pin.designator,
+                    pin.name,
+                    pin_x,
+                    pin_y,
+                )
+                masked_count += 1
+                self._masked_pin_designators_by_component[
+                    pin.component_designator.lower()
+                ].add(pin.designator)
+                continue
+
             self._pins.append(pin)
+            self._active_pin_designators_by_component[
+                pin.component_designator.lower()
+            ].add(pin.designator)
         if masked_count > 0:
             log.debug(
                 f"Excluded {masked_count} pins from components inside compile masks"
@@ -273,7 +403,7 @@ class AltiumNetlistSingleSheetCompiler:
         for junc in self.schdoc.get_junctions():
             loc = getattr(junc, "location", None)
             if loc:
-                self._junctions.append((loc.x, loc.y))
+                self._junctions.append((loc.x, loc.y, loc.x_frac, loc.y_frac))
 
     def _extract_net_labels(self) -> None:
         """
@@ -283,6 +413,10 @@ class AltiumNetlistSingleSheetCompiler:
         """
         masked_count = 0
         for nl in self.schdoc.get_net_labels():
+            # A NetLabel record owned by a component is symbol-body text, not a
+            # placed connectivity object. It remains available to rendering.
+            if getattr(nl.record, "parent", None) is not None:
+                continue
             loc = nl.connection_point
             text = nl.text
             if text:
@@ -291,8 +425,14 @@ class AltiumNetlistSingleSheetCompiler:
                     log.debug(f"NetLabel '{text}' excluded by compile mask at {loc}")
                     masked_count += 1
                     continue
-                self._net_labels[loc] = text
-                self._net_label_objects[loc] = nl  # Store full object for graphical_id
+                location = nl.record.location
+                self._net_labels.append(
+                    (
+                        (location.x, location.y, location.x_frac, location.y_frac),
+                        text,
+                        nl,
+                    )
+                )
                 if text not in self._net_label_names_ordered:
                     self._net_label_names_ordered.append(text)
         if masked_count > 0:
@@ -308,11 +448,16 @@ class AltiumNetlistSingleSheetCompiler:
                 Objects inside compile masks are excluded from netlist generation.
         """
         masked_count = 0
+        gnd_bus_ordinal = 0
+        vcc_bus_ordinal = 0
         power_like_objects = [
-            *self.schdoc.get_power_ports(),
-            *self.schdoc.get_cross_sheet_connectors(),
+            *((power_port, True) for power_port in self.schdoc.get_power_ports()),
+            *(
+                (connector, False)
+                for connector in self.schdoc.get_cross_sheet_connectors()
+            ),
         ]
-        for pp in power_like_objects:
+        for pp, is_power_object in power_like_objects:
             loc = pp.connection_point
             text = pp.text
             if text:
@@ -325,8 +470,21 @@ class AltiumNetlistSingleSheetCompiler:
                     )
                     masked_count += 1
                     continue
-                self._power_ports[loc] = text
-                self._power_port_objects[loc] = pp  # Store full object for graphical_id
+                if is_power_object:
+                    folded = text.casefold()
+                    if "[" in text and "]" in text and "gndbus" in folded:
+                        gnd_bus_ordinal += 1
+                    elif "[" in text and "]" in text and "vccbus" in folded:
+                        vcc_bus_ordinal += 1
+                    text = (
+                        _power_bus_net_label_text(
+                            text,
+                            gnd_ordinal=gnd_bus_ordinal,
+                            vcc_ordinal=vcc_bus_ordinal,
+                        )
+                        or text
+                    )
+                self._power_ports.append((pp._precise_connection_point, text, pp))
                 if text not in self._power_port_names_ordered:
                     self._power_port_names_ordered.append(text)
         if masked_count > 0:
@@ -342,10 +500,15 @@ class AltiumNetlistSingleSheetCompiler:
         for port in self.schdoc.get_ports():
             name = port.name
             if name:
-                # Ports can have multiple connection points (left and right edges)
-                for loc in port.connection_points:
-                    self._ports[loc] = name
-                    self._port_objects[loc] = port  # Store full object for graphical_id
+                connection_points = port._precise_connection_points
+                if not connection_points:
+                    continue
+                self._ports.append((connection_points[0], name, port))
+                harness_type = str(getattr(port.record, "harness_type", "") or "")
+                if len(connection_points) > 1 and ".." not in name and not harness_type:
+                    self._inferred_port_segments.append(
+                        (connection_points[0], connection_points[1])
+                    )
                 if name not in self._port_names_ordered:
                     self._port_names_ordered.append(name)
 
@@ -361,41 +524,196 @@ class AltiumNetlistSingleSheetCompiler:
                 Entry connection point formula:
                     Left side (0):  hotspot = (sym.location.x, sym.location.y - dist)
                     Right side (1): hotspot = (sym.location.x + sym.x_size, sym.location.y - dist)
-                where dist is the rounded fractional DistanceFromTop offset in
-                native 10-mil units.
+                The symbol and DistanceFromTop whole/fraction fields are combined
+                before the hotspot is reduced to the integer connectivity grid.
         """
         for sheet_sym_info in self.schdoc.get_sheet_symbols():
             ss = sheet_sym_info.record
-            sym_x = ss.location.x
-            sym_y = ss.location.y
-
+            sym_x = _coord_scalar_to_rounded_native_units(
+                ss.location.x,
+                getattr(ss.location, "x_frac", 0),
+            )
+            sym_y = _coord_scalar_to_rounded_native_units(
+                ss.location.y,
+                getattr(ss.location, "y_frac", 0),
+            )
+            right_x = _coord_scalar_to_rounded_native_units(
+                ss.location.x + ss.x_size,
+                getattr(ss.location, "x_frac", 0) + getattr(ss, "x_size_frac", 0),
+            )
+            bottom_y = _coord_scalar_to_rounded_native_units(
+                ss.location.y - ss.y_size,
+                getattr(ss.location, "y_frac", 0) - getattr(ss, "y_size_frac", 0),
+            )
             for entry in sheet_sym_info.entries:
                 entry_name = entry.display_name or ""
                 if not entry_name:
                     continue
 
-                # Compute connection hotspot based on entry side.
-                dist = entry._rounded_distance_from_top_native_units()
+                distance_from_top = getattr(entry, "distance_from_top", None)
+                distance_from_top_frac1 = _effective_basic_entry_distance_frac1(entry)
                 side = entry.side
 
+                if distance_from_top is None:
+                    dist = entry._rounded_distance_from_top_native_units()
+                    entry_x = _coord_scalar_to_rounded_native_units(
+                        ss.location.x + dist,
+                        getattr(ss.location, "x_frac", 0),
+                    )
+                    entry_y = _coord_scalar_to_rounded_native_units(
+                        ss.location.y - dist,
+                        getattr(ss.location, "y_frac", 0),
+                    )
+                else:
+                    entry_x = (
+                        _coord_scalar_with_basic_entry_distance_to_rounded_native_units(
+                            ss.location.x,
+                            getattr(ss.location, "x_frac", 0),
+                            distance_from_top,
+                            distance_from_top_frac1,
+                            direction=1,
+                        )
+                    )
+                    entry_y = (
+                        _coord_scalar_with_basic_entry_distance_to_rounded_native_units(
+                            ss.location.y,
+                            getattr(ss.location, "y_frac", 0),
+                            distance_from_top,
+                            distance_from_top_frac1,
+                            direction=-1,
+                        )
+                    )
                 if side == 0:  # Left
-                    hotspot = (sym_x, sym_y - dist)
+                    hotspot = (sym_x, entry_y)
                 elif side == 1:  # Right
-                    hotspot = (sym_x + ss.x_size, sym_y - dist)
+                    hotspot = (right_x, entry_y)
                 elif side == 2:  # Top
-                    hotspot = (sym_x + dist, sym_y)
+                    hotspot = (entry_x, sym_y)
                 elif side == 3:  # Bottom
-                    hotspot = (sym_x + dist, sym_y - ss.y_size)
+                    hotspot = (entry_x, bottom_y)
                 else:
                     log.warning(f"Unknown sheet entry side {side} for '{entry_name}'")
                     continue
 
-                self._sheet_entries[hotspot] = (entry_name, sheet_sym_info)
-                self._sheet_entry_objects[hotspot] = entry
+                self._sheet_entries.append(
+                    (
+                        _sheet_entry_precise_connection_point(sheet_sym_info, entry),
+                        entry_name,
+                        sheet_sym_info,
+                        entry,
+                    )
+                )
                 log.debug(
                     f"Sheet entry '{entry_name}' at hotspot {hotspot} "
-                    f"(side={side}, dist={entry.distance_from_top})"
+                    f"(side={side}, dist={distance_from_top})"
                 )
+
+    def _separate_analyser_items(self) -> None:
+        """Separate AD bus/harness items from scalar wire coordinates."""
+        signal_harnesses = tuple(self.schdoc.get_signal_harnesses())
+        connector_primary_points = tuple(
+            _harness_connector_master_entry_point(connector.record)
+            for connector in self.schdoc.get_harness_connectors()
+        )
+
+        def kind(
+            identifier: str,
+            locations: tuple[RootPoint, ...],
+            harness_type: str = "",
+        ) -> AnalyserNetItemKind:
+            return analyser_net_item_kind(
+                identifier,
+                harness_type=harness_type,
+                locations=locations,
+                signal_harnesses=signal_harnesses,
+                harness_connector_primary_points=connector_primary_points,
+                internal_tolerance=self.internal_tolerance,
+            )
+
+        self._pins = [
+            pin
+            for pin in self._pins
+            if kind(pin.designator or pin.name, (pin._precise_connection_point,))
+            is AnalyserNetItemKind.WIRE
+        ]
+        virtual_index = 0
+
+        def virtual_root() -> RootPoint:
+            nonlocal virtual_index
+            virtual_index += 1
+            return (-2_000_000_000, virtual_index, 0, 0)
+
+        separated_labels: list[tuple[RootPoint, str, SchNetLabelInfo]] = []
+        for location, name, obj in self._net_labels:
+            if kind(name, (location,)) is AnalyserNetItemKind.WIRE:
+                separated_labels.append((location, name, obj))
+                continue
+            self._nonwire_net_label_object_ids.add(id(obj))
+            separated_labels.append((virtual_root(), name, obj))
+        self._net_labels = separated_labels
+
+        separated_power_ports: list[
+            tuple[RootPoint, str, SchPowerPortInfo | SchCrossSheetConnectorInfo]
+        ] = []
+        for location, name, obj in self._power_ports:
+            item_kind = kind(
+                name,
+                (location,),
+                str(getattr(obj.record, "harness_type", "") or ""),
+            )
+            if item_kind is AnalyserNetItemKind.WIRE:
+                separated_power_ports.append((location, name, obj))
+        self._power_ports = separated_power_ports
+        self._power_port_names_ordered = [
+            name
+            for name in self._power_port_names_ordered
+            if any(
+                candidate_name == name
+                for _location, candidate_name, _obj in self._power_ports
+            )
+        ]
+
+        separated_ports: list[tuple[RootPoint, str, SchPortInfo]] = []
+        scalar_port_segments: list[tuple[RootPoint, RootPoint]] = []
+        for _location, name, obj in self._ports:
+            points = tuple(obj._precise_connection_points)
+            item_kind = kind(
+                name,
+                points,
+                str(getattr(obj.record, "harness_type", "") or ""),
+            )
+            separated_ports.append(
+                (
+                    points[0]
+                    if item_kind is AnalyserNetItemKind.WIRE
+                    else virtual_root(),
+                    name,
+                    obj,
+                )
+            )
+            if item_kind is AnalyserNetItemKind.WIRE and len(points) == 2:
+                scalar_port_segments.append((points[0], points[1]))
+        self._ports = separated_ports
+
+        separated_entries: list[tuple[RootPoint, str, SchSheetSymbolInfo, object]] = []
+        for location, name, symbol, entry in self._sheet_entries:
+            item_kind = kind(
+                name,
+                (location,),
+                str(getattr(entry, "harness_type", "") or ""),
+            )
+            separated_entries.append(
+                (
+                    location
+                    if item_kind is AnalyserNetItemKind.WIRE
+                    else virtual_root(),
+                    name,
+                    symbol,
+                    entry,
+                )
+            )
+        self._sheet_entries = separated_entries
+        self._inferred_port_segments = [segment for segment in scalar_port_segments]
 
     # =========================================================================
     # Building Methods
@@ -415,6 +733,7 @@ class AltiumNetlistSingleSheetCompiler:
                 comp,
                 project_params=self.options.project_parameters,
                 sheet_params=self.options.sheet_parameters,
+                component_description=comp.description,
             )
             if not value and comp.comment:
                 value = comp.comment
@@ -468,6 +787,50 @@ class AltiumNetlistSingleSheetCompiler:
             uf, wire_ids_by_root, pin_groups, floating_pin_roots
         )
 
+    def _compiled_pin_roots_by_component(
+        self,
+    ) -> dict[tuple[str, str], tuple[SchPinInfo, ...]]:
+        """Return one active pin representative for each compiled signal root."""
+        return self._compiled_pin_roots
+
+    def _compiled_masked_pin_counts_by_component(self) -> dict[str, int]:
+        """Return masked-only logical pin counts keyed by component designator."""
+        return {
+            component: len(
+                masked - self._active_pin_designators_by_component[component]
+            )
+            for component, masked in self._masked_pin_designators_by_component.items()
+        }
+
+    def _capture_compiled_pin_roots(
+        self,
+        pin_groups: dict[RootPoint, list[SchPinInfo]],
+    ) -> None:
+        representatives: dict[tuple[str, str], list[SchPinInfo]] = defaultdict(list)
+        for pins in pin_groups.values():
+            root_representatives: dict[tuple[str, str], SchPinInfo] = {}
+            for pin in pins:
+                key = (pin.component_designator.lower(), pin.designator)
+                current = root_representatives.get(key)
+                if current is None or self._ad_common_pin_sort_key(
+                    pin
+                ) < self._ad_common_pin_sort_key(current):
+                    root_representatives[key] = pin
+            for key, pin in root_representatives.items():
+                representatives[key].append(pin)
+        self._compiled_pin_roots = {
+            key: tuple(pins) for key, pins in representatives.items()
+        }
+
+    @staticmethod
+    def _ad_common_pin_sort_key(pin: _NetPinLike) -> tuple[int, int, int]:
+        """Order common-pin representatives like AD's pin-adapter merge."""
+        owner_part_id = int(
+            getattr(getattr(pin, "pin", None), "owner_part_id", None) or 1
+        )
+        location_x, location_y = getattr(pin, "location", (0, 0))
+        return (owner_part_id, location_x, location_y)
+
     def _get_wire_points(self, wire: object) -> list[RootPoint]:
         """
         Extract points from wire object (cached via spatial index).
@@ -475,7 +838,7 @@ class AltiumNetlistSingleSheetCompiler:
         if self._geo_index is not None:
             return self._geo_index.get_points(wire)
         points = getattr(wire, "points", [])
-        return [(p.x, p.y) for p in points]
+        return [(p.x, p.y, p.x_frac, p.y_frac) for p in points]
 
     def _require_geo_index(self) -> WireGeometryIndex:
         """
@@ -485,9 +848,7 @@ class AltiumNetlistSingleSheetCompiler:
             raise RuntimeError("Wire geometry index has not been built yet")
         return self._geo_index
 
-    def _build_wire_connectivity(
-        self, uf: UnionFind
-    ) -> dict[tuple[int, int], list[str]]:
+    def _build_wire_connectivity(self, uf: UnionFind) -> dict[RootPoint, list[str]]:
         """
         Build wire connectivity graph using Union-Find.
 
@@ -501,8 +862,9 @@ class AltiumNetlistSingleSheetCompiler:
         """
         shared_uf, wire_ids_by_root, wire_index = _build_wire_graph(
             self.schdoc,
-            tolerance=self.tolerance,
+            tolerance=self.internal_tolerance,
             cell_size=100,
+            inferred_segments=self._inferred_port_segments,
         )
         self._geo_index = wire_index
         uf._parent = dict(shared_uf._parent)
@@ -510,7 +872,7 @@ class AltiumNetlistSingleSheetCompiler:
 
     def _group_pins_by_network(
         self, uf: UnionFind
-    ) -> tuple[dict[tuple[int, int], list], set[tuple[int, int]]]:
+    ) -> tuple[dict[RootPoint, list], set[RootPoint]]:
         """
         Group pins by which wire network they connect to.
 
@@ -528,7 +890,7 @@ class AltiumNetlistSingleSheetCompiler:
             self.schdoc,
             uf,
             self._require_geo_index(),
-            tolerance=self.tolerance,
+            internal_tolerance=self.internal_tolerance,
             pins=self._pins,
         )
 
@@ -537,7 +899,7 @@ class AltiumNetlistSingleSheetCompiler:
         loc: tuple[int, int],
         *,
         tolerance: int | None = None,
-    ) -> tuple[int, int] | None:
+    ) -> RootPoint | None:
         """
         Find wire point that the location connects to.
         """
@@ -554,77 +916,199 @@ class AltiumNetlistSingleSheetCompiler:
         Find wire point for a net label, using strict fractional coordinate matching.
         """
         return self._require_geo_index().find_wire_connection_for_netlabel(
-            nl_obj, self.tolerance
+            nl_obj, self.internal_tolerance
         )
 
-    def _find_connectivity_root(
+    def _find_ordinary_item_root(
         self,
-        location: tuple[int, int],
+        precise_location: tuple[int, int, int, int],
         uf: UnionFind,
-        pin_groups: dict[tuple[int, int], list],
-        *,
-        tolerance: int | None = None,
-    ) -> tuple[tuple[int, int] | None, bool]:
-        """
-        Find union-find root for a location: wire point first, then direct pin fallback.
-
-                Returns:
-                    (root, pin_found): root is the UF root if connected (wire or pin),
-                    None if floating. pin_found=True if a direct pin connection was used.
-        """
-        effective_tolerance = self.tolerance if tolerance is None else tolerance
-        wp = self._find_wire_point_for_location(
-            location,
-            tolerance=effective_tolerance,
+        pin_groups: dict[RootPoint, list],
+    ) -> tuple[RootPoint | None, bool]:
+        """Find an ordinary net item's endpoint-only wire or pin connection."""
+        wire_point = self._require_geo_index().find_wire_endpoint_for_precise_point(
+            precise_location,
+            self.internal_tolerance,
         )
-        if wp is not None:
-            return uf.find(wp), False
-        for pin in self._pins:
-            if _points_connected(location, pin.connection_point, effective_tolerance):
-                uf.add_root(location)
-                pin_groups[location].append(pin)
-                return location, True
-        return None, False
+        if wire_point is not None:
+            return uf.find(wire_point), False
+        pin_root = self._find_pin_root_for_precise_location(
+            precise_location,
+            pin_groups,
+        )
+        return (pin_root, True) if pin_root is not None else (None, False)
 
-    def _find_wire_point_for_precise_port_endpoint(
+    def _find_pin_root_for_precise_location(
         self,
-        location: tuple[int, int],
-        port_obj: SchPortInfo,
-    ) -> tuple[int, int] | None:
-        """
-        Find a wire endpoint for a port whose integer endpoint is off by <1 unit.
-
-        Some AD26 projects preserve fractional coordinates on the port origin and
-        wire endpoint. Their integer coordinates can differ by one even when the
-        underlying fractional positions are separated by less than one internal
-        unit. Larger exact integer gaps remain disconnected because the
-        fractional distance is exactly one unit, not less than one.
-        """
-        record_location = getattr(port_obj.record, "location", None)
-        if record_location is None:
-            return None
-        scale = 100000
-        x_frac = int(getattr(record_location, "x_frac", 0) or 0)
-        y_frac = int(getattr(record_location, "y_frac", 0) or 0)
-        precise_x = location[0] * scale + x_frac
-        precise_y = location[1] * scale + y_frac
-        matches: dict[tuple[int, int], tuple[int, int]] = {}
-        for endpoint in self._require_geo_index().find_nearby_endpoint_coords(
-            location,
-            1,
-        ):
-            endpoint_x = endpoint.x * scale + int(getattr(endpoint, "x_frac", 0) or 0)
-            endpoint_y = endpoint.y * scale + int(getattr(endpoint, "y_frac", 0) or 0)
-            if abs(endpoint_x - precise_x) < scale and abs(endpoint_y - precise_y) < scale:
-                matches[(endpoint.x, endpoint.y)] = (endpoint.x, endpoint.y)
-        if len(matches) == 1:
-            return next(iter(matches.values()))
+        precise_location: tuple[int, int, int, int],
+        pin_groups: dict[RootPoint, list],
+    ) -> RootPoint | None:
+        """Return the already-grouped pin root at an AD full coordinate."""
+        for pin in self._pins:
+            pin_location = getattr(
+                pin,
+                "_precise_connection_point",
+                (*pin.connection_point, 0, 0),
+            )
+            if precise_points_connected(
+                precise_location,
+                pin_location,
+                self.internal_tolerance,
+            ):
+                for root, pins in pin_groups.items():
+                    if pin in pins:
+                        return root
         return None
+
+    def _find_wire_point_for_sheet_entry(
+        self,
+        precise_point: RootPoint,
+    ) -> RootPoint | None:
+        return self._require_geo_index().find_wire_endpoint_for_precise_point(
+            precise_point,
+            self.internal_tolerance,
+        )
+
+    def _prepare_net_item_roots(
+        self,
+        uf: UnionFind,
+        pin_groups: dict[RootPoint, list],
+    ) -> None:
+        """Apply AD's full-coordinate NameTouchName relation before naming."""
+        items = self._collect_net_items()
+        connected = [
+            self._anchor_net_item(location, association, obj, uf, pin_groups)
+            for location, association, obj in items
+        ]
+        self._union_coincident_net_items(items, connected, uf)
+        self._index_net_item_roots(items, connected, uf)
+
+    def _collect_net_items(self) -> list[tuple[RootPoint, str, object]]:
+        """Collect ordinary and segment-capable net items in source order."""
+        items: list[tuple[RootPoint, str, object]] = []
+        items.extend(
+            (location, "label", obj)
+            for location, _name, obj in self._net_labels
+            if id(obj) not in self._nonwire_net_label_object_ids
+        )
+        items.extend(
+            (location, "break", obj) for location, _name, obj in self._power_ports
+        )
+        items.extend(
+            (location, "endpoint", obj) for location, _name, obj in self._ports
+        )
+        items.extend(
+            (location, "endpoint", entry)
+            for location, _name, _symbol, entry in self._sheet_entries
+        )
+        return items
+
+    def _anchor_net_item(
+        self,
+        location: RootPoint,
+        association: str,
+        obj: object,
+        uf: UnionFind,
+        pin_groups: dict[RootPoint, list],
+    ) -> bool:
+        """Attach one net item using AD's object-specific wire/pin rule."""
+        uf.add_root(location)
+        root: RootPoint | None = None
+        if association == "label":
+            wire_points = self._require_geo_index().find_wire_connections_for_netlabel(
+                cast("SchNetLabelInfo", obj),
+                self.internal_tolerance,
+            )
+            if not wire_points:
+                root = self._find_pin_root_for_precise_location(
+                    location,
+                    pin_groups,
+                )
+        elif association == "break":
+            wire_points = (
+                self._require_geo_index().find_wire_connections_for_break_point(
+                    location,
+                    self.internal_tolerance,
+                )
+            )
+            root = (
+                None
+                if wire_points
+                else self._find_pin_root_for_precise_location(location, pin_groups)
+            )
+        else:
+            wire_points = (
+                self._require_geo_index().find_wire_endpoints_for_precise_point(
+                    location,
+                    self.internal_tolerance,
+                )
+            )
+            root = (
+                None
+                if wire_points
+                else self._find_pin_root_for_precise_location(location, pin_groups)
+            )
+        if wire_points:
+            for wire_point in wire_points:
+                uf.union(location, wire_point)
+            return True
+        if root is None:
+            return False
+        uf.union(location, root)
+        return True
+
+    def _union_coincident_net_items(
+        self,
+        items: list[tuple[RootPoint, str, object]],
+        connected: list[bool],
+        uf: UnionFind,
+    ) -> None:
+        """Apply AD NameTouchName equality to each distinct item pair."""
+        for left in range(len(items)):
+            for right in range(left + 1, len(items)):
+                if precise_points_connected(
+                    items[left][0],
+                    items[right][0],
+                    self.internal_tolerance,
+                ):
+                    uf.union(items[left][0], items[right][0])
+                    connected[left] = True
+                    connected[right] = True
+
+    def _index_net_item_roots(
+        self,
+        items: list[tuple[RootPoint, str, object]],
+        connected: list[bool],
+        uf: UnionFind,
+    ) -> None:
+        """Index final roots while preserving collocated item connectivity."""
+        self._net_item_roots = {}
+        for index, (location, _association, _obj) in enumerate(items):
+            root, was_connected = self._net_item_roots.get(
+                location,
+                (uf.find(location), False),
+            )
+            self._net_item_roots[location] = (
+                uf.find(root),
+                was_connected or connected[index],
+            )
+
+    def _prepared_net_item_root(
+        self,
+        location: RootPoint,
+        uf: UnionFind,
+        *,
+        require_connection: bool,
+    ) -> RootPoint | None:
+        prepared = self._net_item_roots.get(location)
+        if prepared is None or (require_connection and not prepared[1]):
+            return None
+        return uf.find(prepared[0])
 
     @staticmethod
     def _remap_list_maps(
-        uf: UnionFind, **maps: dict[tuple[int, int], list]
-    ) -> dict[str, dict[tuple[int, int], list]]:
+        uf: UnionFind, **maps: dict[RootPoint, list]
+    ) -> dict[str, dict[RootPoint, list]]:
         """
         Remap root-keyed list maps to final union-find roots.
 
@@ -633,7 +1117,7 @@ class AltiumNetlistSingleSheetCompiler:
         """
         result = {}
         for name, old_map in maps.items():
-            new_map: dict[tuple[int, int], list] = defaultdict(list)
+            new_map: dict[RootPoint, list] = defaultdict(list)
             for old_root, items in old_map.items():
                 new_map[uf.find(old_root)].extend(items)
             result[name] = new_map
@@ -642,9 +1126,9 @@ class AltiumNetlistSingleSheetCompiler:
     def _assign_names_and_build_nets(
         self,
         uf: UnionFind,
-        wire_ids_by_root: dict[tuple[int, int], list[str]],
-        pin_groups: dict[tuple[int, int], list],
-        floating_pin_roots: set[tuple[int, int]],
+        wire_ids_by_root: dict[RootPoint, list[str]],
+        pin_groups: dict[RootPoint, list],
+        floating_pin_roots: set[RootPoint],
     ) -> list[Net]:
         """
         Assign net names and build final Net objects.
@@ -661,8 +1145,9 @@ class AltiumNetlistSingleSheetCompiler:
                 Returns:
                     List of Net objects
         """
-        net_names: dict[tuple[int, int], str] = {}
-        name_to_root: dict[str, tuple[int, int]] = {}
+        net_names: dict[RootPoint, str] = {}
+        name_to_root: dict[str, RootPoint] = {}
+        self._prepare_net_item_roots(uf, pin_groups)
 
         # Priority 1: NetLabels
         nl_roots, label_names_by_root, floating_labels, nl_ids = (
@@ -675,7 +1160,12 @@ class AltiumNetlistSingleSheetCompiler:
         )
 
         # Priority 2.5: Sheet entries
-        se_roots, se_ids = self._process_sheet_entries(uf, net_names, name_to_root)
+        se_roots, se_ids = self._process_sheet_entries(
+            uf,
+            pin_groups,
+            net_names,
+            name_to_root,
+        )
 
         # Priority 3: Ports
         port_roots, port_ids = self._process_ports(
@@ -700,16 +1190,18 @@ class AltiumNetlistSingleSheetCompiler:
         )
 
         # Remap net_names (first-wins logic, not list-extend)
-        final_net_names: dict[tuple[int, int], str] = {}
+        final_net_names: dict[RootPoint, str] = {}
         for old_root, name in net_names.items():
             current_root = uf.find(old_root)
             if current_root not in final_net_names:
                 final_net_names[current_root] = name
 
-        final_name_to_root: dict[str, tuple[int, int]] = {}
+        final_name_to_root: dict[str, RootPoint] = {}
         for root, name in final_net_names.items():
             if name not in final_name_to_root:
                 final_name_to_root[name] = root
+
+        self._capture_compiled_pin_roots(remapped["pin_groups"])
 
         # Build and order final nets
         return self._order_and_output_nets(
@@ -736,14 +1228,14 @@ class AltiumNetlistSingleSheetCompiler:
     def _process_net_labels(
         self,
         uf: UnionFind,
-        pin_groups: dict[tuple[int, int], list],
-        net_names: dict[tuple[int, int], str],
-        name_to_root: dict[str, tuple[int, int]],
+        pin_groups: dict[RootPoint, list],
+        net_names: dict[RootPoint, str],
+        name_to_root: dict[str, RootPoint],
     ) -> tuple[
-        dict[str, list[tuple[int, int]]],
-        dict[tuple[int, int], list[str]],
+        dict[str, list[RootPoint]],
+        dict[RootPoint, list[str]],
         dict[str, list[str]],
-        dict[tuple[int, int], list[str]],
+        dict[RootPoint, list[str]],
     ]:
         """
         Priority 1: Process net labels - find roots, merge same-named, assign names.
@@ -751,43 +1243,51 @@ class AltiumNetlistSingleSheetCompiler:
                 Returns:
                     (net_label_roots, root_to_label_names, floating_net_labels, net_label_ids_by_root)
         """
-        net_label_roots: dict[str, list[tuple[int, int]]] = defaultdict(list)
-        root_to_label_names: dict[tuple[int, int], list[str]] = defaultdict(list)
+        net_label_roots: dict[str, list[RootPoint]] = defaultdict(list)
+        root_to_label_names: dict[RootPoint, list[str]] = defaultdict(list)
         floating_net_labels: dict[str, list[str]] = defaultdict(list)
-        net_label_ids_by_root: dict[tuple[int, int], list[str]] = defaultdict(list)
+        net_label_ids_by_root: dict[RootPoint, list[str]] = defaultdict(list)
 
-        for nl_loc, name in self._net_labels.items():
-            nl_obj = self._net_label_objects.get(nl_loc)
-            # Use strict fractional coordinate matching for net labels
-            wp = (
-                self._find_wire_point_for_netlabel(nl_obj)
-                if nl_obj
-                else self._find_wire_point_for_location(nl_loc)
-            )
+        for precise_location, name, nl_obj in self._net_labels:
+            if id(nl_obj) in self._nonwire_net_label_object_ids:
+                if nl_obj.unique_id:
+                    floating_net_labels[name].append(nl_obj.unique_id)
+                else:
+                    floating_net_labels.setdefault(name, [])
+                continue
+            wp = self._find_wire_point_for_netlabel(nl_obj)
             if wp is not None:
                 root = uf.find(wp)
                 net_label_roots[name].append(root)
                 root_to_label_names[root].append(name)
-                if nl_obj and nl_obj.unique_id:
+                if nl_obj.unique_id:
                     net_label_ids_by_root[root].append(nl_obj.unique_id)
             else:
                 # No wire connection - check direct pin connection
-                found_pin = False
-                for pin in self._pins:
-                    if _points_connected(nl_loc, pin.connection_point, self.tolerance):
-                        uf.add_root(nl_loc)
-                        pin_groups[nl_loc].append(pin)
-                        net_label_roots[name].append(nl_loc)
-                        root_to_label_names[nl_loc].append(name)
-                        if nl_obj and nl_obj.unique_id:
-                            net_label_ids_by_root[nl_loc].append(nl_obj.unique_id)
-                        found_pin = True
-                        break
-                if not found_pin:
-                    if nl_obj and nl_obj.unique_id:
+                pin_root = self._find_pin_root_for_precise_location(
+                    precise_location,
+                    pin_groups,
+                )
+                if pin_root is None:
+                    pin_root = self._prepared_net_item_root(
+                        precise_location,
+                        uf,
+                        require_connection=True,
+                    )
+                if pin_root is None:
+                    if nl_obj.unique_id:
                         floating_net_labels[name].append(nl_obj.unique_id)
                     else:
                         floating_net_labels.setdefault(name, [])
+                    continue
+                net_label_roots[name].append(pin_root)
+                root_to_label_names[pin_root].append(name)
+                if nl_obj.unique_id:
+                    net_label_ids_by_root[pin_root].append(nl_obj.unique_id)
+
+        for name in set(floating_net_labels) & set(net_label_roots):
+            root = net_label_roots[name][0]
+            net_label_ids_by_root[root].extend(floating_net_labels.pop(name))
 
         # Merge same-named net labels
         for _name, roots in net_label_roots.items():
@@ -818,9 +1318,9 @@ class AltiumNetlistSingleSheetCompiler:
     def _process_power_ports(
         self,
         uf: UnionFind,
-        pin_groups: dict[tuple[int, int], list],
-        net_names: dict[tuple[int, int], str],
-        name_to_root: dict[str, tuple[int, int]],
+        pin_groups: dict[RootPoint, list],
+        net_names: dict[RootPoint, str],
+        name_to_root: dict[str, RootPoint],
     ) -> tuple[dict, dict]:
         """
         Priority 2: Process power ports - find roots, merge same-named.
@@ -828,26 +1328,35 @@ class AltiumNetlistSingleSheetCompiler:
                 Returns:
                     (power_port_roots, power_port_ids_by_root)
         """
-        power_port_roots: dict[str, list[tuple[int, int]]] = defaultdict(list)
-        power_port_ids_by_root: dict[tuple[int, int], list[str]] = defaultdict(list)
+        power_port_roots: dict[str, list[RootPoint]] = defaultdict(list)
+        power_port_ids_by_root: dict[RootPoint, list[str]] = defaultdict(list)
 
-        for pp_loc, name in self._power_ports.items():
-            pp_obj = self._power_port_objects.get(pp_loc)
-            root, pin_found = self._find_connectivity_root(pp_loc, uf, pin_groups)
+        for precise_location, name, pp_obj in self._power_ports:
+            root, pin_found = self._find_ordinary_item_root(
+                precise_location,
+                uf,
+                pin_groups,
+            )
+            if root is None:
+                root = self._prepared_net_item_root(
+                    precise_location,
+                    uf,
+                    require_connection=True,
+                )
             if root is not None and not pin_found:
                 # Connected via wire
                 power_port_roots[name].append(root)
                 if root not in net_names:
                     net_names[root] = name
                     name_to_root[name] = root
-                if pp_obj and pp_obj.unique_id:
+                if pp_obj.unique_id:
                     power_port_ids_by_root[root].append(pp_obj.unique_id)
             elif root is not None and pin_found:
                 # Direct pin connection (root == pp_loc)
                 net_names[root] = name
                 name_to_root[name] = root
                 power_port_roots[name].append(root)
-                if pp_obj and pp_obj.unique_id:
+                if pp_obj.unique_id:
                     power_port_ids_by_root[root].append(pp_obj.unique_id)
 
         # Merge same-named power ports
@@ -861,8 +1370,9 @@ class AltiumNetlistSingleSheetCompiler:
     def _process_sheet_entries(
         self,
         uf: UnionFind,
-        net_names: dict[tuple[int, int], str],
-        name_to_root: dict[str, tuple[int, int]],
+        pin_groups: dict[RootPoint, list],
+        net_names: dict[RootPoint, str],
+        name_to_root: dict[str, RootPoint],
     ) -> tuple[dict, dict]:
         """
         Priority 2.5: Process sheet entries for hierarchical bridging.
@@ -870,14 +1380,23 @@ class AltiumNetlistSingleSheetCompiler:
                 Returns:
                     (sheet_entry_roots, sheet_entry_ids_by_root)
         """
-        sheet_entry_roots: dict[str, list[tuple[int, int]]] = defaultdict(list)
-        sheet_entry_ids_by_root: dict[tuple[int, int], list[str]] = defaultdict(list)
+        sheet_entry_roots: dict[str, list[RootPoint]] = defaultdict(list)
+        sheet_entry_ids_by_root: dict[RootPoint, list[str]] = defaultdict(list)
 
-        for se_loc, (entry_name, sheet_sym_info) in self._sheet_entries.items():
-            wp = self._find_wire_point_for_location(se_loc)
+        for precise_location, entry_name, sheet_sym_info, _entry in self._sheet_entries:
+            root, _pin_found = self._find_ordinary_item_root(
+                precise_location,
+                uf,
+                pin_groups,
+            )
+            if root is None:
+                root = self._prepared_net_item_root(
+                    precise_location,
+                    uf,
+                    require_connection=False,
+                )
             entry_uid = getattr(sheet_sym_info.record, "unique_id", "") or ""
-            if wp is not None:
-                root = uf.find(wp)
+            if root is not None:
                 sheet_entry_roots[entry_name].append(root)
                 if (
                     self.options.allow_sheet_entries_to_name_nets
@@ -887,29 +1406,15 @@ class AltiumNetlistSingleSheetCompiler:
                     name_to_root[entry_name] = root
                 if entry_uid:
                     sheet_entry_ids_by_root[root].append(f"{entry_uid}_{entry_name}")
-            elif entry_uid:
-                # Dangling sheet entry - create virtual root for hierarchy bridge
-                virtual_root = se_loc
-                uf.find(virtual_root)  # Register in union-find
-                sheet_entry_roots[entry_name].append(virtual_root)
-                sheet_entry_ids_by_root[virtual_root].append(
-                    f"{entry_uid}_{entry_name}"
-                )
-                if (
-                    self.options.allow_sheet_entries_to_name_nets
-                    and virtual_root not in net_names
-                ):
-                    net_names[virtual_root] = entry_name
-                    name_to_root[entry_name] = virtual_root
 
         return sheet_entry_roots, sheet_entry_ids_by_root
 
     def _process_ports(
         self,
         uf: UnionFind,
-        pin_groups: dict[tuple[int, int], list],
-        net_names: dict[tuple[int, int], str],
-        name_to_root: dict[str, tuple[int, int]],
+        pin_groups: dict[RootPoint, list],
+        net_names: dict[RootPoint, str],
+        name_to_root: dict[str, RootPoint],
     ) -> tuple[dict, dict]:
         """
         Priority 3: Process ports - find roots, merge same-named.
@@ -917,21 +1422,22 @@ class AltiumNetlistSingleSheetCompiler:
                 Returns:
                     (port_roots, port_ids_by_root)
         """
-        port_roots: dict[str, list[tuple[int, int]]] = defaultdict(list)
-        port_ids_by_root: dict[tuple[int, int], list[str]] = defaultdict(list)
+        port_roots: dict[str, list[RootPoint]] = defaultdict(list)
+        port_ids_by_root: dict[RootPoint, list[str]] = defaultdict(list)
 
-        for port_loc, name in self._ports.items():
-            port_obj = self._port_objects.get(port_loc)
-            port_uid = port_obj.unique_id if port_obj else None
-            root, pin_found = self._find_connectivity_root(port_loc, uf, pin_groups)
-            if root is None and port_obj is not None:
-                wire_point = self._find_wire_point_for_precise_port_endpoint(
-                    port_loc,
-                    port_obj,
+        for precise_location, name, port_obj in self._ports:
+            port_uid = port_obj.unique_id
+            root, _pin_found = self._find_ordinary_item_root(
+                precise_location,
+                uf,
+                pin_groups,
+            )
+            if root is None:
+                root = self._prepared_net_item_root(
+                    precise_location,
+                    uf,
+                    require_connection=False,
                 )
-                if wire_point is not None:
-                    root = uf.find(wire_point)
-                    pin_found = False
 
             if root is not None:
                 # Connected via wire or direct pin connection
@@ -943,12 +1449,15 @@ class AltiumNetlistSingleSheetCompiler:
                     port_ids_by_root[root].append(port_uid)
             elif port_uid:
                 # Dangling port - create virtual root for hierarchy bridge
-                uf.find(port_loc)  # Register in union-find
-                port_roots[name].append(port_loc)
-                port_ids_by_root[port_loc].append(port_uid)
-                if self.options.allow_ports_to_name_nets and port_loc not in net_names:
-                    net_names[port_loc] = name
-                    name_to_root[name] = port_loc
+                uf.find(precise_location)  # Register in union-find
+                port_roots[name].append(precise_location)
+                port_ids_by_root[precise_location].append(port_uid)
+                if (
+                    self.options.allow_ports_to_name_nets
+                    and precise_location not in net_names
+                ):
+                    net_names[precise_location] = name
+                    name_to_root[name] = precise_location
 
         # Merge same-named ports
         for _name, roots in port_roots.items():
@@ -961,10 +1470,10 @@ class AltiumNetlistSingleSheetCompiler:
     def _process_hidden_pins(
         self,
         uf: UnionFind,
-        pin_groups: dict[tuple[int, int], list],
-        floating_pin_roots: set[tuple[int, int]],
-        net_names: dict[tuple[int, int], str],
-        name_to_root: dict[str, tuple[int, int]],
+        pin_groups: dict[RootPoint, list],
+        floating_pin_roots: set[RootPoint],
+        net_names: dict[RootPoint, str],
+        name_to_root: dict[str, RootPoint],
     ) -> None:
         """
         Step 6.5: Handle hidden pins (implicit power connections).
@@ -973,7 +1482,7 @@ class AltiumNetlistSingleSheetCompiler:
                 hidden_net_name or pin name (for power pins like GND/VCC).
                 Mutates net_names and name_to_root in place.
         """
-        hidden_pin_nets: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        hidden_pin_nets: dict[str, list[RootPoint]] = defaultdict(list)
 
         for root in floating_pin_roots:
             pins = pin_groups.get(root, [])
@@ -1023,7 +1532,7 @@ class AltiumNetlistSingleSheetCompiler:
         self,
         name: str,
         pins: PinGroup,
-        root: tuple[int, int],
+        root: RootPoint,
         final_wire_ids: dict,
         final_nl_ids: dict,
         final_pp_ids: dict,
@@ -1041,24 +1550,31 @@ class AltiumNetlistSingleSheetCompiler:
         terminals = []
         endpoints: list[NetEndpoint] = []
         endpoint_seen: set[str] = set()
-        seen_pins: set[tuple[str, str]] = set()
+        representative_pins: dict[tuple[str, str], _NetPinLike] = {}
 
+        label_ids = sorted(
+            dict.fromkeys(final_nl_ids.get(root, [])),
+            key=self._net_label_object_sort_key,
+        )
         graphical = NetGraphical(
             wires=list(final_wire_ids.get(root, [])),
-            labels=list(final_nl_ids.get(root, [])),
+            labels=label_ids,
             power_ports=list(final_pp_ids.get(root, [])),
             ports=list(final_port_ids.get(root, [])),
             sheet_entries=list(final_se_ids.get(root, [])),
         )
 
-        for pin in pins:
+        for candidate in pins:
+            key = (candidate.component_designator, candidate.designator)
+            current = representative_pins.get(key)
+            if current is None or self._ad_common_pin_sort_key(
+                candidate
+            ) < self._ad_common_pin_sort_key(current):
+                representative_pins[key] = candidate
+
+        for pin in representative_pins.values():
             comp_des = pin.component_designator
             pin_des = pin.designator
-
-            key = (comp_des, pin_des)
-            if key in seen_pins:
-                continue
-            seen_pins.add(key)
 
             pin_name = pin.name or ""
             pin_type = _pin_electrical_to_pintype(pin.electrical)
@@ -1070,6 +1586,7 @@ class AltiumNetlistSingleSheetCompiler:
                     comp,
                     project_params=self.options.project_parameters,
                     sheet_params=self.options.sheet_parameters,
+                    component_description=comp.description,
                 )
 
             terminals.append(
@@ -1153,6 +1670,17 @@ class AltiumNetlistSingleSheetCompiler:
         seen.add(key)
         endpoints.append(endpoint)
 
+    def _net_label_object_sort_key(
+        self,
+        element_id: str,
+    ) -> tuple[int, int, int, int, str]:
+        """Order equal-type label objects like AD's compiled SignalContext."""
+        for location, _name, obj in self._net_labels:
+            if getattr(obj, "unique_id", "") == element_id:
+                x, y, x_frac, y_frac = location
+                return (x, x_frac, y, y_frac, element_id)
+        return (2**31 - 1, 2**31 - 1, 2**31 - 1, 2**31 - 1, element_id)
+
     def _append_endpoint_ids(
         self,
         endpoints: list[NetEndpoint],
@@ -1183,13 +1711,13 @@ class AltiumNetlistSingleSheetCompiler:
             )
 
     def _power_like_name_for_id(self, element_id: str) -> str:
-        for obj in self._power_port_objects.values():
+        for _location, _name, obj in self._power_ports:
             if getattr(obj, "unique_id", "") == element_id:
                 return str(getattr(obj, "text", "") or "")
         return ""
 
     def _power_like_role_for_id(self, element_id: str) -> str:
-        for obj in self._power_port_objects.values():
+        for _location, _name, obj in self._power_ports:
             if getattr(obj, "unique_id", "") != element_id:
                 continue
             if obj.__class__.__name__ == "SchCrossSheetConnectorInfo":
@@ -1198,25 +1726,23 @@ class AltiumNetlistSingleSheetCompiler:
         return "power_port"
 
     def _port_name_for_id(self, element_id: str) -> str:
-        for obj in self._port_objects.values():
+        for _location, _name, obj in self._ports:
             if getattr(obj, "unique_id", "") == element_id:
                 return str(getattr(obj, "name", "") or "")
         return ""
 
     def _sheet_entry_name_for_id(self, element_id: str) -> str:
-        for loc, (entry_name, sheet_sym_info) in self._sheet_entries.items():
+        for _location, entry_name, sheet_sym_info, entry in self._sheet_entries:
             if f"{sheet_sym_info.unique_id}_{entry_name}" == element_id:
                 return entry_name
-            entry = self._sheet_entry_objects.get(loc)
             if getattr(entry, "unique_id", "") == element_id:
                 return entry_name
         return ""
 
     def _sheet_entry_object_id_for_id(self, element_id: str) -> str:
-        for loc, (entry_name, sheet_sym_info) in self._sheet_entries.items():
+        for _location, entry_name, sheet_sym_info, entry in self._sheet_entries:
             if f"{sheet_sym_info.unique_id}_{entry_name}" != element_id:
                 continue
-            entry = self._sheet_entry_objects.get(loc)
             return str(getattr(entry, "unique_id", "") or element_id)
         return element_id
 
@@ -1233,7 +1759,7 @@ class AltiumNetlistSingleSheetCompiler:
         final_se_ids: dict,
         final_label_names: dict,
         floating_net_labels: dict[str, list[str]],
-        floating_pin_roots: set[tuple[int, int]],
+        floating_pin_roots: set[RootPoint],
         port_roots: dict,
         se_roots: dict,
     ) -> list[Net]:
@@ -1265,7 +1791,7 @@ class AltiumNetlistSingleSheetCompiler:
             )
 
         nets: list[Net] = []
-        processed_roots: set[tuple[int, int]] = set()
+        processed_roots: set[RootPoint] = set()
 
         # Order 1: Named nets (net labels + power ports + floating labels)
         self._emit_named_nets(
@@ -1363,8 +1889,11 @@ class AltiumNetlistSingleSheetCompiler:
                     else:
                         nets.append(create_net(name, [], root))
                         processed_roots.add(root)
-            elif name in floating_net_labels:
-                label_ids = list(dict.fromkeys(floating_net_labels[name]))
+            if name in floating_net_labels:
+                label_ids = sorted(
+                    dict.fromkeys(floating_net_labels[name]),
+                    key=self._net_label_object_sort_key,
+                )
                 nets.append(
                     Net(
                         name=name,

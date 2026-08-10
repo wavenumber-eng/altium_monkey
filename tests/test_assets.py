@@ -65,9 +65,9 @@ def _embedded_asset_schema_validator() -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
-def _design_a2_schema_validator() -> Draft202012Validator:
+def _design_b0_schema_validator() -> Draft202012Validator:
     schema = json.loads(
-        (CONTRACTS_ROOT / "design_a2.schema.json").read_text(encoding="utf-8")
+        (CONTRACTS_ROOT / "design_b0.schema.json").read_text(encoding="utf-8")
     )
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
@@ -91,6 +91,7 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
     docs_text = docs_path.read_text(encoding="utf-8")
 
     for schema_id in (
+        "altium_monkey.design.b0",
         "altium_monkey.design.a2",
         "altium_monkey.design.a1",
         "altium_monkey.design.a0",
@@ -109,7 +110,9 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
     assert "Moving from `a` to `b`" in docs_text
     assert "Moving from `a0` to `a1`" in docs_text
     assert "Moving from `a1` to `a2`" in docs_text
+    assert "Moving from `a2` to `b0`" in docs_text
     assert "docs/schemas/altium_monkey" in docs_text
+    assert "design_b0.schema.json" in docs_text
     assert "design_a2.schema.json" in docs_text
     assert "design_a1.schema.json" in docs_text
     assert "design_a0.schema.json" in docs_text
@@ -123,6 +126,7 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
 
 def test_altium_monkey_contract_schemas_are_parseable() -> None:
     schemas = {
+        "design_b0.schema.json": "altium_monkey.design.b0",
         "design_a2.schema.json": "altium_monkey.design.a2",
         "design_a1.schema.json": "altium_monkey.design.a1",
         "design_a0.schema.json": "altium_monkey.design.a0",
@@ -160,22 +164,28 @@ def test_altium_monkey_contract_schemas_are_parseable() -> None:
     [False, True],
     ids=["compact", "compile_metadata"],
 )
-def test_altium_design_a2_schema_validates_real_to_json_payloads(
+def test_altium_design_b0_schema_validates_real_to_json_payloads(
     project_path: str,
     case_id: str,
     include_compile_metadata: bool,
 ) -> None:
     from altium_monkey import AltiumDesign
 
-    validator = _design_a2_schema_validator()
+    validator = _design_b0_schema_validator()
     payload = AltiumDesign.from_prjpcb(PUBLIC_ROOT / project_path).to_json(
         include_compile_metadata=include_compile_metadata
     )
 
-    assert payload["schema"] == "altium_monkey.design.a2"
+    assert payload["schema"] == "altium_monkey.design.b0"
     assert ("compile" in payload) is include_compile_metadata
     assert ("diagnostics" in payload) is include_compile_metadata
-    assert "physical_pages" in payload
+    assert "physical_pages" not in payload
+    assert payload["compiled_schematic_graph"]["schema"] == (
+        "altium_monkey.compiled_schematic_graph.a0"
+    )
+    assert len(payload["physical_page_metadata"]) == len(
+        payload["compiled_schematic_graph"]["page_occurrences"]
+    )
     _assert_schema_valid(validator, payload, case_id)
 
 
@@ -334,6 +344,7 @@ def test_domain_docs_list_public_workflow_examples() -> None:
         "source_stackup_ref",
         "layers_for_board_region",
         "intlib_extract_sources",
+        "altium_monkey.design.b0",
         "altium_monkey.design.a2",
         "altium_monkey.design.a1",
         "altium_monkey.netlist.a0",

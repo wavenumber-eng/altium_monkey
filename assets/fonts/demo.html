@@ -66,6 +66,7 @@
     border: 1px solid var(--mk-border);
     padding: 0.4em 1.4em 1.2em;
     margin-bottom: 1.6em;
+    overflow-x: auto;
   }
   table { border-collapse: collapse; width: 100%; }
   td, th { padding: 0.3em 0.9em 0.3em 0; vertical-align: top; }
@@ -77,9 +78,12 @@
   }
   .eq-name { color: var(--mk-text-dim); white-space: nowrap; width: 12em; }
   .eq-formula { color: var(--mk-accent-bright); }
+  .eq-formula .eq-lhs { display: inline-block; min-width: 11em; }
+  .eq-formula .eq-law { color: var(--mk-text-dim); font-weight: 300; }
   .bom-ref { color: var(--mk-accent); white-space: nowrap; }
   .bom-mpn { color: var(--mk-accent-bright); white-space: nowrap; }
   .specimen { margin: 0.35em 0; }
+  .specimen.light { font-weight: 300; }
   .specimen.bold { font-weight: 700; }
   .specimen .label {
     display: inline-block;
@@ -87,9 +91,59 @@
     color: var(--mk-text-dim);
     font-weight: 400;
   }
+  table.weights td { white-space: nowrap; }
+  table.weights td.label { display: table-cell; }
+  ol.fab-notes { margin: 0.6em 0 0; padding-left: 2.4em; }
+  ol.fab-notes li { margin: 0.4em 0; }
+  input.style-tab { display: none; }
+  nav.tabs {
+    max-width: 62em;
+    margin: 0 auto 1.6em;
+    display: flex;
+    justify-content: center;
+    gap: 0.6em;
+    font-family: 'Consolas', monospace;
+  }
+  nav.tabs label {
+    padding: 0.35em 1.3em;
+    border: 1px solid var(--mk-border);
+    background: var(--mk-panel);
+    color: var(--mk-text-dim);
+    cursor: pointer;
+  }
+  #tab-default:checked ~ nav.tabs label[for="tab-default"],
+  #tab-sans:checked ~ nav.tabs label[for="tab-sans"],
+  #tab-serif:checked ~ nav.tabs label[for="tab-serif"] {
+    color: var(--mk-accent);
+    border-color: var(--mk-accent);
+    text-shadow: var(--mk-glow);
+  }
+  #tab-sans:checked ~ main {
+    font-family: 'Altium Stroke Sans', 'Consolas', monospace;
+  }
+  #tab-serif:checked ~ main {
+    font-family: 'Altium Stroke Serif', 'Consolas', monospace;
+  }
+  #tab-default:checked ~ main .ratio-light::after { content: "60/5"; }
+  #tab-default:checked ~ main .ratio-regular::after { content: "60/10"; }
+  #tab-default:checked ~ main .ratio-bold::after { content: "60/15"; }
+  #tab-sans:checked ~ main .ratio-light::after { content: "60/3.5"; }
+  #tab-sans:checked ~ main .ratio-regular::after { content: "60/7"; }
+  #tab-sans:checked ~ main .ratio-bold::after { content: "60/11"; }
+  #tab-serif:checked ~ main .ratio-light::after { content: "60/2.5"; }
+  #tab-serif:checked ~ main .ratio-regular::after { content: "60/5"; }
+  #tab-serif:checked ~ main .ratio-bold::after { content: "60/7"; }
 </style>
 </head>
 <body>
+<input type="radio" name="style-tab" id="tab-default" class="style-tab" checked>
+<input type="radio" name="style-tab" id="tab-sans" class="style-tab">
+<input type="radio" name="style-tab" id="tab-serif" class="style-tab">
+<nav class="tabs">
+<label for="tab-default">Default</label>
+<label for="tab-sans">Sans Serif</label>
+<label for="tab-serif">Serif</label>
+</nav>
 <main>
 <header class="mark">
 <pre class="monkey-art" role="img" aria-label="altium monkey logo">          ▓▓▓▓▓▓▓▓▓▓
@@ -111,7 +165,7 @@
 <p class="tagline">classic stroke font · modern webfont</p>
 </header>
 <section class="panel">
-<h2>Electronics reference</h2>
+<h2>ELECTRONICS REFERENCE</h2>
 <table>
       <tr><td class="eq-name">Ohm's law</td><td class="eq-formula">V = I×R</td></tr>
       <tr><td class="eq-name">Power</td><td class="eq-formula">P = V×I = I²R = V²/R</td></tr>
@@ -127,18 +181,18 @@
 </table>
 </section>
 <section class="panel">
-<h2>Field equations</h2>
+<h2>FIELD EQUATIONS</h2>
 <table>
       <tr><td class="eq-name">Acoustic wave</td><td class="eq-formula">∇²p = (1/c²) ∂²p/∂t²</td></tr>
-      <tr><td class="eq-name">Maxwell</td><td class="eq-formula">∇·D = ρ<br>∇·B = 0<br>∇×E = -∂B/∂t<br>∇×H = J + ∂D/∂t</td></tr>
+      <tr><td class="eq-name">Maxwell's equations</td><td class="eq-formula"><span class="eq-lhs">∇·D = ρ</span><span class="eq-law">(Gauss's Law)</span><br><span class="eq-lhs">∇·B = 0</span><span class="eq-law">(Gauss's Law for Magnetism)</span><br><span class="eq-lhs">∇×E = -∂B/∂t</span><span class="eq-law">(Faraday's Law)</span><br><span class="eq-lhs">∇×H = J + ∂D/∂t</span><span class="eq-law">(Ampère-Maxwell Law)</span></td></tr>
       <tr><td class="eq-name">Telegrapher</td><td class="eq-formula">∂V/∂x = -L ∂I/∂t - R·I<br>∂I/∂x = -C ∂V/∂t - G·V</td></tr>
       <tr><td class="eq-name">Diffusion</td><td class="eq-formula">∂T/∂t = k∇²T</td></tr>
       <tr><td class="eq-name">Navier-Stokes</td><td class="eq-formula">ρ(∂v/∂t + v·∇v) = -∇p + µ∇²v</td></tr>
-      <tr><td class="eq-name">Einstein field</td><td class="eq-formula">Gμν + Λgμν = (8πG/c⁴)Tμν</td></tr>
+      <tr><td class="eq-name">Einstein's field equations</td><td class="eq-formula">Gμν + Λgμν = (8πG/c⁴)Tμν</td></tr>
 </table>
 </section>
 <section class="panel">
-<h2>Bill of materials</h2>
+<h2>BILL OF MATERIALS</h2>
 <table>
       <tr><th>Ref</th><th>Part number</th><th>Description</th></tr>
       <tr><td class="bom-ref">R1</td><td class="bom-mpn">RC0603FR-0710KL</td><td>RES 10.0kΩ ±1% 100mW 0603</td></tr>
@@ -156,15 +210,35 @@
 </table>
 </section>
 <section class="panel">
-<h2>Greek and symbols</h2>
+<h2>FABRICATION NOTES</h2>
+<ol class="fab-notes">
+      <li>OVERALL PCB DIMENSIONS: 47.0mm × 12.0mm. BOARD OUTLINE DEFINED ON LAYER GM1. ALL ROUTED DIMENSIONS ±0.2mm UNLESS NOTED AS CRITICAL.</li>
+      <li>BOARD THICKNESS: 1.6mm ±10%, 4-LAYER STACKUP, SINGLE LAMINATION.</li>
+      <li>LAMINATE: FR-4 PER IPC-4101/126, TG 170°C MIN, TD 340°C MIN.</li>
+      <li>COPPER WEIGHT: 1 OZ/FT² (35µm) OUTER LAYERS, 0.5 OZ/FT² (17µm) INNER LAYERS.</li>
+      <li>SURFACE FINISH: ENIG PER IPC-4552, 2-4 µIN (0.05-0.10 µm) AU OVER 120-240 µIN (3-6 µm) NI.</li>
+      <li>MINIMUM DRILL SIZE: 0.25mm (10 MIL). MINIMUM TRACE/SPACE: 0.127mm (5 MIL).</li>
+      <li>CONTROLLED IMPEDANCE: 50Ω ±10% SINGLE-ENDED, 90Ω ±10% DIFFERENTIAL, REFERENCED TO L2.</li>
+      <li>SOLDER MASK: BLACK LPI BOTH SIDES PER IPC-SM-840 CLASS T.</li>
+      <li>SILKSCREEN: WHITE LPI INK, COMPONENT SIDE ONLY.</li>
+      <li>NC DRILL FILE PROVIDED WITH .TXT EXTENSION.</li>
+      <li>MOUSEBITES PERMITTED ON SHORT EDGES ONLY. LONG EDGES SHALL BE FREE OF PROTRUSIONS. FAB MAY USE ROUTING OR V-SCORE.</li>
+      <li>PCB SHALL BE 100% ELECTRICALLY TESTED PER IPC-9252.</li>
+</ol>
+</section>
+<section class="panel">
+<h2>GREEK AND SYMBOLS</h2>
 <div class="specimen"><span class="label">Capitals</span>Α Β Γ Δ Ε Ζ Η Θ Ι Κ Λ Μ Ν Ξ Ο Π Ρ Σ Τ Υ Φ Χ Ψ Ω</div>
 <div class="specimen"><span class="label">Lowercase</span>α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ ς σ τ υ φ χ ψ ω</div>
 <div class="specimen"><span class="label">Symbols</span>° ± ² ³ ⁴ ⁹ ₀ ₁ ₂ ₃ ₉ × ÷ · µ Ω ∂ ∆ ∇ √</div>
 </section>
 <section class="panel">
-<h2>Weights</h2>
-<div class="specimen"><span class="label">Regular 60/10</span>R7 4.7kΩ ±1%  C2 0.1µF 25V  L1 10µH  ΔV 120mV  τ = 22µs  ω = 2π×50kHz  25°C</div>
-<div class="specimen bold"><span class="label">Bold 60/15</span>R7 4.7kΩ ±1%  C2 0.1µF 25V  L1 10µH  ΔV 120mV  τ = 22µs  ω = 2π×50kHz  25°C</div>
+<h2>WEIGHTS</h2>
+<table class="weights">
+      <tr class="specimen light"><td class="label">Light <span class="ratio-light"></span></td><td>R7 4.7kΩ ±1%</td><td>C2 0.1µF 25V</td><td>L1 10µH</td></tr>
+      <tr class="specimen regular"><td class="label">Regular <span class="ratio-regular"></span></td><td>R7 4.7kΩ ±1%</td><td>C2 0.1µF 25V</td><td>L1 10µH</td></tr>
+      <tr class="specimen bold"><td class="label">Bold <span class="ratio-bold"></span></td><td>R7 4.7kΩ ±1%</td><td>C2 0.1µF 25V</td><td>L1 10µH</td></tr>
+</table>
 </section>
 </main>
 </body>

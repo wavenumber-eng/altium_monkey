@@ -18,10 +18,8 @@ from .altium_serializer import (
     read_dynamic_string_field,
 )
 from .altium_sch_record_helpers import (
-    _basic_entry_distance_to_native_units,
-    _basic_entry_distance_to_public_mils,
-    _basic_entry_distance_to_rounded_native_units,
-    _public_mils_to_basic_entry_distance,
+    BasicEntryDistanceMilsMixin,
+    _effective_basic_entry_distance_frac1,
     detect_case_mode_method_from_uppercase_fields,
 )
 
@@ -36,7 +34,11 @@ class BusTextStyle(IntEnum):
     SHORT = 2
 
 
-class AltiumSchHarnessEntry(SingleFontBindableRecordMixin, SchPrimitive):
+class AltiumSchHarnessEntry(
+    BasicEntryDistanceMilsMixin,
+    SingleFontBindableRecordMixin,
+    SchPrimitive,
+):
     """
     HARNESS_ENTRY record.
 
@@ -54,6 +56,7 @@ class AltiumSchHarnessEntry(SingleFontBindableRecordMixin, SchPrimitive):
         self.harness_type: str = ""  # Associated harness type
         self.side: int = 0  # 0=Left, 1=Right
         self.distance_from_top: int = 0
+        self.distance_from_top_frac: int = 0
         # Optional fractional component from DistanceFromTop_Frac1 (1,000,000ths of a step)
         self.distance_from_top_frac1: int = 0
         self.color: int = 0x000000  # Border color
@@ -72,6 +75,7 @@ class AltiumSchHarnessEntry(SingleFontBindableRecordMixin, SchPrimitive):
         self._has_text_style: bool = False
         self._has_side: bool = False
         self._has_distance_from_top: bool = False
+        self._has_distance_from_top_frac: bool = False
         self._has_distance_from_top_frac1: bool = False
         self._has_color: bool = False
         self._has_area_color: bool = False
@@ -83,41 +87,6 @@ class AltiumSchHarnessEntry(SingleFontBindableRecordMixin, SchPrimitive):
     @property
     def record_type(self) -> SchRecordType:
         return SchRecordType.HARNESS_ENTRY
-
-    @property
-    def distance_from_top_mils(self) -> float:
-        """
-        Distance from the connector top/left edge in mils.
-
-        Harness-entry ``DistanceFromTop`` does not use the ordinary 10-mil
-        CoordPoint unit. Native harness-entry spacing uses 100-mil steps, with
-        ``DistanceFromTop_Frac1`` carrying 1,000,000ths of one such step.
-        """
-        return _basic_entry_distance_to_public_mils(
-            self.distance_from_top,
-            self.distance_from_top_frac1,
-        )
-
-    @distance_from_top_mils.setter
-    def distance_from_top_mils(self, value: float) -> None:
-        """
-        Set distance from a value in mils.
-        """
-        self.distance_from_top, self.distance_from_top_frac1 = (
-            _public_mils_to_basic_entry_distance(value)
-        )
-
-    def _distance_from_top_native_units(self) -> float:
-        return _basic_entry_distance_to_native_units(
-            self.distance_from_top,
-            self.distance_from_top_frac1,
-        )
-
-    def _rounded_distance_from_top_native_units(self) -> int:
-        return _basic_entry_distance_to_rounded_native_units(
-            self.distance_from_top,
-            self.distance_from_top_frac1,
-        )
 
     def parse_from_record(
         self,
@@ -183,6 +152,9 @@ class AltiumSchHarnessEntry(SingleFontBindableRecordMixin, SchPrimitive):
         self.distance_from_top, self._has_distance_from_top = s.read_int(
             record, Fields.DISTANCE_FROM_TOP, default=0
         )
+        self.distance_from_top_frac, self._has_distance_from_top_frac = s.read_int(
+            record, Fields.DISTANCE_FROM_TOP_FRAC, default=0
+        )
         # Fractional distance component used by some harness-entry records.
         # Example: DistanceFromTop=1, DistanceFromTop_Frac1=500000 -> 1.5 steps.
         self.distance_from_top_frac1, self._has_distance_from_top_frac1 = s.read_int(
@@ -238,10 +210,26 @@ class AltiumSchHarnessEntry(SingleFontBindableRecordMixin, SchPrimitive):
         else:
             s.remove_field(record, Fields.DISTANCE_FROM_TOP)
 
-        record.pop("DISTANCEFROMTOP_FRAC1", None)
-        record.pop("DistanceFromTop_Frac1", None)
+        if self._has_distance_from_top_frac or self.distance_from_top_frac != 0:
+            s.write_int(
+                record,
+                Fields.DISTANCE_FROM_TOP_FRAC,
+                self.distance_from_top_frac,
+                raw,
+                force=True,
+            )
+        else:
+            s.remove_field(record, Fields.DISTANCE_FROM_TOP_FRAC)
         if self._has_distance_from_top_frac1 or self.distance_from_top_frac1 != 0:
-            record["DistanceFromTop_Frac1"] = str(self.distance_from_top_frac1)
+            s.write_int(
+                record,
+                Fields.DISTANCE_FROM_TOP_FRAC1,
+                self.distance_from_top_frac1,
+                raw,
+                force=True,
+            )
+        else:
+            s.remove_field(record, Fields.DISTANCE_FROM_TOP_FRAC1)
         if self._has_color or self.color != 0:
             s.write_int(record, Fields.COLOR, self.color, raw, force=self.color != 0)
         else:
@@ -389,14 +377,14 @@ class AltiumSchHarnessEntry(SingleFontBindableRecordMixin, SchPrimitive):
             dot_y = int(parent_y + offset - 1)
             text_x = int(parent_x + 5)
             text_y = math.ceil(parent_y + offset + text_center_offset)
-            if ctx.native_svg_export and self.distance_from_top_frac1:
+            if ctx.native_svg_export and _effective_basic_entry_distance_frac1(self):
                 text_y += 1
         elif parent_orientation == 0:
             dot_x = int(parent_x + parent_width - 1)
             dot_y = int(parent_y + offset - 1)
             text_x = parent_x + parent_width - text_width_px - 5
             text_y = math.ceil(parent_y + offset + text_center_offset)
-            if ctx.native_svg_export and self.distance_from_top_frac1:
+            if ctx.native_svg_export and _effective_basic_entry_distance_frac1(self):
                 text_y += 1
         elif parent_orientation == 2:
             dot_x = int(parent_x + offset - 1)

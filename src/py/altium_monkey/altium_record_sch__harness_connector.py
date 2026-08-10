@@ -44,10 +44,13 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         super().__init__()
         # Dimensions from SchDataRectangularGroup base class
         self.xsize: int = 80  # Default width in mils
+        self.xsize_frac: int = 0
         self.ysize: int = 50  # Default height in mils
+        self.ysize_frac: int = 0
         # HarnessConnector-specific fields
         self.side: SchHarnessConnectorSide = SchHarnessConnectorSide.RIGHT
         self.primary_connection_position: int = 0
+        self.primary_connection_position_frac: int = 0
         self.line_width: LineWidth = LineWidth.SMALL
         # Children (entries and type label) - populated during hierarchy building
         self.children: list = []
@@ -55,9 +58,12 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         self.type_label: AltiumSchHarnessType | None = None
         # Track field presence
         self._has_xsize: bool = False
+        self._has_xsize_frac: bool = False
         self._has_ysize: bool = False
+        self._has_ysize_frac: bool = False
         self._has_side: bool = False
         self._has_primary_connection_position: bool = False
+        self._has_primary_connection_position_frac: bool = False
         self._has_line_width: bool = False
 
     @property
@@ -76,7 +82,13 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
 
         # Parse XSize/YSize (from SchDataRectangularGroup)
         self.xsize, self._has_xsize = s.read_int(record, Fields.X_SIZE, default=80)
+        self.xsize_frac, self._has_xsize_frac = s.read_int(
+            record, "XSize_Frac", default=0
+        )
         self.ysize, self._has_ysize = s.read_int(record, Fields.Y_SIZE, default=50)
+        self.ysize_frac, self._has_ysize_frac = s.read_int(
+            record, "YSize_Frac", default=0
+        )
         side_val, self._has_side = s.read_int(
             record, Fields.HARNESS_CONNECTOR_SIDE, default=0
         )
@@ -85,6 +97,10 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         self.primary_connection_position, self._has_primary_connection_position = (
             s.read_int(record, Fields.PRIMARY_CONNECTION_POSITION, default=0)
         )
+        (
+            self.primary_connection_position_frac,
+            self._has_primary_connection_position_frac,
+        ) = s.read_int(record, "PrimaryConnectionPosition_Frac", default=0)
         line_width_val, self._has_line_width = s.read_int(
             record, Fields.LINE_WIDTH, default=0
         )
@@ -102,10 +118,18 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
             s.write_int(record, Fields.X_SIZE, self.xsize, raw)
         else:
             s.remove_field(record, Fields.X_SIZE)
+        if self._has_xsize_frac or self.xsize_frac != 0:
+            s.write_int(record, "XSize_Frac", self.xsize_frac, raw)
+        else:
+            s.remove_field(record, "XSize_Frac")
         if self._has_ysize or self.ysize != 0:
             s.write_int(record, Fields.Y_SIZE, self.ysize, raw)
         else:
             s.remove_field(record, Fields.Y_SIZE)
+        if self._has_ysize_frac or self.ysize_frac != 0:
+            s.write_int(record, "YSize_Frac", self.ysize_frac, raw)
+        else:
+            s.remove_field(record, "YSize_Frac")
         if self._has_side or self.side != SchHarnessConnectorSide.LEFT:
             s.write_int(record, Fields.HARNESS_CONNECTOR_SIDE, self.side.value, raw)
         else:
@@ -122,6 +146,18 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
             )
         else:
             s.remove_field(record, Fields.PRIMARY_CONNECTION_POSITION)
+        if (
+            self._has_primary_connection_position_frac
+            or self.primary_connection_position_frac != 0
+        ):
+            s.write_int(
+                record,
+                "PrimaryConnectionPosition_Frac",
+                self.primary_connection_position_frac,
+                raw,
+            )
+        else:
+            s.remove_field(record, "PrimaryConnectionPosition_Frac")
         if self._has_line_width or self.line_width != LineWidth.SMALLEST:
             s.write_int(record, Fields.LINE_WIDTH, self.line_width.value, raw)
         else:

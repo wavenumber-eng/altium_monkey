@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -38,33 +38,58 @@ from .altium_component_kind import (
 from .altium_netlist_common import (
     _altium_net_total_sort_key,
     _component_part_alpha_suffix,
+    _natural_sort_key,
     _pin_electrical_to_pintype,
     _resolve_component_display_value,
     _sheet_entry_display_name as _inter_sheet_entry_display_name,
 )
-from .altium_netlist_multi_sheet_support import (
+from .altium_compiled_design_support import (
     RoomDetails,
     _build_child_harness_entry_map,
     _build_port_location_map,
     _build_room_details,
     _build_wire_endpoint_map,
+    _connected_signal_harness_indexes,
+    _harness_connector_master_entry_point,
+    _harness_entry_connection_point,
     _parse_entry_repeat,
+    _signal_harness_ids,
     _strip_diff_pair_suffix,
     apply_channel_pattern,
+    find_harness_bundle_info,
     find_harness_port_name,
 )
-from .altium_netlist_wire_connectivity import build_wire_graph as _build_wire_graph
+from .altium_netlist_wire_connectivity import (
+    AnalyserNetItemKind,
+    RootPoint,
+    altium_internal_tolerance_for_display_unit,
+    analyser_net_item_kind,
+    build_wire_graph as _build_wire_graph,
+)
 from .altium_netlist_model import NetEndpoint
 from .altium_netlist_options import NetlistOptions
-from .altium_netlist_single_sheet import AltiumNetlistSingleSheetCompiler
+from .altium_netlist_single_sheet import (
+    AltiumNetlistSingleSheetCompiler,
+    _sheet_entry_precise_connection_point,
+)
 from .altium_prjpcb import NetIdentifierScope
+from .altium_sch_record_helpers import (
+    _effective_basic_entry_distance_frac1,
+    _coord_scalar_to_rounded_native_units,
+    _coord_scalar_with_basic_entry_distance_to_rounded_native_units,
+)
 
 if TYPE_CHECKING:
     from .altium_design import AltiumDesign
     from .altium_prjpcb import AltiumPrjPcb
     from .altium_record_sch__harness_connector import AltiumSchHarnessConnector
     from .altium_schdoc import AltiumSchDoc
-    from .altium_schdoc_info import SchComponentInfo, SchPortInfo, SchSheetSymbolInfo
+    from .altium_schdoc_info import (
+        SchComponentInfo,
+        SchPinInfo,
+        SchPortInfo,
+        SchSheetSymbolInfo,
+    )
 
 _REPEAT_PATTERN = re.compile(
     r"^REPEAT\s*\(\s*([^,]+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$",
@@ -73,6 +98,32 @@ _REPEAT_PATTERN = re.compile(
 _BUS_RANGE_PATTERN = re.compile(r"^(.+)\[(\d+)\.\.(\d+)\]$")
 _UNRESOLVED_CHILD_ERROR_PHASE = "python-physical-tree-instantiation"
 _DEFAULT_CHANNEL_DESIGNATOR_FORMAT = "$Component$ChannelAlpha"
+
+
+def _basic_entry_axis_coordinate(
+    location: int,
+    location_frac: int,
+    entry: object,
+    *,
+    direction: int,
+) -> int:
+    distance_from_top = getattr(entry, "distance_from_top", None)
+    if distance_from_top is not None:
+        return _coord_scalar_with_basic_entry_distance_to_rounded_native_units(
+            location,
+            location_frac,
+            distance_from_top,
+            _effective_basic_entry_distance_frac1(entry),
+            direction=direction,
+        )
+    distance_fn = getattr(entry, "_rounded_distance_from_top_native_units", None)
+    distance = (
+        int(cast(int | float | str, distance_fn())) if callable(distance_fn) else 0
+    )
+    return _coord_scalar_to_rounded_native_units(
+        location + direction * distance,
+        location_frac,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,11 +170,13 @@ class _CompiledComponentSourceInfo:
     footprint: str
     component_kind: str
     pin_count: int
+    all_pin_count: int
     exclude_from_bom: bool
     description: str
     library_ref: str
     design_item_id: str
     unique_id: str
+    cross_document_multipart: bool
 
 
 def _as_posix_path(path: Path) -> str:
@@ -177,6 +230,34 @@ def _saved_project_structure_top_level_file_name(
     return None
 
 
+def _saved_project_structure_sheet_numbers(
+    project_path: Path | None,
+) -> dict[str, str]:
+    if project_path is None:
+        return {}
+    structure_path = project_path.with_suffix(".PrjPcbStructure")
+    try:
+        lines = structure_path.read_text(
+            encoding="utf-8-sig",
+            errors="replace",
+        ).splitlines()
+    except OSError:
+        return {}
+    result: dict[str, str] = {}
+    for line in lines:
+        fields: dict[str, str] = {}
+        for part in line.split("|"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            fields[key.strip().lower()] = value.strip()
+        file_name = _normalize_project_reference(fields.get("filename", ""))
+        sheet_number = fields.get("sheetnumber", "")
+        if file_name and sheet_number:
+            result[file_name] = sheet_number
+    return result
+
+
 def _project_saved_structure_top_level_file_name(
     project: "AltiumPrjPcb | None",
 ) -> str | None:
@@ -197,13 +278,55 @@ def _logical_document_id(source_path: str, ordinal: int) -> str:
     return f"logical:{ordinal}:{seed}"
 
 
-def _document_parameter(schdoc: "AltiumSchDoc", name: str) -> str | None:
+def _raw_document_parameter(schdoc: "AltiumSchDoc", name: str) -> str | None:
     for parameter in getattr(schdoc, "parameters", ()):
-        if getattr(parameter, "name", "") == name:
+        if str(getattr(parameter, "name", "")).casefold() == name.casefold():
             value = getattr(parameter, "text", "")
-            if value and value != "*":
-                return str(value)
+            return str(value) if value else None
     return None
+
+
+def _has_document_parameter(schdoc: "AltiumSchDoc", name: str) -> bool:
+    return any(
+        str(getattr(parameter, "name", "")).casefold() == name.casefold()
+        for parameter in getattr(schdoc, "parameters", ())
+    )
+
+
+def _resolved_document_parameter(
+    schdoc: "AltiumSchDoc",
+    name: str,
+    project_parameters: dict[str, str],
+) -> str | None:
+    for parameter in getattr(schdoc, "parameters", ()):
+        if str(getattr(parameter, "name", "")).casefold() != name.casefold():
+            continue
+        value = str(getattr(parameter, "text", "") or "")
+        if value and value != "*":
+            return value
+        for project_name, project_value in project_parameters.items():
+            if project_name.casefold() != name.casefold():
+                continue
+            resolved = str(project_value or "")
+            return resolved if resolved and resolved != "*" else None
+        return None
+    return None
+
+
+def _preserved_device_sheet_number(
+    schdoc: "AltiumSchDoc",
+    logical_id: str,
+    saved_numbers: Mapping[str, str] | None,
+) -> str | None:
+    sheet_number = (saved_numbers or {}).get(logical_id)
+    if sheet_number is not None:
+        return sheet_number
+    sheet_number = _raw_document_parameter(schdoc, "SheetNumber")
+    if sheet_number is not None:
+        return sheet_number
+    source_sheet = getattr(schdoc, "sheet", None)
+    source_value = getattr(source_sheet, "sheet_number", None)
+    return str(source_value) if source_value not in {None, ""} else None
 
 
 def _sheet_numbers_by_logical_id(
@@ -211,20 +334,118 @@ def _sheet_numbers_by_logical_id(
     *,
     project_base_dir: Path | None,
     options: AltiumProjectCompileOptions,
+    logical_documents: tuple[AltiumCompiledLogicalDocument, ...],
+    sheet_symbols: tuple[AltiumCompiledSheetSymbol, ...],
+    device_sheet_logical_ids: frozenset[str] = frozenset(),
+    device_sheet_numbers_by_logical_id: Mapping[str, str] | None = None,
+    document_order_by_logical_id: Mapping[str, int] | None = None,
 ) -> dict[str, str]:
-    result: dict[str, str] = {}
+    schdoc_by_logical_id: dict[str, AltiumSchDoc] = {}
     for ordinal, schdoc in enumerate(schdocs):
         source_path = _relative_source_path(
             getattr(schdoc, "filepath", None),
             project_base_dir,
         )
         logical_id = _logical_document_id(source_path, ordinal)
-        if options.auto_sheet_numbering:
-            result[logical_id] = str(ordinal + 1)
+        schdoc_by_logical_id[logical_id] = schdoc
+
+    if not options.auto_sheet_numbering:
+        return {
+            logical_id: sheet_number
+            for logical_id, schdoc in schdoc_by_logical_id.items()
+            if (sheet_number := _raw_document_parameter(schdoc, "SheetNumber"))
+            is not None
+        }
+
+    document_by_id = {document.id: document for document in logical_documents}
+    document_order = document_order_by_logical_id or {}
+
+    def document_position(logical_id: str) -> tuple[int, int]:
+        document = document_by_id[logical_id]
+        return document_order.get(logical_id, document.ordinal), document.ordinal
+
+    child_ids_by_parent: dict[str, set[str]] = defaultdict(set)
+    for symbol in sheet_symbols:
+        if symbol.child_logical_document_id is not None:
+            child_ids_by_parent[symbol.logical_document_id].add(
+                symbol.child_logical_document_id
+            )
+
+    result: dict[str, str] = {}
+    visited: set[str] = set()
+    next_sheet_number = 1
+
+    def number_document(logical_id: str) -> bool:
+        nonlocal next_sheet_number
+        if logical_id in visited:
+            return False
+        visited.add(logical_id)
+        schdoc = schdoc_by_logical_id.get(logical_id)
+        if schdoc is not None:
+            if (
+                logical_id in device_sheet_logical_ids
+                and not options.allow_device_sheet_editing
+            ):
+                sheet_number = _preserved_device_sheet_number(
+                    schdoc,
+                    logical_id,
+                    device_sheet_numbers_by_logical_id,
+                )
+                if sheet_number is not None:
+                    result[logical_id] = sheet_number
+                return True
+            if _has_document_parameter(schdoc, "SheetNumber"):
+                result[logical_id] = str(next_sheet_number)
+            next_sheet_number += 1
+        return True
+
+    def collect_top_tree(logical_id: str) -> None:
+        if not number_document(logical_id):
+            return
+        for child_id in sorted(
+            child_ids_by_parent.get(logical_id, ()),
+            key=document_position,
+        ):
+            collect_top_tree(child_id)
+
+    parented_ids = {
+        child_id for child_ids in child_ids_by_parent.values() for child_id in child_ids
+    }
+    root_documents = sorted(
+        (document for document in logical_documents if document.id not in parented_ids),
+        key=lambda document: document_position(document.id),
+    )
+    top_candidates = [
+        document for document in root_documents if document.is_top_level_candidate
+    ]
+    numbering_documents = top_candidates or root_documents or list(logical_documents)
+    if not numbering_documents:
+        return result
+    top_document = numbering_documents[0]
+    # AD26 SheetNumberingResolver seeds the flat pass with the top schematic
+    # plus every schematic unreachable from it (ProjectStructureBuilder.
+    # GetNoMainPathSchematicsIds), ordered by project-document position, so
+    # children of detached parents are numbered flatly as well.
+    reachable_ids: set[str] = set()
+    pending_ids = [top_document.id]
+    while pending_ids:
+        current_id = pending_ids.pop()
+        if current_id in reachable_ids:
             continue
-        sheet_number = _document_parameter(schdoc, "SheetNumber")
-        if sheet_number is not None:
-            result[logical_id] = sheet_number
+        reachable_ids.add(current_id)
+        pending_ids.extend(child_ids_by_parent.get(current_id, ()))
+    no_main_path_documents = [
+        document for document in logical_documents if document.id not in reachable_ids
+    ]
+    seed_documents = sorted(
+        [top_document, *no_main_path_documents],
+        key=lambda document: document_position(document.id),
+    )
+    for document in seed_documents:
+        if document.id == top_document.id:
+            collect_top_tree(document.id)
+        else:
+            number_document(document.id)
     return result
 
 
@@ -232,6 +453,7 @@ def _document_numbers_by_logical_id(
     schdocs: list["AltiumSchDoc"],
     *,
     project_base_dir: Path | None,
+    project_parameters: dict[str, str],
 ) -> dict[str, str]:
     result: dict[str, str] = {}
     for ordinal, schdoc in enumerate(schdocs):
@@ -240,7 +462,11 @@ def _document_numbers_by_logical_id(
             project_base_dir,
         )
         logical_id = _logical_document_id(source_path, ordinal)
-        document_number = _document_parameter(schdoc, "DocumentNumber")
+        document_number = _resolved_document_parameter(
+            schdoc,
+            "DocumentNumber",
+            project_parameters,
+        )
         if document_number is not None:
             result[logical_id] = document_number
     return result
@@ -252,20 +478,28 @@ def _apply_default_sheet_and_document_numbers(
     sheet_numbers_by_logical_id: dict[str, str],
     document_numbers_by_logical_id: dict[str, str],
 ) -> tuple[AltiumCompiledPhysicalDocument, ...]:
-    return tuple(
-        replace(
-            document,
-            sheet_number=(
-                document.sheet_number
-                or sheet_numbers_by_logical_id.get(document.logical_document_id)
-            ),
-            document_number=(
-                document.document_number
-                or document_numbers_by_logical_id.get(document.logical_document_id)
-            ),
+    updated_documents: list[AltiumCompiledPhysicalDocument] = []
+    for document in physical_documents:
+        physical_index_path = document.sheet_number or ""
+        sheet_number_base = sheet_numbers_by_logical_id.get(
+            document.logical_document_id
         )
-        for document in physical_documents
-    )
+        if sheet_number_base == "*":
+            sheet_number = physical_index_path or None
+        elif sheet_number_base is not None:
+            sheet_number = f"{sheet_number_base}{physical_index_path}"
+        else:
+            sheet_number = None
+        updated_documents.append(
+            replace(
+                document,
+                sheet_number=sheet_number,
+                document_number=document_numbers_by_logical_id.get(
+                    document.logical_document_id
+                ),
+            )
+        )
+    return tuple(updated_documents)
 
 
 def _normalize_project_reference(value: str) -> str:
@@ -279,7 +513,9 @@ def _reference_basename(value: str) -> str:
     return _normalize_project_reference(value).rsplit("/", 1)[-1]
 
 
-def _sheet_symbol_id(logical_document_id: str, symbol: "SchSheetSymbolInfo", index: int) -> str:
+def _sheet_symbol_id(
+    logical_document_id: str, symbol: "SchSheetSymbolInfo", index: int
+) -> str:
     source_object_id = symbol.unique_id or f"sheet_symbol:{index}"
     return f"{logical_document_id}:sheet_symbol:{source_object_id}"
 
@@ -296,12 +532,16 @@ def _physical_child_document_id(
     return f"{parent_id}:child:{sheet_symbol_id}:{instance_key}"
 
 
-def _component_id(physical_document_id: str, component: "SchComponentInfo", index: int) -> str:
+def _component_id(
+    physical_document_id: str, component: "SchComponentInfo", index: int
+) -> str:
     source_object_id = component.unique_id or f"component:{index}"
     return f"{physical_document_id}:component:{source_object_id}"
 
 
-def _component_unique_id_path(physical_unique_id_path: str, source_object_id: str) -> str:
+def _component_unique_id_path(
+    physical_unique_id_path: str, source_object_id: str
+) -> str:
     if not source_object_id:
         return ""
     return _unique_id_path_join(physical_unique_id_path, source_object_id)
@@ -322,8 +562,7 @@ def _compiled_inter_sheet_link_id(
     link_name: str,
 ) -> str:
     return (
-        f"{parent_physical_id}:link:{child_physical_id}:"
-        f"{source_object_id}:{link_name}"
+        f"{parent_physical_id}:link:{child_physical_id}:{source_object_id}:{link_name}"
     )
 
 
@@ -367,7 +606,9 @@ def _component_base_designator_maps_by_physical_document(
         )
         if suffix and designator.endswith(suffix):
             designator = designator[: -len(suffix)]
-        result[component.physical_document_id][component.logical_designator] = designator
+        result[component.physical_document_id][component.logical_designator] = (
+            designator
+        )
         for part_id in range(1, component.part_count + 1):
             part_suffix = _component_part_alpha_suffix(
                 part_count=component.part_count,
@@ -399,9 +640,22 @@ def _component_record_part_count(component: object) -> int:
 
 
 def _component_record_current_part_id(component: object) -> int:
-    return int(
-        getattr(getattr(component, "record", None), "current_part_id", 1) or 1
-    )
+    return int(getattr(getattr(component, "record", None), "current_part_id", 1) or 1)
+
+
+def _local_multipart_designators(schdoc: "AltiumSchDoc") -> set[str]:
+    placed_part_ids_by_designator: dict[str, set[int]] = defaultdict(set)
+    for component in schdoc.get_components():
+        logical_designator = str(component.designator or "")
+        if logical_designator:
+            placed_part_ids_by_designator[logical_designator].add(
+                _component_record_current_part_id(component)
+            )
+    return {
+        designator
+        for designator, part_ids in placed_part_ids_by_designator.items()
+        if len({part_id for part_id in part_ids if part_id > 0}) > 1
+    }
 
 
 def _component_pin_full_designators_by_pin(
@@ -409,19 +663,7 @@ def _component_pin_full_designators_by_pin(
     *,
     multipart_designators: set[str] | frozenset[str] | None = None,
 ) -> dict[tuple[str, str], str]:
-    placed_part_ids_by_designator: dict[str, set[int]] = defaultdict(set)
-    for component in schdoc.get_components():
-        logical_designator = str(component.designator or "")
-        if not logical_designator:
-            continue
-        placed_part_ids_by_designator[logical_designator].add(
-            _component_record_current_part_id(component)
-        )
-    local_multipart_designators = {
-        designator
-        for designator, part_ids in placed_part_ids_by_designator.items()
-        if len({part_id for part_id in part_ids if part_id > 0}) > 1
-    }
+    local_multipart_designators = _local_multipart_designators(schdoc)
     effective_multipart_designators = set(multipart_designators or ()) | (
         local_multipart_designators
     )
@@ -463,19 +705,29 @@ def _compiled_component_source_groups(
     components: tuple["SchComponentInfo", ...],
 ) -> tuple[tuple["SchComponentInfo", ...], ...]:
     groups: list[list[SchComponentInfo]] = []
-    group_index_by_key: dict[tuple[str, str], int] = {}
+    multipart_groups: dict[str, list[tuple[int, set[int]]]] = defaultdict(list)
     for component in components:
         designator = str(getattr(component, "designator", "") or "")
-        if designator and _component_record_part_count(component) > 1:
-            key = ("multipart", designator)
-        else:
-            key = ("component", str(id(component)))
-        group_index = group_index_by_key.get(key)
-        if group_index is None:
-            group_index_by_key[key] = len(groups)
+        if not designator or _component_record_part_count(component) <= 1:
             groups.append([component])
-        else:
-            groups[group_index].append(component)
+            continue
+        part_id = _component_record_current_part_id(component)
+        candidate_groups = multipart_groups[designator.lower()]
+        candidate_group = next(
+            (
+                candidate
+                for candidate in candidate_groups
+                if part_id not in candidate[1]
+            ),
+            None,
+        )
+        if candidate_group is None:
+            candidate_groups.append((len(groups), {part_id}))
+            groups.append([component])
+            continue
+        group_index, part_ids = candidate_group
+        groups[group_index].append(component)
+        part_ids.add(part_id)
     return tuple(tuple(group) for group in groups)
 
 
@@ -492,14 +744,40 @@ def _compiled_component_group_representative(
 
 
 def _compiled_component_group_pin_count(group: tuple[object, ...]) -> int:
-    return sum(len(getattr(component, "pins", ()) or ()) for component in group)
+    return len(
+        {
+            str(getattr(pin, "designator", "") or "")
+            for component in group
+            for pin in (getattr(component, "pins", ()) or ())
+            if getattr(pin, "designator", "")
+        }
+    )
+
+
+def _compiled_component_group_all_pin_count(group: tuple[object, ...]) -> int:
+    pin_designators: set[str] = set()
+    stored_counts: list[int] = []
+    for component in group:
+        record = getattr(component, "record", None)
+        stored_count = int(getattr(record, "all_pin_count", 0) or 0)
+        if stored_count > 0:
+            stored_counts.append(stored_count)
+        display_mode = int(getattr(component, "display_mode", 0) or 0)
+        for pin in getattr(record, "pins", ()) or ():
+            pin_mode = int(getattr(pin, "owner_part_display_mode", 0) or 0)
+            designator = str(getattr(pin, "designator", "") or "")
+            if pin_mode == display_mode and designator:
+                pin_designators.add(designator)
+    if stored_counts:
+        return max(stored_counts)
+    return len(pin_designators)
 
 
 def _collapse_multipart_component_rows(
     component_rows: list[AltiumCompiledComponent],
 ) -> list[AltiumCompiledComponent]:
     result: list[AltiumCompiledComponent] = []
-    groups_by_designator: dict[str, list[tuple[int, set[int]]]] = {}
+    groups_by_designator: dict[str, list[tuple[int, set[int], int]]] = {}
     for component in component_rows:
         if component.part_count <= 1 or not component.physical_designator:
             result.append(component)
@@ -507,20 +785,53 @@ def _collapse_multipart_component_rows(
         key = component.physical_designator.lower()
         candidate_groups = groups_by_designator.setdefault(key, [])
         existing_index = None
-        for result_index, part_ids in candidate_groups:
+        group_index = None
+        representative_part_id = component.current_part_id
+        for candidate_index, (
+            result_index,
+            part_ids,
+            candidate_representative_part_id,
+        ) in enumerate(candidate_groups):
             if component.current_part_id not in part_ids:
                 existing_index = result_index
+                group_index = candidate_index
+                representative_part_id = candidate_representative_part_id
                 part_ids.add(component.current_part_id)
                 break
         if existing_index is None:
-            candidate_groups.append((len(result), {component.current_part_id}))
-            result.append(component)
+            candidate_groups.append(
+                (
+                    len(result),
+                    {component.current_part_id},
+                    component.current_part_id,
+                )
+            )
+            result.append(replace(component, current_part_id=1))
             continue
         existing = result[existing_index]
+        representative = (
+            component
+            if component.current_part_id < representative_part_id
+            else existing
+        )
+        if component.current_part_id < representative_part_id:
+            assert group_index is not None
+            result_index, part_ids, _ = candidate_groups[group_index]
+            candidate_groups[group_index] = (
+                result_index,
+                part_ids,
+                component.current_part_id,
+            )
         result[existing_index] = replace(
-            existing,
-            pin_count=existing.pin_count + component.pin_count,
+            representative,
+            pin_count=min(
+                max(existing.all_pin_count, component.all_pin_count),
+                existing.pin_count + component.pin_count,
+            ),
+            all_pin_count=max(existing.all_pin_count, component.all_pin_count),
+            current_part_id=1,
             diagnostics=(*existing.diagnostics, *component.diagnostics),
+            _project_multipart_collapsed=True,
         )
     return result
 
@@ -620,14 +931,21 @@ def _physical_channel_net_name(
         )
     else:
         room = _physical_room_details(physical_document)
-    if (
-        room_channel_index_override
-        and room.room_name
-        and not room.room_name.endswith(room_channel_index_override)
-    ):
-        room = replace(room, room_name=f"{room.room_name}{room_channel_index_override}")
+    if room_channel_index_override and room.room_name and compile_options is not None:
+        override_suffix = _compiled_room_suffix(
+            int(room_channel_index_override),
+            style=compile_options.channel_room_naming_style,
+            depth=0,
+        )
+        room = replace(
+            room,
+            room_name=f"{physical_document.room_name}{override_suffix}",
+        )
     if channel_designator_format:
-        return apply_channel_pattern(channel_designator_format, room, base_name) + diff_suffix
+        return (
+            apply_channel_pattern(channel_designator_format, room, base_name)
+            + diff_suffix
+        )
     if physical_document.channel_alpha:
         return f"{base_name}{physical_document.channel_alpha}{diff_suffix}"
     return local_net.name
@@ -723,7 +1041,7 @@ def _replace_compiled_net_id_prefix_precomputed(
     if value == source_id:
         return target_id
     if value.startswith(source_prefix):
-        return f"{target_prefix}{value[len(source_prefix):]}"
+        return f"{target_prefix}{value[len(source_prefix) :]}"
     raise RuntimeError(
         f"Compiled net item id {value!r} does not start with source id {source_id!r}"
     )
@@ -830,7 +1148,7 @@ def _compiled_item_from_endpoint(
 ) -> AltiumCompiledNetItem:
     return AltiumCompiledNetItem(
         id=endpoint.id,
-        kind=endpoint.role,
+        kind="power_port" if endpoint.role == "harness_power" else endpoint.role,
         name=endpoint.name,
         parent_id=endpoint.parent_id,
         element_id=endpoint.element_id,
@@ -841,7 +1159,8 @@ def _compiled_item_from_endpoint(
         physical_document_id=physical_document_id,
         connection_point=endpoint.connection_point,
         removed=endpoint.role == "harness_entry",
-        inferred_from_harness=endpoint.role in {"harness_entry", "harness_port"},
+        inferred_from_harness=endpoint.role
+        in {"harness_entry", "harness_port", "harness_power"},
     )
 
 
@@ -955,7 +1274,7 @@ def _replace_compiled_net_id_prefix(value: str, source_id: str, target_id: str) 
         return target_id
     prefix = f"{source_id}:"
     if value.startswith(prefix):
-        return f"{target_id}:{value[len(prefix):]}"
+        return f"{target_id}:{value[len(prefix) :]}"
     raise RuntimeError(
         f"Compiled net item id {value!r} does not start with source id {source_id!r}"
     )
@@ -978,7 +1297,9 @@ def _compiled_endpoint_from_net_endpoint(
         designator=str(getattr(endpoint, "designator", "") or ""),
         pin=str(getattr(endpoint, "pin", "") or ""),
         pin_name=str(getattr(endpoint, "pin_name", "") or ""),
-        connection_point=connection_point if isinstance(connection_point, tuple) else None,
+        connection_point=connection_point
+        if isinstance(connection_point, tuple)
+        else None,
     )
 
 
@@ -993,7 +1314,9 @@ def _replace_compiled_endpoint_id_prefix(
     )
 
 
-def _compiled_net_has_endpoint(net: AltiumCompiledNet, role: str, object_id: str) -> bool:
+def _compiled_net_has_endpoint(
+    net: AltiumCompiledNet, role: str, object_id: str
+) -> bool:
     clean_role = str(role or "").lower()
     clean_object_id = str(object_id or "").lower()
     if not clean_role or not clean_object_id:
@@ -1026,7 +1349,9 @@ def _schdoc_reference_maps(
     schdocs: list["AltiumSchDoc"],
     *,
     project_base_dir: Path | None,
-) -> tuple[dict[str, tuple["AltiumSchDoc", ...]], dict[str, tuple["AltiumSchDoc", ...]]]:
+) -> tuple[
+    dict[str, tuple["AltiumSchDoc", ...]], dict[str, tuple["AltiumSchDoc", ...]]
+]:
     by_source_ref: dict[str, list["AltiumSchDoc"]] = defaultdict(list)
     by_file_name: dict[str, list["AltiumSchDoc"]] = defaultdict(list)
     for schdoc in schdocs:
@@ -1124,7 +1449,9 @@ def _component_location(component: "SchComponentInfo") -> tuple[int, int]:
     return x, y
 
 
-def _compile_mask_bounds(schdoc: "AltiumSchDoc") -> tuple[tuple[int, int, int, int], ...]:
+def _compile_mask_bounds(
+    schdoc: "AltiumSchDoc",
+) -> tuple[tuple[int, int, int, int], ...]:
     collect = getattr(schdoc, "_collect_compile_mask_bounds", None)
     if not callable(collect):
         return ()
@@ -1229,6 +1556,7 @@ def _single_child_instance(symbol: AltiumCompiledSheetSymbol) -> _PhysicalChildI
 def _physical_child_instances(
     symbol: AltiumCompiledSheetSymbol,
     multi_ref_room: RoomDetails | None,
+    repeat_channel_values: dict[tuple[str, int], int],
 ) -> tuple[_PhysicalChildInstance, ...]:
     if (
         symbol.is_repeat
@@ -1242,8 +1570,12 @@ def _physical_child_instances(
         for instance_offset, repeat_value in enumerate(
             range(symbol.repeat_start, symbol.repeat_end + 1)
         ):
+            channel_value = repeat_channel_values.get(
+                (symbol.id, repeat_value),
+                repeat_value,
+            )
             room = _build_room_details(
-                f"{symbol.repeat_prefix}{repeat_value}",
+                f"{symbol.repeat_prefix}{channel_value}",
                 instance_offset,
                 sheet_designator=symbol.designator,
             )
@@ -1251,7 +1583,7 @@ def _physical_child_instances(
                 _physical_child_instance_from_room(
                     instance_key=f"repeat:{repeat_value}",
                     room=room,
-                    fallback_channel_index=repeat_value,
+                    fallback_channel_index=channel_value,
                 )
             )
         return tuple(instances)
@@ -1268,19 +1600,106 @@ def _physical_child_instances(
     return (_single_child_instance(symbol),)
 
 
+def _repeat_parent_rows_by_child(
+    sheet_symbols: tuple[AltiumCompiledSheetSymbol, ...],
+) -> dict[str, list[tuple[str, int, str, bool]]]:
+    parent_rows_by_child: dict[
+        str,
+        list[tuple[str, int, str, bool]],
+    ] = defaultdict(list)
+    for symbol in sheet_symbols:
+        child_id = symbol.child_logical_document_id
+        if child_id is None:
+            continue
+        if (
+            symbol.is_repeat
+            and symbol.repeat_prefix is not None
+            and symbol.repeat_start is not None
+            and symbol.repeat_end is not None
+        ):
+            for channel_value in range(symbol.repeat_start, symbol.repeat_end + 1):
+                parent_rows_by_child[child_id].append(
+                    (symbol.repeat_prefix, channel_value, symbol.id, True)
+                )
+        else:
+            parent_rows_by_child[child_id].append(
+                (symbol.designator, -1, symbol.id, False)
+            )
+    return parent_rows_by_child
+
+
+def _updated_repeat_values_for_child(
+    parent_rows: Sequence[tuple[str, int, str, bool]],
+    *,
+    new_indexing: bool,
+) -> dict[tuple[str, int], int]:
+    result: dict[tuple[str, int], int] = {}
+    rows = sorted(parent_rows, key=lambda row: (row[0].casefold(), row[1]))
+    previous_name = ""
+    next_value = 0 if new_indexing else 1
+    for instance_name, channel_value, symbol_id, is_repeat in rows:
+        if not is_repeat:
+            previous_name = ""
+            next_value = 0 if new_indexing else 1
+            continue
+
+        same_instance = instance_name.casefold() == previous_name.casefold()
+        if new_indexing:
+            if not same_instance:
+                next_value = max(channel_value, 0)
+            elif channel_value > next_value:
+                next_value = channel_value
+            updated_value = next_value
+        else:
+            if not same_instance:
+                next_value = 1
+            updated_value = next_value
+
+        result[(symbol_id, channel_value)] = updated_value
+        previous_name = instance_name
+        next_value = updated_value + 1
+    return result
+
+
+def _repeat_channel_values(
+    sheet_symbols: tuple[AltiumCompiledSheetSymbol, ...],
+    *,
+    new_indexing: bool,
+) -> dict[tuple[str, int], int]:
+    """Apply the AD26 channel-details updater to repeat parent entries."""
+
+    result: dict[tuple[str, int], int] = {}
+    for parent_rows in _repeat_parent_rows_by_child(sheet_symbols).values():
+        result.update(
+            _updated_repeat_values_for_child(
+                parent_rows,
+                new_indexing=new_indexing,
+            )
+        )
+    return result
+
+
 def _multi_reference_channel_rooms(
     sheet_symbols: tuple[AltiumCompiledSheetSymbol, ...],
 ) -> dict[str, RoomDetails]:
-    symbols_by_child: dict[str, list[AltiumCompiledSheetSymbol]] = defaultdict(list)
+    symbols_by_parent_and_child: dict[
+        tuple[str, str], list[AltiumCompiledSheetSymbol]
+    ] = defaultdict(list)
     for symbol in sheet_symbols:
         if symbol.child_logical_document_id is not None and not symbol.is_repeat:
-            symbols_by_child[symbol.child_logical_document_id].append(symbol)
+            symbols_by_parent_and_child[
+                (symbol.logical_document_id, symbol.child_logical_document_id)
+            ].append(symbol)
 
     rooms_by_symbol_id: dict[str, RoomDetails] = {}
-    for symbols in symbols_by_child.values():
+    for symbols in symbols_by_parent_and_child.values():
         if len(symbols) <= 1:
             continue
-        for instance_offset, symbol in enumerate(symbols):
+        ordered_symbols = sorted(
+            symbols,
+            key=lambda symbol: _natural_sort_key(symbol.designator),
+        )
+        for instance_offset, symbol in enumerate(ordered_symbols):
             room_name = symbol.designator or f"Channel{instance_offset + 1}"
             rooms_by_symbol_id[symbol.id] = _build_room_details(
                 room_name,
@@ -1355,22 +1774,52 @@ def _component_naming_room_name(
     physical_count_by_logical_id: dict[str, int],
     compile_options: AltiumProjectCompileOptions,
 ) -> str:
+    if compile_options.effective_hierarchy_mode in {"FLAT", "GLOBAL"}:
+        return document.physical_instance_path.rsplit("/", 1)[-1]
     room_name = document.room_name or Path(document.file_name).stem
     style = compile_options.channel_room_naming_style
     if style in {0, 1}:
-        parent = physical_document_by_id.get(document.parent_id or "")
-        if (
-            parent is None
-            or parent.parent_sheet_symbol_id is None
-            or physical_count_by_logical_id.get(parent.logical_document_id, 0) <= 1
-        ):
-            return room_name
-        parent_index = (
-            parent.channel_index
-            if parent.channel_index > 0
-            else physical_instance_offsets.get(parent.id, 0) + 1
+        duplicate_room_count = sum(
+            1
+            for physical_document in physical_document_by_id.values()
+            if (
+                physical_document.logical_document_id == document.logical_document_id
+                and (
+                    physical_document.room_name
+                    or Path(physical_document.file_name).stem
+                ).lower()
+                == room_name.lower()
+            )
         )
-        return f"{room_name}{_compiled_room_suffix(parent_index, style=style, depth=0)}"
+        if duplicate_room_count <= 1:
+            return room_name
+        matching_documents = sorted(
+            (
+                physical_document
+                for physical_document in physical_document_by_id.values()
+                if (
+                    physical_document.logical_document_id
+                    == document.logical_document_id
+                    and (
+                        physical_document.room_name
+                        or Path(physical_document.file_name).stem
+                    ).lower()
+                    == room_name.lower()
+                )
+            ),
+            key=lambda physical_document: (
+                _natural_sort_key(physical_document.physical_instance_path),
+                physical_instance_offsets.get(physical_document.id, 0),
+            ),
+        )
+        instance_index = next(
+            index
+            for index, physical_document in enumerate(matching_documents, start=1)
+            if physical_document.id == document.id
+        )
+        return (
+            f"{room_name}{_compiled_room_suffix(instance_index, style=style, depth=0)}"
+        )
 
     path_documents: list[AltiumCompiledPhysicalDocument] = []
     current: AltiumCompiledPhysicalDocument | None = document
@@ -1384,12 +1833,15 @@ def _component_naming_room_name(
     if not path_documents:
         return room_name
     if len(path_documents) == 1:
-        path_room_name = path_documents[0].room_name or Path(path_documents[0].file_name).stem
+        path_room_name = (
+            path_documents[0].room_name or Path(path_documents[0].file_name).stem
+        )
         duplicate_room_count = sum(
             1
             for physical_document in physical_document_by_id.values()
             if (
-                physical_document.logical_document_id == path_documents[0].logical_document_id
+                physical_document.logical_document_id
+                == path_documents[0].logical_document_id
                 and (
                     physical_document.room_name
                     or Path(physical_document.file_name).stem
@@ -1451,7 +1903,9 @@ def _room_details_for_compiled_naming(
 def _logical_instance_offsets(
     physical_documents: Iterable[AltiumCompiledPhysicalDocument],
 ) -> dict[str, int]:
-    rows_by_logical_id: dict[str, list[AltiumCompiledPhysicalDocument]] = defaultdict(list)
+    rows_by_logical_id: dict[str, list[AltiumCompiledPhysicalDocument]] = defaultdict(
+        list
+    )
     for row in physical_documents:
         rows_by_logical_id[row.logical_document_id].append(row)
     return {
@@ -1473,7 +1927,9 @@ def _physical_count_by_logical_id(
 def _apply_inferred_channel_fields(
     physical_rows: tuple[AltiumCompiledPhysicalDocument, ...],
 ) -> tuple[AltiumCompiledPhysicalDocument, ...]:
-    rows_by_logical_id: dict[str, list[AltiumCompiledPhysicalDocument]] = defaultdict(list)
+    rows_by_logical_id: dict[str, list[AltiumCompiledPhysicalDocument]] = defaultdict(
+        list
+    )
     for row in physical_rows:
         rows_by_logical_id[row.logical_document_id].append(row)
 
@@ -1492,8 +1948,8 @@ def _apply_inferred_channel_fields(
                 channel_prefix=room.channel_prefix or None,
                 channel_alpha=room.channel_alpha or None,
                 room_name=room.room_name,
-                sheet_number=row.sheet_number or room.sheet_number or None,
-                document_number=row.document_number or room.document_number or None,
+                sheet_number=row.sheet_number,
+                document_number=row.document_number,
             )
         )
     return tuple(updated_rows)
@@ -1552,6 +2008,7 @@ def _compile_options_from_netlist_options(
     *,
     effective_hierarchy_mode: str,
     project: "AltiumPrjPcb | None",
+    allow_device_sheet_editing: bool,
 ) -> AltiumProjectCompileOptions:
     scope = options.net_identifier_scope
     option_sources = _project_option_sources(project)
@@ -1562,12 +2019,11 @@ def _compile_options_from_netlist_options(
         allow_port_net_names=options.allow_ports_to_name_nets,
         allow_sheet_entry_net_names=options.allow_sheet_entries_to_name_nets,
         netlist_single_pin_nets=options.allow_single_pin_nets,
-        append_sheet_number_to_local_nets=(
-            options.append_sheet_numbers_to_local_nets
-        ),
+        append_sheet_number_to_local_nets=(options.append_sheet_numbers_to_local_nets),
         power_port_names_take_priority=options.power_port_names_take_priority,
         name_nets_hierarchically=options.higher_level_names_take_priority,
         auto_sheet_numbering=options.auto_sheet_numbering,
+        allow_device_sheet_editing=allow_device_sheet_editing,
         channel_designator_format=options.channel_designator_format,
         channel_room_naming_style=_project_design_int(
             project,
@@ -1620,17 +2076,12 @@ def _project_option_sources(project: "AltiumPrjPcb | None") -> dict[str, str]:
         "allow_port_net_names": source_for("AllowPortNetNames"),
         "allow_sheet_entry_net_names": source_for("AllowSheetEntryNetNames"),
         "netlist_single_pin_nets": source_for("NetlistSinglePinNets"),
-        "append_sheet_number_to_local_nets": source_for(
-            "AppendSheetNumberToLocalNets"
-        ),
-        "power_port_names_take_priority": source_for(
-            "PowerPortNamesTakePriority"
-        ),
+        "append_sheet_number_to_local_nets": source_for("AppendSheetNumberToLocalNets"),
+        "power_port_names_take_priority": source_for("PowerPortNamesTakePriority"),
         "name_nets_hierarchically": source_for("NameNetsHierarchically"),
         "auto_sheet_numbering": source_for("AutoSheetNumbering"),
-        "channel_designator_format": source_for(
-            "ChannelDesignatorFormatString"
-        ),
+        "allow_device_sheet_editing": "compile_argument",
+        "channel_designator_format": source_for("ChannelDesignatorFormatString"),
         "channel_room_naming_style": source_for("ChannelRoomNamingStyle"),
         "channel_room_level_separator": source_for_any(
             "ChannelRoomLevelSeperator",
@@ -1658,33 +2109,13 @@ def _effective_bridge_scope_options(
     )
 
 
-def _local_net_by_lower_name(local_nets: Sequence[object]) -> dict[str, object]:
-    return {
-        str(getattr(net, "name", "") or "").lower(): net
-        for net in local_nets
-        if str(getattr(net, "name", "") or "")
-    }
-
-
-def _net_label_locations_for_harness_annotation(
-    schdoc: "AltiumSchDoc",
-) -> list[tuple[str, tuple[int, int]]]:
-    net_labels = []
-    for label in schdoc.get_net_labels():
-        label_name = str(getattr(label, "text", "") or "")
-        location = getattr(getattr(label, "record", None), "location", None)
-        if label_name and location is not None:
-            net_labels.append((label_name, (int(location.x), int(location.y))))
-    return net_labels
-
-
 def _local_net_by_wire_root(
     local_nets: Sequence[object],
-    root_by_wire_id: Mapping[str, tuple[int, int]],
+    root_by_wire_id: Mapping[str, RootPoint],
     wire_graph: object,
     wire_index: object,
-) -> dict[tuple[int, int], object]:
-    net_by_wire_root = {}
+) -> dict[RootPoint, object]:
+    net_by_wire_root: dict[RootPoint, object] = {}
     for net in local_nets:
         for wire_id in getattr(getattr(net, "graphical", None), "wires", ()):
             wire_root = root_by_wire_id.get(wire_id)
@@ -1704,40 +2135,56 @@ def _local_net_by_wire_root(
     return net_by_wire_root
 
 
-def _local_net_for_harness_connection_point(
-    connection_point: tuple[int, int],
-    *,
+def _add_net_label_roots_to_local_net_map(
+    schdoc: "AltiumSchDoc",
+    local_nets: Sequence[object],
     wire_graph: object,
     wire_index: object,
-    net_by_wire_root: Mapping[tuple[int, int], object],
+    net_by_wire_root: dict[RootPoint, object],
+    internal_tolerance: int,
+) -> None:
+    """Map every labeled wire root to AD's same-name local net."""
+    find_connections = getattr(wire_index, "find_wire_connections_for_netlabel", None)
+    find_root = getattr(wire_graph, "find", None)
+    if not callable(find_connections) or not callable(find_root):
+        return
+    net_by_name = {
+        str(getattr(net, "name", "") or "").lower(): net
+        for net in local_nets
+        if str(getattr(net, "name", "") or "")
+    }
+    for label in schdoc.get_net_labels():
+        if getattr(label.record, "parent", None) is not None:
+            continue
+        label_name = str(getattr(label, "text", "") or "")
+        net = net_by_name.get(label_name.lower())
+        if net is None:
+            continue
+        connections = cast(
+            Iterable[RootPoint],
+            find_connections(label, internal_tolerance),
+        )
+        for connection in connections:
+            net_by_wire_root.setdefault(cast(RootPoint, find_root(connection)), net)
+
+
+def _local_net_for_precise_harness_connection_point(
+    connection_point: tuple[int, int, int, int],
+    *,
+    internal_tolerance: int,
+    wire_graph: object,
+    wire_index: object,
+    net_by_wire_root: Mapping[RootPoint, object],
 ) -> object | None:
-    wire_root = _wire_network_root_for_point(
+    wire_root = _wire_network_root_for_precise_point(
         wire_graph,
         wire_index,
         connection_point,
+        internal_tolerance,
     )
     if wire_root is None:
         return None
     return net_by_wire_root.get(wire_root)
-
-
-def _local_net_for_nearby_harness_label(
-    connection_point: tuple[int, int],
-    *,
-    net_labels: list[tuple[str, tuple[int, int]]],
-    net_by_name: dict[str, object],
-) -> object | None:
-    x, y = connection_point
-    candidates = [
-        (abs(label_x - x) + abs(label_y - y), label_name)
-        for label_name, (label_x, label_y) in net_labels
-        if abs(label_y - y) <= 5 and abs(label_x - x) <= 60
-    ]
-    for _distance, label_name in sorted(candidates):
-        net = net_by_name.get(label_name.lower())
-        if net is not None:
-            return net
-    return None
 
 
 def _append_local_net_endpoint(
@@ -1817,31 +2264,20 @@ def _annotate_connector_harness_port(
 
 
 def _local_net_for_harness_entry(
-    connection_points: tuple[tuple[int, int], tuple[int, int]],
+    connection_point: tuple[int, int, int, int],
     *,
+    internal_tolerance: int,
     wire_graph: object,
     wire_index: object,
-    net_by_wire_root: Mapping[tuple[int, int], object],
-    net_labels: list[tuple[str, tuple[int, int]]],
-    net_by_name: dict[str, object],
-) -> tuple[object | None, tuple[int, int], bool]:
-    for connection_point in connection_points:
-        net = _local_net_for_harness_connection_point(
-            connection_point,
-            wire_graph=wire_graph,
-            wire_index=wire_index,
-            net_by_wire_root=net_by_wire_root,
-        )
-        if net is not None:
-            return net, connection_point, False
-        net = _local_net_for_nearby_harness_label(
-            connection_point,
-            net_labels=net_labels,
-            net_by_name=net_by_name,
-        )
-        if net is not None:
-            return net, connection_point, True
-    return None, connection_points[-1], False
+    net_by_wire_root: Mapping[RootPoint, object],
+) -> object | None:
+    return _local_net_for_precise_harness_connection_point(
+        connection_point,
+        internal_tolerance=internal_tolerance,
+        wire_graph=wire_graph,
+        wire_index=wire_index,
+        net_by_wire_root=net_by_wire_root,
+    )
 
 
 def _annotate_harness_connector_entries(
@@ -1849,32 +2285,26 @@ def _annotate_harness_connector_entries(
     harness_port_name: str,
     stats: dict[str, int],
     *,
+    internal_tolerance: int,
     wire_graph: object,
     wire_index: object,
-    net_by_wire_root: Mapping[tuple[int, int], object],
-    net_labels: list[tuple[str, tuple[int, int]]],
-    net_by_name: dict[str, object],
+    net_by_wire_root: Mapping[RootPoint, object],
 ) -> None:
     for entry in connector.entries:
         entry_name = str(getattr(entry, "name", "") or "")
         if not entry_name:
             continue
         stats["harness_entry_candidate_count"] += 1
-        entry_y = connector.location.y - entry._rounded_distance_from_top_native_units()
-        entry_x_left = connector.location.x
-        entry_x_right = connector.location.x + connector.xsize
-        net, connection_point, used_nearby_label_fallback = _local_net_for_harness_entry(
-            ((entry_x_left, entry_y), (entry_x_right, entry_y)),
+        precise_connection_point = _harness_entry_connection_point(connector, entry)
+        net = _local_net_for_harness_entry(
+            precise_connection_point,
+            internal_tolerance=internal_tolerance,
             wire_graph=wire_graph,
             wire_index=wire_index,
             net_by_wire_root=net_by_wire_root,
-            net_labels=net_labels,
-            net_by_name=net_by_name,
         )
         if net is None:
             continue
-        if used_nearby_label_fallback:
-            stats["harness_entry_nearby_label_fallback_count"] += 1
 
         entry_id = str(getattr(entry, "unique_id", "") or "")
         endpoint_id = f"harness_entry:{entry_id or entry_name}"
@@ -1892,7 +2322,7 @@ def _annotate_harness_connector_entries(
             element_id=entry_id,
             object_id=entry_id,
             name=endpoint_name,
-            connection_point=connection_point,
+            connection_point=precise_connection_point[:2],
         )
         stats["harness_entry_matched_count"] += 1
 
@@ -1917,13 +2347,21 @@ def _annotate_local_harness_entry_endpoints(
     ) = _wire_network_maps(schdoc)
     port_location_map = _build_port_location_map(schdoc)
     local_nets = list(cast(Iterable[object], getattr(local_netlist, "nets", ())))
-    net_by_name = _local_net_by_lower_name(local_nets)
-    net_labels = _net_label_locations_for_harness_annotation(schdoc)
     net_by_wire_root = _local_net_by_wire_root(
         local_nets,
         root_by_wire_id,
         wire_graph,
         wire_index,
+    )
+    display_unit = int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0))
+    internal_tolerance = altium_internal_tolerance_for_display_unit(display_unit)
+    _add_net_label_roots_to_local_net_map(
+        schdoc,
+        local_nets,
+        wire_graph,
+        wire_index,
+        net_by_wire_root,
+        internal_tolerance,
     )
     _annotate_sheet_symbol_harness_ports(schdoc, local_nets)
 
@@ -1931,25 +2369,150 @@ def _annotate_local_harness_entry_endpoints(
         return stats
 
     for connector in harness_connectors:
-        harness_port_name = find_harness_port_name(
-            connector,
-            getattr(schdoc, "signal_harnesses", None),
-            port_location_map,
-        ) or ""
+        harness_port_name = (
+            find_harness_port_name(
+                connector,
+                getattr(schdoc, "signal_harnesses", None),
+                port_location_map,
+                internal_tolerance,
+            )
+            or ""
+        )
         if harness_port_name:
             _annotate_connector_harness_port(local_nets, harness_port_name)
         _annotate_harness_connector_entries(
             connector,
             harness_port_name,
             stats,
+            internal_tolerance=internal_tolerance,
             wire_graph=wire_graph,
             wire_index=wire_index,
             net_by_wire_root=net_by_wire_root,
-            net_labels=net_labels,
-            net_by_name=net_by_name,
         )
 
     return stats
+
+
+def _harness_connector_networks(
+    schdoc: "AltiumSchDoc",
+    harnesses: list[object],
+    internal_tolerance: int,
+) -> tuple[tuple[str, frozenset[str]], ...]:
+    port_location_map = _build_port_location_map(schdoc)
+    connector_networks: list[tuple[str, frozenset[str]]] = []
+    for connector in getattr(schdoc, "harness_connectors", ()) or ():
+        bundle = find_harness_bundle_info(
+            connector,
+            harnesses,
+            port_location_map,
+            internal_tolerance,
+        )
+        port_name = str(bundle.get("port_name", "") or "")
+        harness_ids = frozenset(
+            str(value)
+            for value in cast(Iterable[object], bundle.get("signal_harness_ids", ()))
+            if value
+        )
+        if port_name and harness_ids:
+            connector_networks.append((port_name, harness_ids))
+    return tuple(connector_networks)
+
+
+def _harness_power_member_port_names(
+    power_object: object,
+    harnesses: list[object],
+    connector_networks: tuple[tuple[str, frozenset[str]], ...],
+    internal_tolerance: int,
+) -> set[str]:
+    location = cast(
+        tuple[int, int, int, int],
+        getattr(power_object, "_precise_connection_point"),
+    )
+    connected_indexes = _connected_signal_harness_indexes(
+        harnesses,
+        (location,),
+        internal_tolerance,
+    )
+    connected_ids = frozenset(_signal_harness_ids(harnesses, connected_indexes))
+    return {
+        port_name
+        for port_name, harness_ids in connector_networks
+        if connected_ids.intersection(harness_ids)
+    }
+
+
+def _net_has_harness_member(endpoints: list[NetEndpoint], port_names: set[str]) -> bool:
+    return any(
+        endpoint.role == "harness_entry"
+        and endpoint.name.partition(".")[0] in port_names
+        for endpoint in endpoints
+    )
+
+
+def _annotate_harness_power_object(
+    power_object: object,
+    *,
+    harnesses: list[object],
+    connector_networks: tuple[tuple[str, frozenset[str]], ...],
+    local_nets: list[object],
+    internal_tolerance: int,
+) -> None:
+    location = cast(
+        tuple[int, int, int, int],
+        getattr(power_object, "_precise_connection_point"),
+    )
+    port_names = _harness_power_member_port_names(
+        power_object,
+        harnesses,
+        connector_networks,
+        internal_tolerance,
+    )
+    if not port_names:
+        return
+    object_id = str(getattr(power_object, "unique_id", "") or "")
+    object_name = str(getattr(power_object, "text", "") or "")
+    for net in local_nets:
+        endpoints = cast(list[NetEndpoint], getattr(net, "endpoints", []))
+        if not _net_has_harness_member(endpoints, port_names):
+            continue
+        _append_local_net_endpoint(
+            net,
+            endpoint_id=f"harness_power:{object_id or object_name}",
+            role="harness_power",
+            element_id=object_id,
+            object_id=object_id,
+            name=object_name,
+            connection_point=location[:2],
+        )
+
+
+def _annotate_harness_power_object_endpoints(
+    schdoc: "AltiumSchDoc",
+    local_netlist: object,
+) -> None:
+    """Attach a harness-network power object to each member net."""
+    harnesses = list(
+        cast(Iterable[object], getattr(schdoc, "signal_harnesses", ()) or ())
+    )
+    if not harnesses or not getattr(schdoc, "harness_connectors", None):
+        return
+    display_unit = int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0))
+    internal_tolerance = altium_internal_tolerance_for_display_unit(display_unit)
+    connector_networks = _harness_connector_networks(
+        schdoc,
+        harnesses,
+        internal_tolerance,
+    )
+
+    local_nets = list(cast(Iterable[object], getattr(local_netlist, "nets", ())))
+    for power_object in schdoc.get_power_ports():
+        _annotate_harness_power_object(
+            power_object,
+            harnesses=harnesses,
+            connector_networks=connector_networks,
+            local_nets=local_nets,
+            internal_tolerance=internal_tolerance,
+        )
 
 
 def _harness_wire_endpoint_groups(
@@ -1969,36 +2532,34 @@ def _harness_wire_endpoint_groups(
     port_location_map = _build_port_location_map(schdoc)
     endpoints_by_wire_id: dict[str, list[_HarnessWireEndpoint]] = defaultdict(list)
     for connector in harness_connectors:
+        display_unit = int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0))
+        internal_tolerance = altium_internal_tolerance_for_display_unit(display_unit)
         harness_port_name = find_harness_port_name(
             connector,
             getattr(schdoc, "signal_harnesses", None),
             port_location_map,
+            internal_tolerance,
         )
         for entry in connector.entries:
             entry_name = str(getattr(entry, "name", "") or "")
             if not entry_name:
                 continue
-            entry_y = connector.location.y - entry._rounded_distance_from_top_native_units()
-            entry_points = (
-                (connector.location.x, entry_y),
-                (connector.location.x + connector.xsize, entry_y),
-            )
+            precise_connection_point = _harness_entry_connection_point(connector, entry)
             endpoint_name = (
                 f"{harness_port_name}.{entry_name}" if harness_port_name else entry_name
             )
-            for connection_point in entry_points:
-                wire_id = wire_endpoint_map.get(connection_point)
-                if not wire_id or wire_id in represented_wire_ids:
-                    continue
-                endpoint = _HarnessWireEndpoint(
-                    wire_id=wire_id,
-                    name=endpoint_name,
-                    element_id=str(getattr(entry, "unique_id", "") or ""),
-                    parent_id=_harness_entry_parent_id(endpoint_name),
-                    connection_point=connection_point,
-                )
-                if endpoint not in endpoints_by_wire_id[wire_id]:
-                    endpoints_by_wire_id[wire_id].append(endpoint)
+            wire_id = wire_endpoint_map.get(precise_connection_point)
+            if not wire_id or wire_id in represented_wire_ids:
+                continue
+            endpoint = _HarnessWireEndpoint(
+                wire_id=wire_id,
+                name=endpoint_name,
+                element_id=str(getattr(entry, "unique_id", "") or ""),
+                parent_id=_harness_entry_parent_id(endpoint_name),
+                connection_point=precise_connection_point[:2],
+            )
+            if endpoint not in endpoints_by_wire_id[wire_id]:
+                endpoints_by_wire_id[wire_id].append(endpoint)
 
     return tuple(
         (wire_id, tuple(endpoints))
@@ -2045,14 +2606,17 @@ def _nested_child_harness_entry_map(
     cache: dict[
         tuple[int, frozenset[int]],
         dict[str, tuple[dict[str, str], ...]],
-    ] | None = None,
+    ]
+    | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     if cache is None:
         cache = {}
     cache_key = (id(schdoc), seen_schdoc_ids)
     cached = cache.get(cache_key)
     if cached is not None:
-        return {key: [dict(entry) for entry in entries] for key, entries in cached.items()}
+        return {
+            key: [dict(entry) for entry in entries] for key, entries in cached.items()
+        }
     if id(schdoc) in seen_schdoc_ids:
         return {}
     next_seen = seen_schdoc_ids | {id(schdoc)}
@@ -2091,8 +2655,7 @@ def _nested_child_harness_entry_map(
                 continue
             _merge_harness_entry_maps(result, {entry_name.lower(): members})
     cache[cache_key] = {
-        key: tuple(dict(entry) for entry in entries)
-        for key, entries in result.items()
+        key: tuple(dict(entry) for entry in entries) for key, entries in result.items()
     }
     return result
 
@@ -2105,7 +2668,8 @@ def _typed_sheet_entry_harness_members(
     nested_harness_entry_cache: dict[
         tuple[int, frozenset[int]],
         dict[str, tuple[dict[str, str], ...]],
-    ] | None = None,
+    ]
+    | None = None,
 ) -> dict[str, tuple[dict[str, str], ...]]:
     result: dict[str, list[dict[str, str]]] = {}
     for sheet_symbol in schdoc.get_sheet_symbols():
@@ -2147,7 +2711,8 @@ def _compiled_typed_harness_member_nets(
     nested_harness_entry_cache: dict[
         tuple[int, frozenset[int]],
         dict[str, tuple[dict[str, str], ...]],
-    ] | None = None,
+    ]
+    | None = None,
 ) -> tuple[AltiumCompiledNet, ...]:
     members_by_harness_name = _typed_sheet_entry_harness_members(
         schdoc,
@@ -2239,8 +2804,7 @@ def _compiled_harness_wire_nets(
             for endpoint_id, endpoint in zip(endpoint_ids, endpoints, strict=True)
         )
         items = tuple(
-            _compiled_item_from_endpoint(endpoint)
-            for endpoint in compiled_endpoints
+            _compiled_item_from_endpoint(endpoint) for endpoint in compiled_endpoints
         )
         rows.append(
             AltiumCompiledNet(
@@ -2265,27 +2829,56 @@ def _sheet_entry_connection_point(
     entry: object,
 ) -> tuple[int, int] | None:
     record = sheet_symbol.record
-    distance_fn = getattr(entry, "_rounded_distance_from_top_native_units", None)
-    distance_value = distance_fn() if callable(distance_fn) else 0
-    distance = int(cast(int | float | str, distance_value))
+    x = _coord_scalar_to_rounded_native_units(
+        record.location.x,
+        getattr(record.location, "x_frac", 0),
+    )
+    y = _coord_scalar_to_rounded_native_units(
+        record.location.y,
+        getattr(record.location, "y_frac", 0),
+    )
+    right_x = _coord_scalar_to_rounded_native_units(
+        record.location.x + record.x_size,
+        getattr(record.location, "x_frac", 0) + getattr(record, "x_size_frac", 0),
+    )
+    bottom_y = _coord_scalar_to_rounded_native_units(
+        record.location.y - record.y_size,
+        getattr(record.location, "y_frac", 0) - getattr(record, "y_size_frac", 0),
+    )
+    entry_x = _basic_entry_axis_coordinate(
+        record.location.x,
+        getattr(record.location, "x_frac", 0),
+        entry,
+        direction=1,
+    )
+    entry_y = _basic_entry_axis_coordinate(
+        record.location.y,
+        getattr(record.location, "y_frac", 0),
+        entry,
+        direction=-1,
+    )
     side = int(getattr(entry, "side", -1))
     if side == 0:
-        return (record.location.x, record.location.y - distance)
+        return (x, entry_y)
     if side == 1:
-        return (record.location.x + record.x_size, record.location.y - distance)
+        return (right_x, entry_y)
     if side == 2:
-        return (record.location.x + distance, record.location.y)
+        return (entry_x, y)
     if side == 3:
-        return (record.location.x + distance, record.location.y - record.y_size)
+        return (entry_x, bottom_y)
     return None
 
 
 def _wire_network_maps(
     schdoc: "AltiumSchDoc",
-) -> tuple[object, object, dict[str, tuple[int, int]], dict[tuple[int, int], str]]:
-    wire_graph, wire_ids_by_root, wire_index = _build_wire_graph(schdoc)
-    root_by_wire_id: dict[str, tuple[int, int]] = {}
-    representative_wire_id_by_root: dict[tuple[int, int], str] = {}
+) -> tuple[object, object, dict[str, RootPoint], dict[RootPoint, str]]:
+    display_unit = int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0))
+    internal_tolerance = altium_internal_tolerance_for_display_unit(display_unit)
+    wire_graph, wire_ids_by_root, wire_index = _build_wire_graph(
+        schdoc, tolerance=internal_tolerance
+    )
+    root_by_wire_id: dict[str, RootPoint] = {}
+    representative_wire_id_by_root: dict[RootPoint, str] = {}
     for root, wire_ids in wire_ids_by_root.items():
         normalized_root = wire_graph.find(root)
         clean_wire_ids = tuple(sorted(str(wire_id) for wire_id in wire_ids if wire_id))
@@ -2301,7 +2894,7 @@ def _wire_network_root_for_point(
     wire_graph: object,
     wire_index: object,
     connection_point: tuple[int, int],
-) -> tuple[int, int] | None:
+) -> RootPoint | None:
     find_wire_connection = getattr(wire_index, "find_wire_connection", None)
     if not callable(find_wire_connection):
         return None
@@ -2311,7 +2904,29 @@ def _wire_network_root_for_point(
     find = getattr(wire_graph, "find", None)
     if not callable(find):
         return None
-    return cast(tuple[int, int], find(wire_point))
+    return cast(RootPoint, find(wire_point))
+
+
+def _wire_network_root_for_precise_point(
+    wire_graph: object,
+    wire_index: object,
+    connection_point: tuple[int, int, int, int],
+    internal_tolerance: int,
+) -> RootPoint | None:
+    find_wire_connection = getattr(
+        wire_index,
+        "find_wire_endpoint_for_precise_point",
+        None,
+    )
+    if not callable(find_wire_connection):
+        return None
+    wire_point = find_wire_connection(connection_point, internal_tolerance)
+    if wire_point is None:
+        return None
+    find = getattr(wire_graph, "find", None)
+    if not callable(find):
+        return None
+    return cast(RootPoint, find(wire_point))
 
 
 def _sheet_entry_wire_endpoint_groups(
@@ -2344,9 +2959,11 @@ def _sheet_entry_wire_endpoint_groups(
         for wire_id in represented_wire_ids
         if wire_id in root_by_wire_id
     }
-    endpoints_by_wire_root: dict[tuple[int, int], list[_SheetEntryWireEndpoint]] = (
+    endpoints_by_wire_root: dict[RootPoint, list[_SheetEntryWireEndpoint]] = (
         defaultdict(list)
     )
+    display_unit = int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0))
+    internal_tolerance = altium_internal_tolerance_for_display_unit(display_unit)
     for sheet_symbol in schdoc.get_sheet_symbols():
         sheet_symbol_uid = str(getattr(sheet_symbol, "unique_id", "") or "")
         child_filename = str(getattr(sheet_symbol, "child_filename", "") or "")
@@ -2364,10 +2981,15 @@ def _sheet_entry_wire_endpoint_groups(
             connection_point = _sheet_entry_connection_point(sheet_symbol, entry)
             if connection_point is None:
                 continue
-            wire_root = _wire_network_root_for_point(
+            precise_connection_point = _sheet_entry_precise_connection_point(
+                sheet_symbol,
+                entry,
+            )
+            wire_root = _wire_network_root_for_precise_point(
                 wire_graph,
                 wire_index,
-                connection_point,
+                precise_connection_point,
+                internal_tolerance,
             )
             if wire_root is None or wire_root in represented_wire_roots:
                 continue
@@ -2481,7 +3103,13 @@ def _compiled_endpoint_parent_id(
     sheet_entry_parent_ids_by_element_id: dict[str, str],
 ) -> str:
     role = str(getattr(endpoint, "role", "") or "")
-    if role in {"net_label", "port", "power_port", "offsheet_connector"}:
+    if role in {
+        "net_label",
+        "port",
+        "power_port",
+        "harness_power",
+        "offsheet_connector",
+    }:
         return logical_document.file_name
     if role == "sheet_entry":
         element_id = str(getattr(endpoint, "element_id", "") or "").lower()
@@ -2594,11 +3222,9 @@ def _apply_sheet_number_annotations(
                 not record.document_name
                 or record.document_name.lower() == row.file_name.lower()
             )
-            path_matches = (
-                not record.unique_id_path
-                or _normalized_unique_id_path(record.unique_id_path)
-                == _normalized_unique_id_path(row.physical_instance_unique_id)
-            )
+            path_matches = not record.unique_id_path or _normalized_unique_id_path(
+                record.unique_id_path
+            ) == _normalized_unique_id_path(row.physical_instance_unique_id)
             if document_matches and path_matches:
                 replacement_number = record.sheet_number or replacement_number
                 matched_indices.add(record.source_index)
@@ -2629,7 +3255,9 @@ def _top_level_document_ids(
         for symbol in sheet_symbols
         if symbol.child_logical_document_id is not None
     }
-    top_ids = {document.id for document in logical_documents if document.id not in child_ids}
+    top_ids = {
+        document.id for document in logical_documents if document.id not in child_ids
+    }
     if top_ids:
         return top_ids
     return {logical_documents[0].id} if logical_documents else set()
@@ -2796,19 +3424,23 @@ def _build_logical_and_symbol_rows(
     logical_rows = [
         replace(row, is_top_level_candidate=row.id in top_ids) for row in logical_rows
     ]
-    return tuple(logical_rows), tuple(symbol_rows), symbol_info_by_id, tuple(diagnostics)
+    return (
+        tuple(logical_rows),
+        tuple(symbol_rows),
+        symbol_info_by_id,
+        tuple(diagnostics),
+    )
 
 
 def _compiled_component_source_infos(
     logical_document_id: str,
     *,
-    component_source_rows_by_logical_id: dict[
-        str, tuple["SchComponentInfo", ...]
-    ],
-    compile_mask_bounds_by_logical_id: dict[
+    component_source_rows_by_logical_id: Mapping[str, Sequence["SchComponentInfo"]],
+    compile_mask_bounds_by_logical_id: Mapping[
         str, tuple[tuple[int, int, int, int], ...]
     ],
     options: NetlistOptions,
+    cross_document_multipart_designators: set[str],
 ) -> tuple[_CompiledComponentSourceInfo, ...]:
     logical_components = component_source_rows_by_logical_id.get(
         logical_document_id,
@@ -2825,6 +3457,7 @@ def _compiled_component_source_infos(
             component,
             project_params=options.project_parameters,
             sheet_params=options.sheet_parameters,
+            component_description=component.description,
         )
         if not value and component.comment:
             value = component.comment
@@ -2858,7 +3491,13 @@ def _compiled_component_source_infos(
                 kind_value=kind_value,
                 footprint=component.footprint,
                 component_kind=_component_kind_name(component),
-                pin_count=_compiled_component_group_pin_count(component_group),
+                pin_count=(
+                    _compiled_component_group_all_pin_count(component_group)
+                    if _component_record_part_count(component) > 1
+                    and _component_record_current_part_id(component) > 1
+                    else _compiled_component_group_pin_count(component_group)
+                ),
+                all_pin_count=_compiled_component_group_all_pin_count(component_group),
                 exclude_from_bom=not component_kind_includes_in_bom(
                     component.component_kind
                 ),
@@ -2868,6 +3507,9 @@ def _compiled_component_source_infos(
                     getattr(component.record, "design_item_id", "") or ""
                 ),
                 unique_id=component.unique_id,
+                cross_document_multipart=(
+                    component.designator.lower() in cross_document_multipart_designators
+                ),
             )
         )
     return tuple(infos)
@@ -2882,7 +3524,7 @@ def _compiled_component_naming_room(
     physical_count_by_logical_id: dict[str, int],
     compile_options: AltiumProjectCompileOptions,
     channel_designator_format: str,
-    sheet_symbol_designator_by_id: dict[str, str],
+    sheet_symbol_designator_by_id: Mapping[str, str],
 ) -> RoomDetails | None:
     logical_physical_rows = physical_rows_by_logical_id[
         physical_row.logical_document_id
@@ -2916,7 +3558,9 @@ def _compiled_component_row_for_physical_document(
 ) -> AltiumCompiledComponent | None:
     if not component_info.include_in_netlist:
         return None
-    component_id = _component_id(physical_row.id, component_info.component, component_index)
+    component_id = _component_id(
+        physical_row.id, component_info.component, component_index
+    )
     logical_designator = component_info.logical_designator
     physical_designator = logical_designator
     source_unique_id_path = _component_unique_id_path(
@@ -2969,168 +3613,185 @@ def _compiled_component_row_for_physical_document(
         description=component_info.description,
         parameters=component_info.parameters,
         pin_count=component_info.pin_count,
+        all_pin_count=component_info.all_pin_count,
         part_count=component_info.part_count,
         current_part_id=component_info.current_part_id,
         annotation_state=annotation_state,
         annotation_locked=annotation_locked,
         diagnostics=component_diagnostics,
+        _project_multipart_collapsed=component_info.cross_document_multipart,
     )
 
 
-def _build_physical_and_component_rows(
-    schdocs: list["AltiumSchDoc"],
-    logical_documents: tuple[AltiumCompiledLogicalDocument, ...],
-    sheet_symbols: tuple[AltiumCompiledSheetSymbol, ...],
+@dataclass(slots=True)
+class _PhysicalInstantiationState:
+    logical_by_id: dict[str, AltiumCompiledLogicalDocument]
+    symbols_by_logical_id: dict[str, list[AltiumCompiledSheetSymbol]]
+    channel_rooms_by_symbol_id: dict[str, RoomDetails]
+    repeat_channel_values: dict[tuple[str, int], int]
+    options: NetlistOptions
+    flat_physical_tree: bool
+    physical_rows: list[AltiumCompiledPhysicalDocument]
+    physical_sheet_symbol_rows: list[AltiumCompiledPhysicalSheetSymbol]
+    physical_child_ids: dict[str, list[str]]
+    symbol_child_physical_ids: dict[str, list[str]]
+    flat_physical_document_id_by_logical_id: dict[str, str]
+    diagnostics: list[AltiumCompileDiagnostic]
+
+
+def _instantiate_physical_document(
+    state: _PhysicalInstantiationState,
     *,
-    channel_designator_format: str,
-    compile_options: AltiumProjectCompileOptions,
-    annotation: AnnotationFile,
-    options: NetlistOptions,
-    project_base_dir: Path | None,
-) -> tuple[
-    tuple[AltiumCompiledPhysicalDocument, ...],
-    tuple[AltiumCompiledComponent, ...],
-    tuple[AltiumCompiledSheetSymbol, ...],
-    tuple[AltiumCompiledPhysicalSheetSymbol, ...],
-    tuple[AltiumCompileDiagnostic, ...],
-]:
-    physical_rows: list[AltiumCompiledPhysicalDocument] = []
-    component_rows: list[AltiumCompiledComponent] = []
-    physical_sheet_symbol_rows: list[AltiumCompiledPhysicalSheetSymbol] = []
-    physical_component_ids: dict[str, list[str]] = {}
-    physical_child_ids: dict[str, list[str]] = {}
-    symbol_child_physical_ids: dict[str, list[str]] = defaultdict(list)
-    diagnostics: list[AltiumCompileDiagnostic] = []
-
-    logical_by_id = {document.id: document for document in logical_documents}
-    schdoc_by_logical_id = _schdocs_by_logical_id(
-        schdocs,
-        project_base_dir=project_base_dir,
-    )
-    _require_source_schdocs(logical_documents, schdoc_by_logical_id)
-    component_source_rows_by_logical_id = {
-        logical_id: tuple(schdoc.get_components())
-        for logical_id, schdoc in schdoc_by_logical_id.items()
-    }
-    compile_mask_bounds_by_logical_id = {
-        logical_id: _compile_mask_bounds(schdoc)
-        for logical_id, schdoc in schdoc_by_logical_id.items()
-    }
-    symbols_by_logical_id: dict[str, list[AltiumCompiledSheetSymbol]] = defaultdict(list)
-    for symbol in sheet_symbols:
-        symbols_by_logical_id[symbol.logical_document_id].append(symbol)
-    sheet_symbol_designator_by_id = {symbol.id: symbol.designator for symbol in sheet_symbols}
-
-    channel_rooms_by_symbol_id = _multi_reference_channel_rooms(sheet_symbols)
-
-    def instantiate(
-        *,
-        logical_document: AltiumCompiledLogicalDocument,
-        physical_id: str,
-        physical_instance_path: str,
-        physical_instance_unique_id: str,
-        channel_index: int,
-        channel_prefix: str | None,
-        channel_alpha: str | None,
-        room_name: str,
-        parent_id: str | None,
-        parent_sheet_symbol_id: str | None,
-        sheet_number: str | None,
-        document_number: str | None,
-        stack: tuple[str, ...],
-    ) -> None:
-        physical_ordinal = len(physical_rows)
-        physical_rows.append(
-            AltiumCompiledPhysicalDocument(
-                id=physical_id,
-                logical_document_id=logical_document.id,
-                source_path=logical_document.source_path,
-                file_name=logical_document.file_name,
-                ordinal=physical_ordinal,
-                physical_instance_path=physical_instance_path,
-                physical_instance_unique_id=physical_instance_unique_id,
-                channel_index=channel_index,
-                channel_prefix=channel_prefix,
-                channel_alpha=channel_alpha,
-                room_name=room_name,
-                parent_id=parent_id,
-                parent_sheet_symbol_id=parent_sheet_symbol_id,
-                sheet_number=sheet_number,
-                document_number=document_number,
-            )
+    logical_document: AltiumCompiledLogicalDocument,
+    physical_id: str,
+    physical_instance_path: str,
+    physical_instance_unique_id: str,
+    channel_index: int,
+    channel_prefix: str | None,
+    channel_alpha: str | None,
+    room_name: str,
+    parent_id: str | None,
+    parent_sheet_symbol_id: str | None,
+    sheet_number: str | None,
+    document_number: str | None,
+    stack: tuple[str, ...],
+) -> None:
+    physical_ordinal = len(state.physical_rows)
+    if state.flat_physical_tree:
+        state.flat_physical_document_id_by_logical_id.setdefault(
+            logical_document.id,
+            physical_id,
         )
+    state.physical_rows.append(
+        AltiumCompiledPhysicalDocument(
+            id=physical_id,
+            logical_document_id=logical_document.id,
+            source_path=logical_document.source_path,
+            file_name=logical_document.file_name,
+            ordinal=physical_ordinal,
+            physical_instance_path=physical_instance_path,
+            physical_instance_unique_id=physical_instance_unique_id,
+            channel_index=channel_index,
+            channel_prefix=channel_prefix,
+            channel_alpha=channel_alpha,
+            room_name=room_name,
+            parent_id=parent_id,
+            parent_sheet_symbol_id=parent_sheet_symbol_id,
+            sheet_number=sheet_number,
+            document_number=document_number,
+        )
+    )
 
-        next_stack = (*stack, logical_document.id)
-        for symbol in symbols_by_logical_id.get(logical_document.id, ()):
-            child_logical_id = symbol.child_logical_document_id
-            if child_logical_id is None:
-                continue
-            child_logical_document = logical_by_id[child_logical_id]
-            if child_logical_id in next_stack:
-                diagnostic = AltiumCompileDiagnostic(
+    next_stack = (*stack, logical_document.id)
+    for symbol in state.symbols_by_logical_id.get(logical_document.id, ()):
+        child_logical_id = symbol.child_logical_document_id
+        if child_logical_id is None:
+            continue
+        child_logical_document = state.logical_by_id[child_logical_id]
+        if child_logical_id in next_stack:
+            state.diagnostics.append(
+                AltiumCompileDiagnostic(
                     severity="error",
                     code="cyclic_sheet_symbol_child",
                     message="Sheet-symbol child graph contains a cycle.",
                     source_id=symbol.id,
                 )
-                diagnostics.append(diagnostic)
-                continue
+            )
+            continue
 
-            for child_instance in _physical_child_instances(
-                symbol,
-                channel_rooms_by_symbol_id.get(symbol.id),
-            ):
-                if options.net_identifier_scope in {
-                    NetIdentifierScope.FLAT,
-                    NetIdentifierScope.GLOBAL,
-                }:
-                    child_path = (
-                        Path(child_logical_document.file_name).stem
-                        or child_instance.path_segment
-                    )
-                else:
-                    child_path = _path_join(
-                        physical_instance_path,
-                        child_instance.path_segment,
-                    )
-                source_object_id = symbol.source_object_id or symbol.id
-                unique_segment = source_object_id
-                if symbol.is_repeat:
-                    unique_segment = f"{child_instance.channel_index}{source_object_id}"
-                child_unique_id = _unique_id_path_join(
-                    physical_instance_unique_id,
-                    unique_segment,
+        for child_instance in _physical_child_instances(
+            symbol,
+            state.channel_rooms_by_symbol_id.get(symbol.id),
+            state.repeat_channel_values,
+        ):
+            parent_index_path = state.physical_rows[physical_ordinal].sheet_number or ""
+            child_sheet_number = parent_index_path or None
+            if symbol.is_repeat or symbol.id in state.channel_rooms_by_symbol_id:
+                child_sheet_number = (
+                    f"{parent_index_path}.{child_instance.sheet_number}"
                 )
-                child_physical_id = _physical_child_document_id(
-                    physical_id,
-                    symbol.id,
-                    child_instance.instance_key,
+            if state.options.net_identifier_scope in {
+                NetIdentifierScope.FLAT,
+                NetIdentifierScope.GLOBAL,
+            }:
+                child_path = (
+                    Path(child_logical_document.file_name).stem
+                    or child_instance.path_segment
                 )
-                physical_child_ids.setdefault(physical_id, []).append(child_physical_id)
-                symbol_child_physical_ids[symbol.id].append(child_physical_id)
-                physical_sheet_symbol_rows.append(
-                    AltiumCompiledPhysicalSheetSymbol(
-                        id=(
-                            f"{physical_id}:sheet_symbol:{symbol.source_object_id or symbol.id}"
-                            f":{child_instance.instance_key}"
-                        ),
-                        logical_sheet_symbol_id=symbol.id,
-                        owner_logical_document_id=logical_document.id,
-                        owner_physical_document_id=physical_id,
-                        source_object_id=symbol.source_object_id,
-                        logical_designator=symbol.designator,
-                        physical_designator=child_instance.path_segment,
-                        sheet_symbol_file_name=symbol.child_filename,
-                        child_logical_document_id=child_logical_id,
-                        child_source_path=symbol.child_source_path,
-                        child_physical_document_id=child_physical_id,
-                        child_physical_instance_path=child_path,
-                        child_physical_instance_unique_id=child_unique_id,
-                        child_channel_index=child_instance.channel_index,
-                        entry_count=symbol.entry_count,
-                    )
+            else:
+                child_path = _path_join(
+                    physical_instance_path,
+                    child_instance.path_segment,
                 )
-                instantiate(
+            source_object_id = symbol.source_object_id or symbol.id
+            unique_segment = source_object_id
+            if symbol.is_repeat:
+                unique_segment = f"{child_instance.channel_index}{source_object_id}"
+            child_unique_id = _unique_id_path_join(
+                physical_instance_unique_id,
+                unique_segment,
+            )
+            child_physical_id = _physical_child_document_id(
+                physical_id,
+                symbol.id,
+                child_instance.instance_key,
+            )
+            child_already_instantiated = False
+            if state.flat_physical_tree:
+                child_physical_id = _physical_document_id(
+                    child_logical_document.id,
+                    len(state.physical_rows),
+                )
+                child_path = Path(child_logical_document.file_name).stem
+                child_unique_id = ""
+                child_instance = _PhysicalChildInstance(
+                    instance_key=child_instance.instance_key,
+                    path_segment=child_instance.path_segment,
+                    channel_index=0,
+                    channel_prefix=None,
+                    channel_alpha=None,
+                    room_name=child_path,
+                    sheet_number=None,
+                    document_number=None,
+                )
+                child_sheet_number = None
+                existing_child_id = state.flat_physical_document_id_by_logical_id.get(
+                    child_logical_document.id
+                )
+                if existing_child_id is not None:
+                    child_physical_id = existing_child_id
+                    child_already_instantiated = True
+            if not state.flat_physical_tree:
+                state.physical_child_ids.setdefault(physical_id, []).append(
+                    child_physical_id
+                )
+            state.symbol_child_physical_ids[symbol.id].append(child_physical_id)
+            state.physical_sheet_symbol_rows.append(
+                AltiumCompiledPhysicalSheetSymbol(
+                    id=(
+                        f"{physical_id}:sheet_symbol:"
+                        f"{symbol.source_object_id or symbol.id}:"
+                        f"{child_instance.instance_key}"
+                    ),
+                    logical_sheet_symbol_id=symbol.id,
+                    owner_logical_document_id=logical_document.id,
+                    owner_physical_document_id=physical_id,
+                    source_object_id=symbol.source_object_id,
+                    logical_designator=child_instance.path_segment,
+                    physical_designator=child_instance.path_segment,
+                    sheet_symbol_file_name=symbol.child_filename,
+                    child_logical_document_id=child_logical_id,
+                    child_source_path=symbol.child_source_path,
+                    child_physical_document_id=child_physical_id,
+                    child_physical_instance_path=child_path,
+                    child_physical_instance_unique_id=child_unique_id,
+                    child_channel_index=child_instance.channel_index,
+                    entry_count=symbol.entry_count,
+                )
+            )
+            if not child_already_instantiated:
+                _instantiate_physical_document(
+                    state,
                     logical_document=child_logical_document,
                     physical_id=child_physical_id,
                     physical_instance_path=child_path,
@@ -3139,74 +3800,89 @@ def _build_physical_and_component_rows(
                     channel_prefix=child_instance.channel_prefix,
                     channel_alpha=child_instance.channel_alpha,
                     room_name=child_instance.room_name,
-                    parent_id=physical_id,
+                    parent_id=None if state.flat_physical_tree else physical_id,
                     parent_sheet_symbol_id=symbol.id,
-                    sheet_number=child_instance.sheet_number,
-                    document_number=child_instance.document_number,
+                    sheet_number=child_sheet_number,
+                    document_number=None,
                     stack=next_stack,
                 )
 
-    top_logical_documents = [
-        document for document in logical_documents if document.is_top_level_candidate
-    ]
-    if not top_logical_documents and logical_documents:
-        top_logical_documents = [logical_documents[0]]
 
-    for root_ordinal, logical_document in enumerate(top_logical_documents):
-        root_name = Path(logical_document.file_name).stem or f"sheet{root_ordinal}"
-        physical_id = _physical_document_id(logical_document.id, root_ordinal)
-        instantiate(
-            logical_document=logical_document,
-            physical_id=physical_id,
-            physical_instance_path=root_name,
-            physical_instance_unique_id="",
-            channel_index=0,
-            channel_prefix=None,
-            channel_alpha=None,
-            room_name=root_name,
-            parent_id=None,
-            parent_sheet_symbol_id=None,
-            sheet_number=None,
-            document_number=None,
-            stack=(),
-        )
+def _cross_document_multipart_designators(
+    component_rows_by_logical_id: Mapping[str, Sequence["SchComponentInfo"]],
+) -> set[str]:
+    logical_ids_by_designator: dict[str, set[str]] = defaultdict(set)
+    for logical_id, source_components in component_rows_by_logical_id.items():
+        for component in source_components:
+            if component.designator and _component_record_part_count(component) > 1:
+                logical_ids_by_designator[component.designator.lower()].add(logical_id)
+    return {
+        designator
+        for designator, logical_ids in logical_ids_by_designator.items()
+        if len(logical_ids) > 1
+    }
 
-    physical_rows_tuple = _apply_inferred_channel_fields(tuple(physical_rows))
-    physical_rows_tuple, sheet_number_diagnostics = _apply_sheet_number_annotations(
-        physical_rows_tuple,
-        annotation,
-    )
-    diagnostics.extend(sheet_number_diagnostics)
-    physical_rows_by_logical_id: dict[str, list[AltiumCompiledPhysicalDocument]] = (
-        defaultdict(list)
-    )
-    physical_row_by_id = {row.id: row for row in physical_rows_tuple}
-    for physical_row in physical_rows_tuple:
-        physical_rows_by_logical_id[physical_row.logical_document_id].append(
-            physical_row
-        )
-    physical_instance_offsets = _logical_instance_offsets(physical_rows_tuple)
-    physical_count_by_logical_id = _physical_count_by_logical_id(physical_rows_tuple)
-    exact_component_paths = {
+
+def _exact_component_paths(
+    physical_rows: Sequence[AltiumCompiledPhysicalDocument],
+    component_rows_by_logical_id: Mapping[str, Sequence["SchComponentInfo"]],
+) -> set[str]:
+    return {
         _normalized_unique_id_path(
             _component_unique_id_path(
                 physical_row.physical_instance_unique_id,
                 component.unique_id,
             )
         )
-        for physical_row in physical_rows_tuple
-        for component in component_source_rows_by_logical_id.get(
+        for physical_row in physical_rows
+        for component in component_rows_by_logical_id.get(
             physical_row.logical_document_id,
             (),
         )
         if component.unique_id
     }
-    used_annotation_indices: set[int] = set()
-    component_source_info_by_logical_id: dict[
-        str, tuple[_CompiledComponentSourceInfo, ...]
-    ] = {}
 
-    for physical_row in physical_rows_tuple:
+
+def _build_compiled_component_rows(
+    physical_rows: tuple[AltiumCompiledPhysicalDocument, ...],
+    *,
+    component_rows_by_logical_id: Mapping[str, Sequence["SchComponentInfo"]],
+    compile_mask_bounds_by_logical_id: Mapping[
+        str, tuple[tuple[int, int, int, int], ...]
+    ],
+    cross_document_multipart_designators: set[str],
+    compile_options: AltiumProjectCompileOptions,
+    options: NetlistOptions,
+    annotation: AnnotationFile,
+    channel_designator_format: str,
+    sheet_symbol_designator_by_id: Mapping[str, str],
+) -> tuple[
+    list[AltiumCompiledComponent],
+    dict[str, list[str]],
+    dict[str, RoomDetails],
+]:
+    physical_rows_by_logical_id: dict[str, list[AltiumCompiledPhysicalDocument]] = (
+        defaultdict(list)
+    )
+    for physical_row in physical_rows:
+        physical_rows_by_logical_id[physical_row.logical_document_id].append(
+            physical_row
+        )
+
+    physical_row_by_id = {row.id: row for row in physical_rows}
+    physical_instance_offsets = _logical_instance_offsets(physical_rows)
+    physical_count_by_logical_id = _physical_count_by_logical_id(physical_rows)
+    exact_component_paths = _exact_component_paths(
+        physical_rows,
+        component_rows_by_logical_id,
+    )
+    used_annotation_indices: set[int] = set()
+    source_info_by_logical_id: dict[str, tuple[_CompiledComponentSourceInfo, ...]] = {}
+    naming_rooms_by_physical_id: dict[str, RoomDetails] = {}
+    component_rows: list[AltiumCompiledComponent] = []
+    physical_component_ids: dict[str, list[str]] = {}
+
+    for physical_row in physical_rows:
         naming_room = _compiled_component_naming_room(
             physical_row,
             physical_rows_by_logical_id,
@@ -3217,17 +3893,22 @@ def _build_physical_and_component_rows(
             channel_designator_format=channel_designator_format,
             sheet_symbol_designator_by_id=sheet_symbol_designator_by_id,
         )
-        component_infos = component_source_info_by_logical_id.get(
+        if naming_room is not None:
+            naming_rooms_by_physical_id[physical_row.id] = naming_room
+        component_infos = source_info_by_logical_id.get(
             physical_row.logical_document_id
         )
         if component_infos is None:
             component_infos = _compiled_component_source_infos(
                 physical_row.logical_document_id,
-                component_source_rows_by_logical_id=component_source_rows_by_logical_id,
+                component_source_rows_by_logical_id=component_rows_by_logical_id,
                 compile_mask_bounds_by_logical_id=compile_mask_bounds_by_logical_id,
                 options=options,
+                cross_document_multipart_designators=(
+                    cross_document_multipart_designators
+                ),
             )
-            component_source_info_by_logical_id[physical_row.logical_document_id] = (
+            source_info_by_logical_id[physical_row.logical_document_id] = (
                 component_infos
             )
         for component_index, component_info in enumerate(component_infos):
@@ -3248,9 +3929,40 @@ def _build_physical_and_component_rows(
                 component_row.id
             )
 
-    component_rows = _collapse_multipart_component_rows(component_rows)
+    return component_rows, physical_component_ids, naming_rooms_by_physical_id
+
+
+def _finalize_physical_tree_rows(
+    physical_rows: Sequence[AltiumCompiledPhysicalDocument],
+    component_rows: Sequence[AltiumCompiledComponent],
+    physical_sheet_symbol_rows: Sequence[AltiumCompiledPhysicalSheetSymbol],
+    sheet_symbols: Sequence[AltiumCompiledSheetSymbol],
+    *,
+    channel_designator_format: str,
+    naming_rooms_by_physical_id: Mapping[str, RoomDetails],
+    physical_child_ids: Mapping[str, Sequence[str]],
+    physical_component_ids: Mapping[str, Sequence[str]],
+    symbol_child_physical_ids: Mapping[str, Sequence[str]],
+) -> tuple[
+    tuple[AltiumCompiledPhysicalDocument, ...],
+    tuple[AltiumCompiledSheetSymbol, ...],
+    tuple[AltiumCompiledPhysicalSheetSymbol, ...],
+]:
+    named_physical_symbols = tuple(
+        replace(
+            symbol,
+            physical_designator=apply_channel_pattern(
+                channel_designator_format,
+                naming_rooms_by_physical_id[symbol.owner_physical_document_id],
+                symbol.logical_designator,
+            ),
+        )
+        if symbol.owner_physical_document_id in naming_rooms_by_physical_id
+        else symbol
+        for symbol in physical_sheet_symbol_rows
+    )
     final_component_ids = {component.id for component in component_rows}
-    physical_rows_final = [
+    final_physical_rows = tuple(
         replace(
             row,
             child_ids=tuple(physical_child_ids.get(row.id, ())),
@@ -3260,72 +3972,239 @@ def _build_physical_and_component_rows(
                 if component_id in final_component_ids
             ),
         )
-        for row in physical_rows_tuple
-    ]
-    sheet_symbol_rows = tuple(
+        for row in physical_rows
+    )
+    final_sheet_symbols = tuple(
         replace(
             symbol,
-            child_physical_document_ids=tuple(symbol_child_physical_ids.get(symbol.id, ())),
+            child_physical_document_ids=tuple(
+                symbol_child_physical_ids.get(symbol.id, ())
+            ),
         )
         for symbol in sheet_symbols
     )
+    return final_physical_rows, final_sheet_symbols, named_physical_symbols
+
+
+def _build_physical_and_component_rows(
+    schdocs: list["AltiumSchDoc"],
+    logical_documents: tuple[AltiumCompiledLogicalDocument, ...],
+    sheet_symbols: tuple[AltiumCompiledSheetSymbol, ...],
+    *,
+    channel_designator_format: str,
+    compile_options: AltiumProjectCompileOptions,
+    annotation: AnnotationFile,
+    options: NetlistOptions,
+    project_base_dir: Path | None,
+    device_sheet_logical_ids: frozenset[str] = frozenset(),
+    device_sheet_numbers_by_logical_id: Mapping[str, str] | None = None,
+    document_order_by_logical_id: Mapping[str, int] | None = None,
+) -> tuple[
+    tuple[AltiumCompiledPhysicalDocument, ...],
+    tuple[AltiumCompiledComponent, ...],
+    tuple[AltiumCompiledComponent, ...],
+    tuple[AltiumCompiledSheetSymbol, ...],
+    tuple[AltiumCompiledPhysicalSheetSymbol, ...],
+    tuple[AltiumCompileDiagnostic, ...],
+]:
+    physical_rows: list[AltiumCompiledPhysicalDocument] = []
+    physical_sheet_symbol_rows: list[AltiumCompiledPhysicalSheetSymbol] = []
+    physical_child_ids: dict[str, list[str]] = {}
+    symbol_child_physical_ids: dict[str, list[str]] = defaultdict(list)
+    diagnostics: list[AltiumCompileDiagnostic] = []
+    flat_physical_tree = compile_options.effective_hierarchy_mode in {
+        "FLAT",
+        "GLOBAL",
+    }
+
+    logical_by_id = {document.id: document for document in logical_documents}
+    schdoc_by_logical_id = _schdocs_by_logical_id(
+        schdocs,
+        project_base_dir=project_base_dir,
+    )
+    _require_source_schdocs(logical_documents, schdoc_by_logical_id)
+    component_source_rows_by_logical_id = {
+        logical_id: tuple(schdoc.get_components())
+        for logical_id, schdoc in schdoc_by_logical_id.items()
+    }
+    cross_document_multipart_designators = _cross_document_multipart_designators(
+        component_source_rows_by_logical_id
+    )
+    compile_mask_bounds_by_logical_id = {
+        logical_id: _compile_mask_bounds(schdoc)
+        for logical_id, schdoc in schdoc_by_logical_id.items()
+    }
+    symbols_by_logical_id: dict[str, list[AltiumCompiledSheetSymbol]] = defaultdict(
+        list
+    )
+    for symbol in sheet_symbols:
+        symbols_by_logical_id[symbol.logical_document_id].append(symbol)
+    sheet_symbol_designator_by_id = {
+        symbol.id: symbol.designator for symbol in sheet_symbols
+    }
+
+    channel_rooms_by_symbol_id = _multi_reference_channel_rooms(sheet_symbols)
+    repeat_channel_values = _repeat_channel_values(
+        sheet_symbols,
+        new_indexing=compile_options.new_indexing_of_sheet_symbols,
+    )
+
+    instantiation_state = _PhysicalInstantiationState(
+        logical_by_id=logical_by_id,
+        symbols_by_logical_id=symbols_by_logical_id,
+        channel_rooms_by_symbol_id=channel_rooms_by_symbol_id,
+        repeat_channel_values=repeat_channel_values,
+        options=options,
+        flat_physical_tree=flat_physical_tree,
+        physical_rows=physical_rows,
+        physical_sheet_symbol_rows=physical_sheet_symbol_rows,
+        physical_child_ids=physical_child_ids,
+        symbol_child_physical_ids=symbol_child_physical_ids,
+        flat_physical_document_id_by_logical_id={},
+        diagnostics=diagnostics,
+    )
+
+    top_logical_documents = [
+        document for document in logical_documents if document.is_top_level_candidate
+    ]
+    if not top_logical_documents and logical_documents:
+        top_logical_documents = [logical_documents[0]]
+
+    for root_ordinal, logical_document in enumerate(top_logical_documents):
+        root_name = Path(logical_document.file_name).stem or f"sheet{root_ordinal}"
+        physical_id = _physical_document_id(logical_document.id, root_ordinal)
+        _instantiate_physical_document(
+            instantiation_state,
+            logical_document=logical_document,
+            physical_id=physical_id,
+            physical_instance_path=root_name,
+            physical_instance_unique_id="",
+            channel_index=0,
+            channel_prefix=None,
+            channel_alpha=None,
+            room_name=root_name,
+            parent_id=None,
+            parent_sheet_symbol_id=None,
+            sheet_number=None,
+            document_number=None,
+            stack=(),
+        )
+
+    physical_rows_tuple = _apply_inferred_channel_fields(tuple(physical_rows))
+    physical_rows_tuple = _apply_default_sheet_and_document_numbers(
+        physical_rows_tuple,
+        sheet_numbers_by_logical_id=_sheet_numbers_by_logical_id(
+            schdocs,
+            project_base_dir=project_base_dir,
+            options=compile_options,
+            logical_documents=logical_documents,
+            sheet_symbols=sheet_symbols,
+            device_sheet_logical_ids=device_sheet_logical_ids,
+            device_sheet_numbers_by_logical_id=(device_sheet_numbers_by_logical_id),
+            document_order_by_logical_id=document_order_by_logical_id,
+        ),
+        document_numbers_by_logical_id=_document_numbers_by_logical_id(
+            schdocs,
+            project_base_dir=project_base_dir,
+            project_parameters=options.project_parameters,
+        ),
+    )
+    physical_rows_tuple, sheet_number_diagnostics = _apply_sheet_number_annotations(
+        physical_rows_tuple,
+        annotation,
+    )
+    diagnostics.extend(sheet_number_diagnostics)
+    component_rows, physical_component_ids, naming_rooms_by_physical_id = (
+        _build_compiled_component_rows(
+            physical_rows_tuple,
+            component_rows_by_logical_id=component_source_rows_by_logical_id,
+            compile_mask_bounds_by_logical_id=compile_mask_bounds_by_logical_id,
+            cross_document_multipart_designators=(cross_document_multipart_designators),
+            compile_options=compile_options,
+            options=options,
+            annotation=annotation,
+            channel_designator_format=channel_designator_format,
+            sheet_symbol_designator_by_id=sheet_symbol_designator_by_id,
+        )
+    )
+    component_body_rows = tuple(component_rows)
+    component_rows = _collapse_multipart_component_rows(component_rows)
+    physical_rows_final, sheet_symbol_rows, physical_sheet_symbol_rows_final = (
+        _finalize_physical_tree_rows(
+            physical_rows_tuple,
+            component_rows,
+            physical_sheet_symbol_rows,
+            sheet_symbols,
+            channel_designator_format=channel_designator_format,
+            naming_rooms_by_physical_id=naming_rooms_by_physical_id,
+            physical_child_ids=physical_child_ids,
+            physical_component_ids=physical_component_ids,
+            symbol_child_physical_ids=symbol_child_physical_ids,
+        )
+    )
     return (
-        tuple(physical_rows_final),
+        physical_rows_final,
         tuple(component_rows),
+        component_body_rows,
         sheet_symbol_rows,
-        tuple(physical_sheet_symbol_rows),
+        physical_sheet_symbol_rows_final,
         tuple(diagnostics),
     )
 
 
 def _compiled_component_single_pin_local_nets(
-    schdoc: "AltiumSchDoc",
     local_netlist: object,
     *,
     logical_document: AltiumCompiledLogicalDocument,
     first_net_index: int,
+    pin_roots_by_component: Mapping[tuple[str, str], Sequence["SchPinInfo"]],
     multipart_designators: set[str] | frozenset[str] | None = None,
-    compile_mask_bounds: tuple[tuple[int, int, int, int], ...] = (),
+    local_multipart_designators: set[str] | frozenset[str] | None = None,
 ) -> tuple[AltiumCompiledNet, ...]:
-    connected_pins: set[tuple[str, str]] = set()
+    represented_pins: Counter[tuple[str, str, str]] = Counter()
     for net in getattr(local_netlist, "nets", ()):
         for terminal in getattr(net, "terminals", ()):
-            designator = str(getattr(terminal, "designator", "") or "")
+            designator = str(getattr(terminal, "designator", "") or "").lower()
             pin = str(getattr(terminal, "pin", "") or "")
+            pin_name = str(getattr(terminal, "pin_name", "") or "")
             if designator and pin:
-                connected_pins.add((designator, pin))
+                represented_pins[(designator, pin, pin_name)] += 1
 
     rows: list[AltiumCompiledNet] = []
-    for component in schdoc.get_components():
-        logical_designator = component.designator
-        if not logical_designator:
-            continue
-        for pin in component.pins:
-            pin_number = str(getattr(pin, "designator", "") or "")
-            if not pin_number or (logical_designator, pin_number) in connected_pins:
+    multipart = set(multipart_designators or ())
+    multipart.update(local_multipart_designators or ())
+    for root_pins in pin_roots_by_component.values():
+        for pin in root_pins:
+            represented_key = (
+                str(
+                    getattr(pin, "component_designator", "")
+                    or getattr(pin.component, "designator", "")
+                    or ""
+                ).lower(),
+                pin.designator,
+                pin.name,
+            )
+            if represented_pins[represented_key] > 0:
+                represented_pins[represented_key] -= 1
                 continue
-            if compile_mask_bounds:
-                pin_location = getattr(pin, "location", None)
-                if pin_location is not None:
-                    pin_x = int(getattr(pin_location, "x", 0) or 0)
-                    pin_y = int(getattr(pin_location, "y", 0) or 0)
-                    if _point_in_compile_mask(compile_mask_bounds, pin_x, pin_y):
-                        continue
+            component = pin.component
+            logical_designator = component.designator
+            pin_number = pin.designator
             part_count = _component_record_part_count(component)
             component_part_id = _component_record_current_part_id(component)
             owner_part_id = int(
-                getattr(pin, "owner_part_id", None)
-                or (
-                    1
-                    if logical_designator in set(multipart_designators or ())
-                    else component_part_id
-                )
+                getattr(pin.pin, "owner_part_id", None)
+                or (1 if logical_designator in multipart else component_part_id)
                 or 1
             )
-            suffix = _component_part_alpha_suffix(
-                part_count=part_count,
-                current_part_id=owner_part_id,
-            ) if logical_designator in set(multipart_designators or ()) else ""
+            suffix = (
+                _component_part_alpha_suffix(
+                    part_count=part_count,
+                    current_part_id=owner_part_id,
+                )
+                if logical_designator in multipart
+                else ""
+            )
             terminal_designator = f"{logical_designator}{suffix}"
             net_name = f"Net{logical_designator}_{pin_number}"
             net_id = _compiled_local_net_id(
@@ -3358,7 +4237,6 @@ def _compiled_component_single_pin_local_nets(
                     items=(_compiled_item_from_terminal(terminal_id, terminal),),
                 )
             )
-            connected_pins.add((logical_designator, pin_number))
     return tuple(rows)
 
 
@@ -3405,8 +4283,7 @@ def _compiled_local_net_row(
             pin=str(terminal.pin),
             pin_name=str(getattr(terminal, "pin_name", "") or ""),
             pin_type=str(
-                getattr(getattr(terminal, "pin_type", None), "name", "")
-                or "PASSIVE"
+                getattr(getattr(terminal, "pin_type", None), "name", "") or "PASSIVE"
             ),
         )
         for terminal_id, terminal in zip(
@@ -3469,8 +4346,7 @@ def _compiled_local_net_row(
         if label_id and label_id not in base_label_ids
     )
     label_endpoint_ids = tuple(
-        f"{net_id}:endpoint:{len(base_endpoint_ids) + label_index}:"
-        f"net_label:{label_id}"
+        f"{net_id}:endpoint:{len(base_endpoint_ids) + label_index}:net_label:{label_id}"
         for label_index, label_id in enumerate(missing_label_ids)
     )
     label_endpoints = tuple(
@@ -3567,15 +4443,14 @@ def _project_multipart_designators(schdocs: list["AltiumSchDoc"]) -> set[str]:
     for schdoc in schdocs:
         for component in schdoc.get_components():
             logical_designator = str(component.designator or "")
-            if not logical_designator:
-                continue
-            placed_part_ids_by_designator[logical_designator].add(
-                _component_record_current_part_id(component)
-            )
+            if logical_designator:
+                placed_part_ids_by_designator[logical_designator].add(
+                    _component_record_current_part_id(component)
+                )
     return {
         designator
         for designator, part_ids in placed_part_ids_by_designator.items()
-        if len({part_id for part_id in part_ids if part_id > 0}) > 1
+        if any(part_id > 1 for part_id in part_ids)
     }
 
 
@@ -3686,6 +4561,14 @@ def _compiled_isolated_power_port_local_nets(
         if getattr(endpoint, "role", "") == "power_port"
     }
     power_ports_by_name: dict[str, list[object]] = defaultdict(list)
+    signal_harnesses = tuple(schdoc.get_signal_harnesses())
+    connector_primary_points = tuple(
+        _harness_connector_master_entry_point(connector.record)
+        for connector in schdoc.get_harness_connectors()
+    )
+    internal_tolerance = altium_internal_tolerance_for_display_unit(
+        int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0) or 0)
+    )
     for power_port in schdoc.get_power_ports():
         power_port_id = str(getattr(power_port, "unique_id", "") or "")
         power_name = str(getattr(power_port, "text", "") or "").strip()
@@ -3693,7 +4576,20 @@ def _compiled_isolated_power_port_local_nets(
             continue
         if power_port_id in represented_power_port_ids:
             continue
-        if bool(getattr(getattr(power_port, "record", None), "is_not_accessible", False)):
+        if bool(
+            getattr(getattr(power_port, "record", None), "is_not_accessible", False)
+        ):
+            continue
+        if (
+            analyser_net_item_kind(
+                power_name,
+                locations=(power_port._precise_connection_point,),
+                signal_harnesses=signal_harnesses,
+                harness_connector_primary_points=connector_primary_points,
+                internal_tolerance=internal_tolerance,
+            )
+            is AnalyserNetItemKind.HARNESS
+        ):
             continue
         power_ports_by_name[power_name].append(power_port)
 
@@ -3752,11 +4648,13 @@ def _compile_local_connectivity(
     tuple[AltiumCompiledNet, ...],
     dict[str, int],
     dict[str, int],
+    dict[str, dict[str, tuple[int, int, int]]],
     tuple[AltiumCompileDiagnostic, ...],
 ]:
     net_rows: list[AltiumCompiledNet] = []
     local_net_counts: dict[str, int] = {}
     harness_endpoint_stats = _initial_harness_endpoint_stats()
+    component_pin_root_counts: dict[str, dict[str, tuple[int, int, int]]] = {}
     diagnostics: list[AltiumCompileDiagnostic] = []
     schdoc_by_logical_id = _schdocs_by_logical_id(
         schdocs,
@@ -3771,10 +4669,6 @@ def _compile_local_connectivity(
         dict[str, tuple[dict[str, str], ...]],
     ] = {}
     _require_source_schdocs(logical_documents, schdoc_by_logical_id)
-    compile_mask_bounds_by_logical_id = {
-        logical_id: _compile_mask_bounds(schdoc)
-        for logical_id, schdoc in schdoc_by_logical_id.items()
-    }
     top_level_port_name_counts = _top_level_port_name_counts_for_local_connectivity(
         logical_documents,
         schdoc_by_logical_id,
@@ -3783,19 +4677,42 @@ def _compile_local_connectivity(
 
     for logical_document in logical_documents:
         schdoc = schdoc_by_logical_id[logical_document.id]
+        local_multipart_designators = _local_multipart_designators(schdoc)
         sheet_entry_parent_ids_by_element_id = _sheet_entry_parent_ids_by_element_id(
             schdoc
         )
         net_label_by_id = {
             label.unique_id: label
             for label in schdoc.get_net_labels()
-            if label.unique_id
+            if label.unique_id and getattr(label.record, "parent", None) is None
         }
         try:
-            local_netlist = AltiumNetlistSingleSheetCompiler(
+            single_sheet_compiler = AltiumNetlistSingleSheetCompiler(
                 schdoc,
                 options=options,
-            ).generate()
+            )
+            local_netlist = single_sheet_compiler.generate()
+            pin_roots_by_component = (
+                single_sheet_compiler._compiled_pin_roots_by_component()
+            )
+            masked_pin_counts = (
+                single_sheet_compiler._compiled_masked_pin_counts_by_component()
+            )
+            component_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+            for (
+                component_designator,
+                _pin_designator,
+            ), roots in pin_roots_by_component.items():
+                component_counts[component_designator][0] += 1
+                component_counts[component_designator][1] += len(roots)
+            component_pin_root_counts[logical_document.id] = {
+                designator: (
+                    counts[0],
+                    counts[1],
+                    masked_pin_counts.get(designator.lower(), 0),
+                )
+                for designator, counts in component_counts.items()
+            }
             bridge_scope_options = _effective_bridge_scope_options(
                 options,
                 effective_hierarchy_mode=effective_hierarchy_mode,
@@ -3805,8 +4722,7 @@ def _compile_local_connectivity(
                 if (
                     not should_probe_bridge_scope
                     and not any(
-                        getattr(net, "terminals", ())
-                        for net in local_netlist.nets
+                        getattr(net, "terminals", ()) for net in local_netlist.nets
                     )
                     and _sheet_entry_wire_endpoint_groups(schdoc, local_netlist)
                 ):
@@ -3842,6 +4758,7 @@ def _compile_local_connectivity(
             schdoc,
             local_netlist,
         )
+        _annotate_harness_power_object_endpoints(schdoc, local_netlist)
         for key, value in local_harness_stats.items():
             harness_endpoint_stats[key] += value
         if local_harness_stats["harness_entry_nearby_label_fallback_count"]:
@@ -3868,13 +4785,13 @@ def _compile_local_connectivity(
             schdoc,
             local_netlist,
             logical_document=logical_document,
-            first_net_index=len(local_netlist.nets) + len(synthetic_port_connector_nets),
+            first_net_index=len(local_netlist.nets)
+            + len(synthetic_port_connector_nets),
         )
         harness_endpoint_stats["isolated_power_port_synthetic_net_count"] += len(
             synthetic_isolated_power_nets
         )
         single_pin_nets = _compiled_component_single_pin_local_nets(
-            schdoc,
             local_netlist,
             logical_document=logical_document,
             first_net_index=(
@@ -3882,11 +4799,9 @@ def _compile_local_connectivity(
                 + len(synthetic_port_connector_nets)
                 + len(synthetic_isolated_power_nets)
             ),
+            pin_roots_by_component=pin_roots_by_component,
             multipart_designators=project_multipart_designators,
-            compile_mask_bounds=compile_mask_bounds_by_logical_id.get(
-                logical_document.id,
-                (),
-            ),
+            local_multipart_designators=local_multipart_designators,
         )
         synthetic_harness_nets = _compiled_harness_wire_nets(
             schdoc,
@@ -3970,7 +4885,13 @@ def _compile_local_connectivity(
         net_rows.extend(synthetic_typed_harness_nets)
         net_rows.extend(synthetic_sheet_entry_nets)
 
-    return tuple(net_rows), local_net_counts, harness_endpoint_stats, tuple(diagnostics)
+    return (
+        tuple(net_rows),
+        local_net_counts,
+        harness_endpoint_stats,
+        component_pin_root_counts,
+        tuple(diagnostics),
+    )
 
 
 def _elaborate_local_connectivity(
@@ -4075,7 +4996,7 @@ def _elaborate_local_connectivity(
             )
             terminals = tuple(
                 _compiled_terminal_for_physical(
-                        terminal_id,
+                    terminal_id,
                     terminal,
                     source_id=local_net.id,
                     source_prefix=source_prefix,
@@ -4386,12 +5307,22 @@ def _append_inter_sheet_link_net(
     source_net_ids: tuple[str, ...] | None = None,
 ) -> None:
     physical_document_ids = tuple(
-        dict.fromkeys((*parent_net.physical_document_ids, *child_net.physical_document_ids))
+        dict.fromkeys(
+            (*parent_net.physical_document_ids, *child_net.physical_document_ids)
+        )
     )
-    terminal_ids = tuple(dict.fromkeys((*parent_net.terminal_ids, *child_net.terminal_ids)))
-    endpoint_ids = tuple(dict.fromkeys((*parent_net.endpoint_ids, *child_net.endpoint_ids)))
-    terminals = _dedupe_compiled_terminals([*parent_net.terminals, *child_net.terminals])
-    endpoints = _dedupe_compiled_endpoints([*parent_net.endpoints, *child_net.endpoints])
+    terminal_ids = tuple(
+        dict.fromkeys((*parent_net.terminal_ids, *child_net.terminal_ids))
+    )
+    endpoint_ids = tuple(
+        dict.fromkeys((*parent_net.endpoint_ids, *child_net.endpoint_ids))
+    )
+    terminals = _dedupe_compiled_terminals(
+        [*parent_net.terminals, *child_net.terminals]
+    )
+    endpoints = _dedupe_compiled_endpoints(
+        [*parent_net.endpoints, *child_net.endpoints]
+    )
     item_ids = tuple(dict.fromkeys((*parent_net.item_ids, *child_net.item_ids)))
     items = _dedupe_compiled_items([*parent_net.items, *child_net.items])
     if source_net_ids is None:
@@ -4420,12 +5351,15 @@ def _append_inter_sheet_link_net(
         )
     )
 
+
 def _child_ports_by_name_for_inter_sheet_linking(
     child_ports_by_logical_id: dict[str, dict[str, "SchPortInfo"]],
     child_document: AltiumCompiledPhysicalDocument,
     child_schdoc: "AltiumSchDoc",
 ) -> dict[str, "SchPortInfo"]:
-    child_ports_by_name = child_ports_by_logical_id.get(child_document.logical_document_id)
+    child_ports_by_name = child_ports_by_logical_id.get(
+        child_document.logical_document_id
+    )
     if child_ports_by_name is None:
         child_ports_by_name = {
             port.name.lower(): port for port in child_schdoc.get_ports() if port.name
@@ -4457,8 +5391,15 @@ def _child_harness_members_for_inter_sheet_entry(
     child_harness_members = list(child_harness_entries.get(entry_name.lower(), []))
     if child_harness_members:
         return child_harness_members
+    direct_child_harness_entries = _build_child_harness_entry_map(child_schdoc)
+    if entry_name.lower() not in direct_child_harness_entries:
+        return []
     return [
-        {"name": member_name, "object_id": ""}
+        {
+            "name": member_name,
+            "object_id": "",
+            "definition_expanded": "true",
+        }
         for member_name in _parent_harness_member_names_for_entry(
             physical_nets,
             physical_document_id=parent_document.id,
@@ -4504,7 +5445,10 @@ def _resolve_parent_harness_link_net(
                 physical_document_id=parent_document.id,
                 entry_name=label_name,
             )
-            if candidate_parent_net is not None and candidate_parent_net.id != parent_net.id:
+            if (
+                candidate_parent_net is not None
+                and candidate_parent_net.id != parent_net.id
+            ):
                 parent_sheet_entry_bridge_net = candidate_parent_net
                 break
     return parent_net, parent_net_from_child_label, parent_sheet_entry_bridge_net
@@ -4575,15 +5519,13 @@ def _append_harness_inter_sheet_links(
                 if entry_name
                 else harness_entry_name
             ),
-        ) or _find_physical_net_by_name(
-            physical_nets,
-            physical_document_id=child_document.id,
-            net_name=harness_entry_name,
-        ) or _find_physical_net_by_name_or_label(
-            physical_nets,
-            physical_document_id=child_document.id,
-            net_name=harness_entry_name,
         )
+        if child_net is None and harness_entry.get("definition_expanded") == "true":
+            child_net = _find_physical_net_by_name(
+                physical_nets,
+                physical_document_id=child_document.id,
+                net_name=harness_entry_name,
+            )
         (
             parent_net,
             parent_net_from_child_label,
@@ -4719,98 +5661,137 @@ def _append_regular_inter_sheet_link(
     stats["matched_count"] += 1
 
 
+_BusMemberSource = tuple[AltiumCompiledPhysicalDocument, AltiumCompiledNet]
+
+
+def _unique_bus_member_sources(
+    child_sources: list[_BusMemberSource],
+) -> list[_BusMemberSource]:
+    unique_sources: list[_BusMemberSource] = []
+    seen_source_ids: set[str] = set()
+    for child_document, child_net in child_sources:
+        if child_net.id in seen_source_ids:
+            continue
+        seen_source_ids.add(child_net.id)
+        unique_sources.append((child_document, child_net))
+    return unique_sources
+
+
+def _bus_member_name(
+    unique_sources: list[_BusMemberSource],
+    member_name_key: str,
+) -> str:
+    member_name = unique_sources[0][1].name
+    for _child_document, child_net in unique_sources:
+        for label_name in _compiled_net_label_names(child_net):
+            if label_name.lower() == member_name_key:
+                return label_name
+    return member_name
+
+
+def _bus_range_label_nets(
+    unique_sources: list[_BusMemberSource],
+    physical_nets: tuple[AltiumCompiledNet, ...],
+    entry_name_key: str,
+) -> list[AltiumCompiledNet]:
+    return [
+        physical_net
+        for child_document, _child_net in unique_sources
+        for physical_net in physical_nets
+        if child_document.id in physical_net.physical_document_ids
+        and physical_net.name.lower() == entry_name_key
+        and any(
+            endpoint.role == "net_label" and endpoint.name.lower() == entry_name_key
+            for endpoint in physical_net.endpoints
+        )
+    ]
+
+
+def _bus_member_source_ids(
+    source_nets: list[AltiumCompiledNet],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    physical_document_ids: list[str] = []
+    terminal_ids: list[str] = []
+    endpoint_ids: list[str] = []
+    item_ids: list[str] = []
+    for child_net in source_nets:
+        physical_document_ids.extend(child_net.physical_document_ids)
+        terminal_ids.extend(child_net.terminal_ids)
+        endpoint_ids.extend(child_net.endpoint_ids)
+        item_ids.extend(child_net.item_ids)
+    return (
+        tuple(dict.fromkeys(physical_document_ids)),
+        tuple(dict.fromkeys(terminal_ids)),
+        tuple(dict.fromkeys(endpoint_ids)),
+        tuple(dict.fromkeys(item_ids)),
+    )
+
+
+def _compiled_bus_member_link(
+    *,
+    parent_physical_id: str,
+    entry_name_key: str,
+    member_name_key: str,
+    unique_sources: list[_BusMemberSource],
+    physical_nets: tuple[AltiumCompiledNet, ...],
+) -> AltiumCompiledNet:
+    member_name = _bus_member_name(unique_sources, member_name_key)
+    source_nets = [child_net for _child_document, child_net in unique_sources]
+    bus_label_nets = _bus_range_label_nets(
+        unique_sources, physical_nets, entry_name_key
+    )
+    evidence_nets = [*source_nets, *bus_label_nets]
+    bus_label_name = bus_label_nets[0].name if bus_label_nets else entry_name_key
+    link_id = f"{parent_physical_id}:bus_member_link:{entry_name_key}:{member_name_key}"
+    physical_document_ids, terminal_ids, endpoint_ids, item_ids = (
+        _bus_member_source_ids(source_nets)
+    )
+    return AltiumCompiledNet(
+        id=link_id,
+        name=member_name,
+        original_name=member_name,
+        scope="inter_sheet_link",
+        logical_document_id=None,
+        physical_document_ids=physical_document_ids,
+        auto_named=False,
+        single_pin=False,
+        aliases=(bus_label_name,),
+        terminal_ids=terminal_ids,
+        terminals=_dedupe_compiled_terminals(
+            [terminal for child_net in source_nets for terminal in child_net.terminals]
+        ),
+        endpoint_ids=endpoint_ids,
+        endpoints=_dedupe_compiled_endpoints(
+            [endpoint for net in evidence_nets for endpoint in net.endpoints]
+        ),
+        item_ids=item_ids,
+        items=_dedupe_compiled_items(
+            [item for net in evidence_nets for item in net.items]
+        ),
+        source_net_ids=tuple(child_net.id for child_net in source_nets),
+        link_ids=(link_id,),
+    )
+
+
 def _append_bus_member_inter_sheet_links(
     link_nets: list[AltiumCompiledNet],
     stats: dict[str, int],
-    bus_member_sources: dict[
-        tuple[str, str, str],
-        list[tuple[AltiumCompiledPhysicalDocument, AltiumCompiledNet]],
-    ],
+    physical_nets: tuple[AltiumCompiledNet, ...],
+    bus_member_sources: dict[tuple[str, str, str], list[_BusMemberSource]],
 ) -> None:
-    for (
-        parent_physical_id,
-        entry_name_key,
-        member_name_key,
-    ), child_sources in bus_member_sources.items():
-        unique_sources: list[tuple[AltiumCompiledPhysicalDocument, AltiumCompiledNet]] = []
-        seen_source_ids: set[str] = set()
-        for child_document, child_net in child_sources:
-            if child_net.id in seen_source_ids:
-                continue
-            seen_source_ids.add(child_net.id)
-            unique_sources.append((child_document, child_net))
+    for source_key, child_sources in bus_member_sources.items():
+        unique_sources = _unique_bus_member_sources(child_sources)
         if len(unique_sources) < 2:
             stats["unmatched_candidate_count"] += 1
             continue
-        member_name = unique_sources[0][1].name
-        for _child_document, child_net in unique_sources:
-            for label_name in _compiled_net_label_names(child_net):
-                if label_name.lower() == member_name_key:
-                    member_name = label_name
-                    break
-        source_nets = [child_net for _child_document, child_net in unique_sources]
-        link_id = (
-            f"{parent_physical_id}:bus_member_link:{entry_name_key}:{member_name_key}"
-        )
-        physical_document_ids = tuple(
-            dict.fromkeys(
-                document_id
-                for child_net in source_nets
-                for document_id in child_net.physical_document_ids
-            )
-        )
-        terminal_ids = tuple(
-            dict.fromkeys(
-                terminal_id
-                for child_net in source_nets
-                for terminal_id in child_net.terminal_ids
-            )
-        )
-        endpoint_ids = tuple(
-            dict.fromkeys(
-                endpoint_id
-                for child_net in source_nets
-                for endpoint_id in child_net.endpoint_ids
-            )
-        )
-        item_ids = tuple(
-            dict.fromkeys(
-                item_id for child_net in source_nets for item_id in child_net.item_ids
-            )
-        )
+        parent_physical_id, entry_name_key, member_name_key = source_key
         link_nets.append(
-            AltiumCompiledNet(
-                id=link_id,
-                name=member_name,
-                original_name=member_name,
-                scope="inter_sheet_link",
-                logical_document_id=None,
-                physical_document_ids=physical_document_ids,
-                auto_named=False,
-                single_pin=False,
-                aliases=(entry_name_key,),
-                terminal_ids=terminal_ids,
-                terminals=_dedupe_compiled_terminals(
-                    [
-                        terminal
-                        for child_net in source_nets
-                        for terminal in child_net.terminals
-                    ]
-                ),
-                endpoint_ids=endpoint_ids,
-                endpoints=_dedupe_compiled_endpoints(
-                    [
-                        endpoint
-                        for child_net in source_nets
-                        for endpoint in child_net.endpoints
-                    ]
-                ),
-                item_ids=item_ids,
-                items=_dedupe_compiled_items(
-                    [item for child_net in source_nets for item in child_net.items]
-                ),
-                source_net_ids=tuple(child_net.id for child_net in source_nets),
-                link_ids=(link_id,),
+            _compiled_bus_member_link(
+                parent_physical_id=parent_physical_id,
+                entry_name_key=entry_name_key,
+                member_name_key=member_name_key,
+                unique_sources=unique_sources,
+                physical_nets=physical_nets,
             )
         )
         stats["matched_count"] += 1
@@ -4862,13 +5843,21 @@ def _build_inter_sheet_link_nets(
     child_ports_by_logical_id: dict[str, dict[str, SchPortInfo]] = {}
 
     for child_document in physical_documents:
-        if child_document.parent_id is None or child_document.parent_sheet_symbol_id is None:
+        if (
+            child_document.parent_id is None
+            or child_document.parent_sheet_symbol_id is None
+        ):
             continue
         parent_document = physical_by_id.get(child_document.parent_id)
         symbol = symbol_by_id.get(child_document.parent_sheet_symbol_id)
         symbol_info = sheet_symbol_info_by_id.get(child_document.parent_sheet_symbol_id)
         child_schdoc = schdoc_by_logical_id.get(child_document.logical_document_id)
-        if parent_document is None or symbol is None or symbol_info is None or child_schdoc is None:
+        if (
+            parent_document is None
+            or symbol is None
+            or symbol_info is None
+            or child_schdoc is None
+        ):
             continue
 
         child_ports_by_name = _child_ports_by_name_for_inter_sheet_linking(
@@ -4909,7 +5898,12 @@ def _build_inter_sheet_link_nets(
                 entry_name=entry_name,
                 child_ports_by_name=child_ports_by_name,
             )
-    _append_bus_member_inter_sheet_links(link_nets, stats, bus_member_sources)
+    _append_bus_member_inter_sheet_links(
+        link_nets,
+        stats,
+        physical_nets,
+        bus_member_sources,
+    )
 
     return (
         tuple(link_nets),
@@ -4925,9 +5919,9 @@ def _build_inter_sheet_link_nets(
 def _dedupe_compiled_endpoints(
     endpoints: list[AltiumCompiledNetEndpoint],
 ) -> tuple[AltiumCompiledNetEndpoint, ...]:
-    seen: set[
-        tuple[str, str, str, str, str, str, str, str, tuple[int, int] | None]
-    ] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, str, tuple[int, int] | None]] = (
+        set()
+    )
     result: list[AltiumCompiledNetEndpoint] = []
     for endpoint in endpoints:
         key = (
@@ -5338,6 +6332,96 @@ def _repeat_bus_structural_bases_by_physical_document_id(
     return result
 
 
+def _published_physical_nets(
+    physical_nets: tuple[AltiumCompiledNet, ...],
+) -> tuple[AltiumCompiledNet, ...]:
+    structural_bases = _repeat_bus_structural_bases_by_physical_document_id(
+        physical_nets
+    )
+    result: list[AltiumCompiledNet] = []
+    for net in physical_nets:
+        suppress = False
+        if not net.terminals:
+            label_names = {
+                endpoint.name.lower()
+                for endpoint in net.endpoints
+                if endpoint.role == "net_label"
+            }
+            for document_id in net.physical_document_ids:
+                for base in structural_bases.get(document_id, ()):
+                    if (
+                        base.lower() in label_names
+                        and _compiled_net_has_repeat_sheet_entry_for_base(net, base)
+                    ):
+                        suppress = True
+                        break
+                if suppress:
+                    break
+        if not suppress:
+            result.append(net)
+    return tuple(result)
+
+
+def _compiled_component_pin_counts(
+    components: tuple[AltiumCompiledComponent, ...],
+    flat_nets: tuple[AltiumCompiledNet, ...],
+    component_pin_root_counts: Mapping[str, Mapping[str, tuple[int, int, int]]],
+) -> tuple[AltiumCompiledComponent, ...]:
+    pins_by_designator: dict[str, set[str]] = defaultdict(set)
+    part_pins_by_base_designator: dict[str, set[str]] = defaultdict(set)
+    document_ids_by_designator: dict[str, set[str]] = defaultdict(set)
+    document_ids_by_base_designator: dict[str, set[str]] = defaultdict(set)
+    for net in flat_nets:
+        for terminal in net.terminals:
+            key = terminal.designator.lower()
+            if not key or not terminal.pin:
+                continue
+            pins_by_designator[key].add(terminal.pin)
+            part_match = re.match(r"^(.*\d)[A-Z]+$", terminal.designator)
+            if part_match:
+                part_pins_by_base_designator[part_match.group(1).lower()].add(
+                    terminal.pin
+                )
+        for item in net.items:
+            if item.kind != "terminal" or not item.designator:
+                continue
+            key = item.designator.lower()
+            if item.physical_document_id:
+                document_ids_by_designator[key].add(item.physical_document_id)
+            part_match = re.match(r"^(.*\d)[A-Z]+$", item.designator)
+            if part_match and item.physical_document_id:
+                document_ids_by_base_designator[part_match.group(1).lower()].add(
+                    item.physical_document_id
+                )
+    result: list[AltiumCompiledComponent] = []
+    for component in components:
+        physical_key = component.physical_designator.lower()
+        root_counts = component_pin_root_counts.get(
+            component.logical_document_id, {}
+        ).get(component.logical_designator.lower())
+        if root_counts is not None and not component._project_multipart_collapsed:
+            distinct_active_pins, active_pin_roots, masked_pin_count = root_counts
+            pin_count = max(0, component.pin_count - masked_pin_count) + max(
+                0, active_pin_roots - distinct_active_pins
+            )
+        elif (
+            component._project_multipart_collapsed
+            or len(
+                document_ids_by_designator.get(physical_key, set())
+                | document_ids_by_base_designator.get(physical_key, set())
+            )
+            > 1
+        ):
+            pin_count = component.all_pin_count
+        else:
+            pins = pins_by_designator.get(physical_key, set())
+            if component.part_count > 1:
+                pins = pins | part_pins_by_base_designator.get(physical_key, set())
+            pin_count = len(pins)
+        result.append(replace(component, pin_count=pin_count))
+    return tuple(result)
+
+
 def _compiled_group_has_terminalless_repeat_bus_structural(
     group: list[AltiumCompiledNet],
     structural_bases_by_document_id: Mapping[str, Iterable[str]],
@@ -5347,7 +6431,9 @@ def _compiled_group_has_terminalless_repeat_bus_structural(
             continue
         for document_id in net.physical_document_ids:
             structural_bases = structural_bases_by_document_id.get(document_id, ())
-            if _compiled_net_has_repeat_bus_structural_base(net, tuple(structural_bases)):
+            if _compiled_net_has_repeat_bus_structural_base(
+                net, tuple(structural_bases)
+            ):
                 return True
     return False
 
@@ -5485,10 +6571,7 @@ def _compiled_effective_name_for_scope(
     if (
         hierarchy_mode in {"FLAT", "GLOBAL", "HIERARCHICAL"}
         and _compiled_net_name_is_sheet_entry_only(net)
-        and (
-            hierarchy_mode in {"FLAT", "GLOBAL"}
-            or not net.terminals
-        )
+        and (hierarchy_mode in {"FLAT", "GLOBAL"} or not net.terminals)
     ):
         return _compiled_auto_name_from_terminals([net]) or net.name
     return net.name
@@ -5562,7 +6645,15 @@ def _finalize_compiled_flat_name(
     )
     if sheet_number and not original_name.endswith(f"_{sheet_number}"):
         original_name = f"{original_name}_{sheet_number}"
-    return original_name, original_name, None, auto_named
+    override_name = next(
+        (
+            record.override_net_name
+            for record in reversed(annotation.net_names)
+            if record.original_net_name.casefold() == original_name.casefold()
+        ),
+        None,
+    )
+    return override_name or original_name, original_name, override_name, auto_named
 
 
 def _compiled_higher_level_name_candidate(
@@ -5661,8 +6752,7 @@ def _compiled_hierarchical_channel_terminal_name_candidate(
             for document_id in net.physical_document_ids
         )
         and any(
-            net.name.lower().startswith(root_name)
-            and net.name.lower() != root_name
+            net.name.lower().startswith(root_name) and net.name.lower() != root_name
             for root_name in root_physical_names
         )
     ]
@@ -5750,7 +6840,9 @@ def _compiled_terminal_explicit_physical_name_candidate(
         )
     ]
     if terminal_explicit_physical_names:
-        return min(terminal_explicit_physical_names, key=lambda name: name.lower()), False
+        return min(
+            terminal_explicit_physical_names, key=lambda name: name.lower()
+        ), False
     return None
 
 
@@ -5804,9 +6896,7 @@ def _compiled_channel_power_name_candidate(
     compile_options: AltiumProjectCompileOptions,
 ) -> tuple[str, bool] | None:
     group_physical_document_ids = {
-        document_id
-        for net in group
-        for document_id in net.physical_document_ids
+        document_id for net in group for document_id in net.physical_document_ids
     }
     if (
         not power_names
@@ -5984,6 +7074,21 @@ def _compiled_flat_name(
     raise AssertionError("unreachable compiled flat-name selection")
 
 
+def _compiled_flat_auto_named(
+    selected_name: str,
+    physical_group: list[AltiumCompiledNet],
+) -> bool:
+    has_harness_member_evidence = any(
+        _compiled_net_has_endpoint_role(net, "harness_entry") for net in physical_group
+    )
+    auto_named = all(net.auto_named for net in physical_group) and not (
+        has_harness_member_evidence
+    )
+    if any(net.auto_named and net.name == selected_name for net in physical_group):
+        return True
+    return auto_named
+
+
 def _compiled_first_list_merge_pairs(
     physical_by_id: dict[str, AltiumCompiledNet],
     hierarchy_mode: str,
@@ -6131,14 +7236,11 @@ def _compiled_terminal_less_flat_net_should_emit(
     repeat_bus_structural_bases_by_document_id: Mapping[str, Iterable[str]],
 ) -> bool:
     has_harness_bundle = any(
-        _compiled_net_has_endpoint_role(net, "harness_port")
-        for net in ordered_group
+        _compiled_net_has_endpoint_role(net, "harness_port") for net in ordered_group
     )
-    has_repeat_bus_structural = (
-        _compiled_group_has_terminalless_repeat_bus_structural(
-            ordered_group,
-            repeat_bus_structural_bases_by_document_id,
-        )
+    has_repeat_bus_structural = _compiled_group_has_terminalless_repeat_bus_structural(
+        ordered_group,
+        repeat_bus_structural_bases_by_document_id,
     )
     has_bus_range_connector = _compiled_group_has_terminalless_bus_range_connector(
         ordered_group
@@ -6149,16 +7251,14 @@ def _compiled_terminal_less_flat_net_should_emit(
         and any(
             (
                 physical_document_by_id.get(document_id) is not None
-                and physical_document_by_id[document_id].parent_sheet_symbol_id
-                is None
+                and physical_document_by_id[document_id].parent_sheet_symbol_id is None
             )
             for document_id in net.physical_document_ids
         )
         and (
             net.auto_named
             or any(
-                endpoint.role.lower() == "port"
-                and _parse_bus_range(endpoint.name)
+                endpoint.role.lower() == "port" and _parse_bus_range(endpoint.name)
                 for endpoint in net.endpoints
             )
         )
@@ -6175,8 +7275,7 @@ def _compiled_terminal_less_flat_net_should_emit(
         for role in ("net_label", "power_port", "harness_entry")
     )
     has_harness_entry_evidence = any(
-        _compiled_net_has_endpoint_role(net, "harness_entry")
-        for net in ordered_group
+        _compiled_net_has_endpoint_role(net, "harness_entry") for net in ordered_group
     )
     has_non_harness_terminal_less_evidence = any(
         _compiled_net_has_endpoint_role(net, role)
@@ -6190,8 +7289,7 @@ def _compiled_terminal_less_flat_net_should_emit(
         )
     )
     has_sheet_entry_evidence = any(
-        _compiled_net_has_endpoint_role(net, "sheet_entry")
-        for net in ordered_group
+        _compiled_net_has_endpoint_role(net, "sheet_entry") for net in ordered_group
     )
     if has_harness_entry_evidence and not has_non_harness_terminal_less_evidence:
         return False
@@ -6251,6 +7349,7 @@ def _compiled_flat_row_source_parts(
     tuple[str, ...],
     tuple[str, ...],
 ]:
+    evidence_link_rows = [link for link in link_rows if ":bus_member_link:" in link.id]
     source_net_ids = [net.id for net in ordered_group]
     terminal_ids = _dedupe_compiled_net_values(
         [terminal_id for net in ordered_group for terminal_id in net.terminal_ids]
@@ -6259,15 +7358,29 @@ def _compiled_flat_row_source_parts(
         [terminal for net in ordered_group for terminal in net.terminals]
     )
     endpoint_ids = _dedupe_compiled_net_values(
-        [endpoint_id for net in ordered_group for endpoint_id in net.endpoint_ids]
+        [
+            endpoint_id
+            for net in (*ordered_group, *evidence_link_rows)
+            for endpoint_id in net.endpoint_ids
+        ]
     )
     endpoints = _dedupe_compiled_endpoints(
-        [endpoint for net in ordered_group for endpoint in net.endpoints]
+        [
+            endpoint
+            for net in (*ordered_group, *evidence_link_rows)
+            for endpoint in net.endpoints
+        ]
     )
     item_ids = _dedupe_compiled_net_values(
-        [item_id for net in ordered_group for item_id in net.item_ids]
+        [
+            item_id
+            for net in (*ordered_group, *evidence_link_rows)
+            for item_id in net.item_ids
+        ]
     )
-    items = _dedupe_compiled_items([item for net in ordered_group for item in net.items])
+    items = _dedupe_compiled_items(
+        [item for net in (*ordered_group, *evidence_link_rows) for item in net.items]
+    )
     physical_document_ids = _dedupe_compiled_net_values(
         [
             document_id
@@ -6318,7 +7431,9 @@ def _build_flattened_compiled_nets(
     from .altium_netlist_model import UnionFind
 
     uf: UnionFind[str] = UnionFind()
-    physical_by_id = {net.id: net for net in physical_nets if net.scope == "physical_local"}
+    physical_by_id = {
+        net.id: net for net in physical_nets if net.scope == "physical_local"
+    }
     physical_document_by_id = {document.id: document for document in physical_documents}
     repeat_bus_structural_bases_by_document_id = (
         _repeat_bus_structural_bases_by_physical_document_id(physical_nets)
@@ -6370,8 +7485,7 @@ def _build_flattened_compiled_nets(
     for physical_net_id in physical_by_id:
         grouped_ids[uf.find(physical_net_id)].append(physical_net_id)
     root_by_source_id = {
-        physical_net_id: uf.find(physical_net_id)
-        for physical_net_id in physical_by_id
+        physical_net_id: uf.find(physical_net_id) for physical_net_id in physical_by_id
     }
     source_order = {
         physical_net_id: order for order, physical_net_id in enumerate(physical_by_id)
@@ -6399,6 +7513,7 @@ def _build_flattened_compiled_nets(
             compile_options=compile_options,
             annotation=annotation,
         )
+        auto_named = _compiled_flat_auto_named(name, group)
         ordered_group = _compiled_ordered_source_nets(
             group,
             hierarchy_mode=hierarchy_mode,
@@ -6471,13 +7586,16 @@ def _build_flattened_compiled_nets(
 
     def flat_sort_key(net: AltiumCompiledNet) -> tuple[object, int, int]:
         strict_power_depth = 0
-        if (
-            hierarchy_mode == "STRICT_HIERARCHICAL"
-            and _compiled_net_has_endpoint_role(net, "power_port")
+        if hierarchy_mode == "STRICT_HIERARCHICAL" and _compiled_net_has_endpoint_role(
+            net, "power_port"
         ):
             strict_power_depth = max(
                 (
-                    len(physical_document_by_id[document_id].physical_instance_path.split("\\"))
+                    len(
+                        physical_document_by_id[
+                            document_id
+                        ].physical_instance_path.split("\\")
+                    )
                     for document_id in net.physical_document_ids
                     if document_id in physical_document_by_id
                 ),
@@ -6522,9 +7640,7 @@ def _build_flattened_compiled_nets(
 def _sheet_entry_interface_key_from_item(
     item: object,
 ) -> tuple[str, str, str] | None:
-    kind = str(
-        getattr(item, "kind", "") or getattr(item, "role", "") or ""
-    ).lower()
+    kind = str(getattr(item, "kind", "") or getattr(item, "role", "") or "").lower()
     if kind != "sheet_entry":
         return None
     physical_document_id = str(getattr(item, "physical_document_id", "") or "")
@@ -6563,9 +7679,7 @@ def _represented_terminal_child_ports(
         for item in net.items:
             if str(getattr(item, "kind", "") or "").lower() != "port":
                 continue
-            physical_document_id = str(
-                getattr(item, "physical_document_id", "") or ""
-            )
+            physical_document_id = str(getattr(item, "physical_document_id", "") or "")
             port_name = str(getattr(item, "name", "") or "")
             if physical_document_id and port_name:
                 keys.add((physical_document_id, port_name.lower()))
@@ -6660,7 +7774,9 @@ def _missing_terminal_less_label_source_nets(
         if key in represented_zero_keys:
             continue
         net_label_endpoints = tuple(
-            endpoint for endpoint in physical_net.endpoints if endpoint.role == "net_label"
+            endpoint
+            for endpoint in physical_net.endpoints
+            if endpoint.role == "net_label"
         )
         if not net_label_endpoints:
             continue
@@ -6777,9 +7893,7 @@ def _missing_physical_sheet_symbol_interface_nets(
             continue
         for entry in symbol_info.entries:
             entry_name = str(
-                getattr(entry, "display_name", "")
-                or getattr(entry, "name", "")
-                or ""
+                getattr(entry, "display_name", "") or getattr(entry, "name", "") or ""
             )
             if not entry_name:
                 continue
@@ -6794,10 +7908,14 @@ def _missing_physical_sheet_symbol_interface_nets(
                 continue
             inner_port = _parse_entry_repeat(entry_name)
             match_name = inner_port or entry_name
-            if inner_port is None and (
-                physical_symbol.child_physical_document_id,
-                match_name.lower(),
-            ) in represented_terminal_child_ports:
+            if (
+                inner_port is None
+                and (
+                    physical_symbol.child_physical_document_id,
+                    match_name.lower(),
+                )
+                in represented_terminal_child_ports
+            ):
                 represented_keys.add(key)
                 continue
             if inner_port is not None:
@@ -6833,9 +7951,7 @@ def _missing_physical_sheet_symbol_interface_nets(
                     id=_compiled_flat_net_id(start_index + len(rows), name),
                     name=name,
                     scope="compiled_flat",
-                    physical_document_ids=(
-                        physical_symbol.owner_physical_document_id,
-                    ),
+                    physical_document_ids=(physical_symbol.owner_physical_document_id,),
                     auto_named=False,
                     single_pin=False,
                 )
@@ -6844,8 +7960,97 @@ def _missing_physical_sheet_symbol_interface_nets(
     return rows
 
 
-def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
-    """Build the current Python compiled-design skeleton."""
+def _project_device_sheet_paths(project: "AltiumPrjPcb") -> frozenset[Path]:
+    assert project.filepath is not None
+    return frozenset(
+        (project.filepath.parent / Path(document["path"].replace("\\", "/"))).resolve()
+        for document in project.documents
+        if project._document_source_sections.get(id(document), "")
+        .casefold()
+        .startswith("devicesheet")
+    )
+
+
+def _device_sheet_logical_ids(
+    device_sheet_paths: frozenset[Path],
+    schdoc_by_logical_id: Mapping[str, "AltiumSchDoc"],
+) -> frozenset[str]:
+    return frozenset(
+        logical_id
+        for logical_id, schdoc in schdoc_by_logical_id.items()
+        if (schdoc_filepath := getattr(schdoc, "filepath", None)) is not None
+        and Path(schdoc_filepath).resolve() in device_sheet_paths
+    )
+
+
+def _device_sheet_saved_numbers(
+    project_path: Path,
+    logical_documents: tuple[AltiumCompiledLogicalDocument, ...],
+    device_sheet_ids: frozenset[str],
+) -> dict[str, str]:
+    saved_numbers = _saved_project_structure_sheet_numbers(project_path)
+    return {
+        document.id: saved_numbers[normalized_source_path]
+        for document in logical_documents
+        if document.id in device_sheet_ids
+        and (
+            normalized_source_path := _normalize_project_reference(document.source_path)
+        )
+        in saved_numbers
+    }
+
+
+def _project_document_order(
+    project: "AltiumPrjPcb",
+    logical_documents: tuple[AltiumCompiledLogicalDocument, ...],
+) -> dict[str, int]:
+    positions = {
+        _normalize_project_reference(str(document.get("path", ""))): position
+        for position, document in enumerate(project.documents)
+        if document.get("path")
+    }
+    return {
+        document.id: positions.get(
+            _normalize_project_reference(document.source_path),
+            document.ordinal,
+        )
+        for document in logical_documents
+    }
+
+
+def _device_sheet_numbering_inputs(
+    project: "AltiumPrjPcb | None",
+    logical_documents: tuple[AltiumCompiledLogicalDocument, ...],
+    schdoc_by_logical_id: Mapping[str, "AltiumSchDoc"],
+) -> tuple[frozenset[str], dict[str, str], dict[str, int]]:
+    if project is None or project.filepath is None:
+        return (
+            frozenset(),
+            {},
+            {document.id: document.ordinal for document in logical_documents},
+        )
+
+    device_sheet_ids = _device_sheet_logical_ids(
+        _project_device_sheet_paths(project),
+        schdoc_by_logical_id,
+    )
+    return (
+        device_sheet_ids,
+        _device_sheet_saved_numbers(
+            project.filepath,
+            logical_documents,
+            device_sheet_ids,
+        ),
+        _project_document_order(project, logical_documents),
+    )
+
+
+def compile_design(
+    design: "AltiumDesign",
+    *,
+    allow_device_sheet_editing: bool = False,
+) -> AltiumCompiledDesign:
+    """Compile a project design into its resolved schematic model."""
     project = design.project
     project_base_dir = project.filepath.parent if project and project.filepath else None
     options = design._options or NetlistOptions()
@@ -6854,6 +8059,7 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
         options,
         effective_hierarchy_mode=effective_hierarchy_mode,
         project=project,
+        allow_device_sheet_editing=allow_device_sheet_editing,
     )
     annotation = load_project_annotation(project.filepath if project else None)
     saved_structure_top_level_file_name = (
@@ -6861,7 +8067,6 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
         if effective_hierarchy_mode in {"HIERARCHICAL", "STRICT_HIERARCHICAL"}
         else None
     )
-
     (
         logical_documents,
         sheet_symbols,
@@ -6876,10 +8081,20 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
         design.schdocs,
         project_base_dir=project_base_dir,
     )
+    (
+        device_sheet_logical_ids,
+        device_sheet_numbers_by_logical_id,
+        document_order_by_logical_id,
+    ) = _device_sheet_numbering_inputs(
+        project,
+        logical_documents,
+        schdoc_by_logical_id,
+    )
     _require_source_schdocs(logical_documents, schdoc_by_logical_id)
     (
         physical_documents,
         components,
+        component_body_evidence,
         sheet_symbols,
         physical_sheet_symbols,
         physical_diagnostics,
@@ -6894,33 +8109,39 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
         annotation=annotation,
         options=options,
         project_base_dir=project_base_dir,
+        device_sheet_logical_ids=device_sheet_logical_ids,
+        device_sheet_numbers_by_logical_id=device_sheet_numbers_by_logical_id,
+        document_order_by_logical_id=document_order_by_logical_id,
     )
 
-    physical_documents = _apply_default_sheet_and_document_numbers(
-        physical_documents,
-        sheet_numbers_by_logical_id=_sheet_numbers_by_logical_id(
-            design.schdocs,
-            project_base_dir=project_base_dir,
-            options=compile_options,
-        ),
-        document_numbers_by_logical_id=_document_numbers_by_logical_id(
-            design.schdocs,
-            project_base_dir=project_base_dir,
-        ),
+    physical_document_by_id = {document.id: document for document in physical_documents}
+    physical_instance_offsets = _logical_instance_offsets(physical_documents)
+    physical_count_by_logical_id = _physical_count_by_logical_id(physical_documents)
+    physical_documents = tuple(
+        replace(
+            document,
+            physical_room_name=_component_naming_room_name(
+                document,
+                physical_document_by_id,
+                physical_instance_offsets=physical_instance_offsets,
+                physical_count_by_logical_id=physical_count_by_logical_id,
+                compile_options=compile_options,
+            ),
+        )
+        for document in physical_documents
     )
     (
         local_nets,
         local_net_counts,
         local_harness_endpoint_stats,
+        component_pin_root_counts,
         local_connectivity_diagnostics,
-    ) = (
-        _compile_local_connectivity(
-            design.schdocs,
-            logical_documents,
-            options=options,
-            effective_hierarchy_mode=effective_hierarchy_mode,
-            project_base_dir=project_base_dir,
-        )
+    ) = _compile_local_connectivity(
+        design.schdocs,
+        logical_documents,
+        options=options,
+        effective_hierarchy_mode=effective_hierarchy_mode,
+        project_base_dir=project_base_dir,
     )
     physical_nets = _elaborate_local_connectivity(
         local_nets,
@@ -6954,7 +8175,35 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
             schdoc_by_logical_id,
         ),
     )
-    compiled_nets = (*local_nets, *physical_nets, *inter_sheet_nets, *flat_nets)
+    components = _compiled_component_pin_counts(
+        components,
+        flat_nets,
+        component_pin_root_counts,
+    )
+    published_physical_nets = _published_physical_nets(physical_nets)
+    net_flattening_stats["physical_net_count"] = len(published_physical_nets)
+    compiled_nets = (
+        *local_nets,
+        *published_physical_nets,
+        *inter_sheet_nets,
+        *flat_nets,
+    )
+    compiled_nets = tuple(
+        replace(
+            net,
+            endpoints=tuple(
+                replace(endpoint, role="power_port")
+                if endpoint.role == "harness_power"
+                else endpoint
+                for endpoint in net.endpoints
+            ),
+        )
+        for net in compiled_nets
+    )
+    physical_documents, _ = _apply_sheet_number_annotations(
+        physical_documents,
+        annotation,
+    )
     logical_documents = tuple(
         replace(
             document,
@@ -6963,9 +8212,17 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
         for document in logical_documents
     )
     top_level_candidates = [
-        document.id for document in logical_documents if document.is_top_level_candidate
+        document for document in logical_documents if document.is_top_level_candidate
     ]
-    top_level_logical_id = top_level_candidates[0] if top_level_candidates else None
+    top_level_document = min(
+        top_level_candidates,
+        key=lambda document: (
+            -len(document.sheet_symbol_ids),
+            _natural_sort_key(Path(document.file_name).stem),
+        ),
+        default=None,
+    )
+    top_level_logical_id = top_level_document.id if top_level_document else None
     top_level_physical_id = next(
         (
             document.id
@@ -6976,8 +8233,8 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
     )
     compile_block: dict[str, object] = {
         "generator": COMPILED_DESIGN_GENERATOR,
-        "implementation": "python_skeleton",
-        "status": "partial",
+        "implementation": "python_compiled_design",
+        "status": "complete",
         "hierarchy_mode": effective_hierarchy_mode,
         "top_level_logical_document_id": top_level_logical_id,
         "top_level_physical_document_id": top_level_physical_id,
@@ -6990,11 +8247,11 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
         "net_flattening": net_flattening_stats,
         "physical_sheet_symbol_count": len(physical_sheet_symbols),
     }
-    skeleton_diagnostics = [*diagnostics, *physical_diagnostics]
-    skeleton_diagnostics.extend(local_connectivity_diagnostics)
-    skeleton_diagnostics.extend(inter_sheet_diagnostics)
+    compile_diagnostics = [*diagnostics, *physical_diagnostics]
+    compile_diagnostics.extend(local_connectivity_diagnostics)
+    compile_diagnostics.extend(inter_sheet_diagnostics)
 
-    return AltiumCompiledDesign(
+    compiled_design = AltiumCompiledDesign(
         schema=COMPILED_DESIGN_SCHEMA,
         source_path=_source_path_for_project(project),
         options=compile_options,
@@ -7005,8 +8262,23 @@ def compile_design(design: "AltiumDesign") -> AltiumCompiledDesign:
         physical_sheet_symbols=physical_sheet_symbols,
         components=components,
         nets=compiled_nets,
-        diagnostics=tuple(skeleton_diagnostics),
+        diagnostics=tuple(compile_diagnostics),
         compile=compile_block,
+    )
+    from .altium_compiled_schematic_graph_projection import (
+        build_compiled_schematic_graph,
+    )
+
+    graph, physical_page_metadata = build_compiled_schematic_graph(
+        design,
+        compiled_design,
+        component_body_evidence=component_body_evidence,
+    )
+    return replace(
+        compiled_design,
+        compiled_schematic_graph=graph,
+        physical_page_metadata=physical_page_metadata,
+        _component_body_evidence=component_body_evidence,
     )
 
 

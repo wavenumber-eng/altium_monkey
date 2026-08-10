@@ -6493,7 +6493,16 @@ def _build_layer_features(ctx: PcbIpc2581Context, step: ET.Element) -> None:
             and layer_state.stored_legacy_layer_id is not None
             else int(layer_id)
         )
-        if (
+        net_name = ctx.resolve_net(net_index)
+        legacy_layer_name = ctx.resolve_layer(stored_legacy_layer_id)
+        document_alias = (
+            ctx.document_layer_aliases.get(legacy_layer_name)
+            if net_name == "No Net"
+            else None
+        )
+        if document_alias is not None:
+            layer_name = document_alias
+        elif (
             stored_legacy_layer_id
             in {PcbLayer.DRILL_DRAWING.value, PcbLayer.DRILL_GUIDE.value}
             and ctx.drill_pair_layers
@@ -6517,7 +6526,6 @@ def _build_layer_features(ctx: PcbIpc2581Context, step: ET.Element) -> None:
             )
         else:
             layer_name = ctx.resolve_layer(layer_id)
-        net_name = ctx.resolve_net(net_index)
         if net_name == "No Net" and layer_name in ctx.document_layer_aliases:
             layer_name = ctx.document_layer_aliases[layer_name]
         if (

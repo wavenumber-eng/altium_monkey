@@ -218,14 +218,16 @@ Known release boundaries include:
    component cross-reference metadata cannot be parsed.
 4. Variant processing supports DNP handling and parameter overrides; alternate
    fitted component replacement is not applied semantically yet.
-5. Complex hierarchical channels now route through the compiled design model
-   for design JSON, netlist JSON, and physical schematic SVG/IR output.
-   Rich consumers should use `AltiumDesign.to_json(...)` `physical_pages` or
-   `AltiumDesign.to_physical_svg(...)` for repeated sheets instead of assuming
-   one source SVG ID maps to one physical component.
-6. Project design JSON now emits `altium_monkey.design.a2`. Strict validators
-   pinned to the old `design.a1` schema should refresh to `design.a2`; compile
-   metadata and diagnostics are opt-in through
+5. Complex hierarchical channels route through the compiled design model for
+   design JSON, netlist JSON, and physical schematic SVG/IR output. Rich
+   consumers should use the required Design b0 `compiled_schematic_graph` and
+   select pages by canonical page occurrence id instead of assuming one source
+   SVG ID maps to one physical component.
+6. Project design JSON emits `altium_monkey.design.b0`. Strict validators
+   pinned to Design a2 should refresh to `design_b0.schema.json`; Design b0
+   requires `altium_monkey.compiled_schematic_graph.a0` and intentionally does
+   not emit the duplicated Design a2 `physical_pages` projection. Compile
+   metadata and diagnostics remain opt-in through
    `to_json(include_compile_metadata=True)`.
 7. Windows remains the primary validation platform. macOS font discovery and
    bundled schematic font substitution have focused coverage; Linux coverage

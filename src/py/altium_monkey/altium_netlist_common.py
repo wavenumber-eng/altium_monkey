@@ -62,11 +62,7 @@ def _component_part_alpha_suffix(*, part_count: int, current_part_id: int) -> st
 
 
 def _sheet_entry_display_name(entry: object) -> str:
-    return str(
-        getattr(entry, "display_name", "")
-        or getattr(entry, "name", "")
-        or ""
-    )
+    return str(getattr(entry, "display_name", "") or getattr(entry, "name", "") or "")
 
 
 def _unique_nonempty_strings(values: list[str] | tuple[str, ...]) -> list[str]:
@@ -115,7 +111,7 @@ CHASSIS_GND_MAPPINGS = frozenset(
 )
 
 
-RootPoint: TypeAlias = tuple[int, int]
+RootPoint: TypeAlias = tuple[int, int, int, int]
 
 
 class _ParameterLike(Protocol):
@@ -166,7 +162,7 @@ class _NetPinLike(Protocol):
         raise NotImplementedError("pin unique id")
 
     @property
-    def connection_point(self) -> RootPoint:
+    def connection_point(self) -> tuple[int, int]:
         raise NotImplementedError("pin connection point")
 
 
@@ -243,6 +239,8 @@ def _resolve_component_display_value(
     comp: _DisplayValueComponent,
     project_params: dict[str, str] | None = None,
     sheet_params: dict[str, str] | None = None,
+    *,
+    component_description: str = "",
 ) -> str:
     """Resolve component display value for wire-list output."""
 
@@ -260,6 +258,8 @@ def _resolve_component_display_value(
         param_value = comp.get_parameter(param_name)
         if param_value is not None:
             return param_value
+        if param_name.lower() == "description" and component_description:
+            return component_description
         if sheet_params:
             for key, value in sheet_params.items():
                 if key.lower() == param_name.lower():
@@ -276,6 +276,8 @@ def _resolve_component_display_value(
     if sheet_params:
         merged_params.update(sheet_params)
     merged_params["Value"] = comp.value
+    if component_description:
+        merged_params["Description"] = component_description
     for param in getattr(comp, "parameters", []):
         if hasattr(param, "name") and hasattr(param, "text"):
             merged_params[param.name] = param.text
@@ -339,11 +341,9 @@ def _emit_port_named_nets(
     for name in port_names_sorted:
         if name in final_name_to_root:
             root = final_name_to_root[name]
-            if root not in processed_roots and root in final_pin_groups:
-                pins = final_pin_groups[root]
-                if pins:
-                    nets.append(create_net(name, pins, root))
-                    processed_roots.add(root)
+            if root not in processed_roots:
+                nets.append(create_net(name, final_pin_groups.get(root, []), root))
+                processed_roots.add(root)
 
 
 def _emit_named_roots(
@@ -411,7 +411,7 @@ def _emit_bridge_roots(
         if root not in processed_roots and root not in final_pin_groups:
             bridge_roots.add(root)
 
-    for root in bridge_roots:
+    for root in sorted(bridge_roots):
         name = final_net_names.get(root)
         if not name:
             name = _find_root_name_in_map(uf, root, port_roots)

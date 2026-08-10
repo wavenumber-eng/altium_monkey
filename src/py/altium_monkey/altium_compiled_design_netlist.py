@@ -14,7 +14,7 @@ from .altium_compiled_design_model import (
     AltiumCompiledNetTerminal,
     AltiumCompiledPhysicalDocument,
 )
-from .altium_netlist_multi_sheet_support import (
+from .altium_compiled_design_support import (
     _build_port_location_map,
     find_harness_bundle_info,
 )
@@ -32,6 +32,9 @@ from .altium_netlist_model import (
     NetlistComponent,
     PinType,
     Terminal,
+)
+from .altium_netlist_wire_connectivity import (
+    altium_internal_tolerance_for_display_unit,
 )
 
 if TYPE_CHECKING:
@@ -179,6 +182,7 @@ def _compiled_graphical(
             append_unique(graphical.sheet_entries, element_id)
     return graphical
 
+
 def _compiled_net_aliases(compiled_net: AltiumCompiledNet) -> list[str]:
     aliases = list(compiled_net.aliases)
     for endpoint in compiled_net.endpoints:
@@ -205,8 +209,7 @@ def _compiled_net_to_net(
         seen_terminals.add(key)
         terminals.append(terminal)
     terminal_types = {
-        (terminal.designator, terminal.pin): terminal.pin_type
-        for terminal in terminals
+        (terminal.designator, terminal.pin): terminal.pin_type for terminal in terminals
     }
     return Net(
         name=compiled_net.name,
@@ -229,15 +232,21 @@ def _compiled_net_is_legacy_visible(
 ) -> bool:
     """Return whether a compiled net should appear on legacy netlist surfaces.
 
-    Compile rows can retain inferred and object-only signals, but legacy
-    comparison/export surfaces suppress zero-pin nets and optionally suppress
-    isolated one-pin nets.
+    Compile rows can retain inferred and object-only signals. Named zero-pin
+    rows remain visible, matching the AD26 flattened-design surfaces; isolated
+    one-pin nets remain project-option controlled.
     """
     pin_count = len(compiled_net.terminals)
     if pin_count == 0:
-        return False
+        return bool(compiled_net.name)
     if pin_count > 1:
         return True
+    endpoint_roles = {endpoint.role for endpoint in compiled_net.endpoints}
+    connector_only_hierarchy_net = bool(compiled_net.link_ids) and not (
+        endpoint_roles & {"net_label", "power_port"}
+    )
+    if connector_only_hierarchy_net and not compiled.options.netlist_single_pin_nets:
+        return False
     if _compiled_net_item_count_for_legacy_visibility(compiled_net) > 1:
         return True
     return compiled.options.netlist_single_pin_nets
@@ -267,6 +276,7 @@ def _sheet_entry_graphical_id(sheet_symbol_uid: str, entry_name: str) -> str:
     if not sheet_symbol_uid:
         return entry_name
     return f"{sheet_symbol_uid}_{entry_name}"
+
 
 def _parse_sheet_symbol_repeat(designator: str) -> dict[str, object]:
     repeat: dict[str, object] = {
@@ -337,6 +347,7 @@ def _source_sheet_symbol_for(
         if unique_id in {source_object_id, symbol_id}:
             return symbol
     return None
+
 
 def _build_compiled_hierarchy_documents(compiled: AltiumCompiledDesign) -> list[dict]:
     return [
@@ -411,8 +422,7 @@ def _is_channel_physical_document(
     physical_document_id: str,
 ) -> bool:
     physical_document = {
-        document.id: document
-        for document in compiled.physical_documents
+        document.id: document for document in compiled.physical_documents
     }.get(physical_document_id)
     if (
         physical_document is not None
@@ -430,10 +440,9 @@ def _is_channel_physical_document(
     }.get(physical_document_id)
     if physical_symbol is None:
         return False
-    logical_symbol = {
-        symbol.id: symbol
-        for symbol in compiled.sheet_symbols
-    }.get(physical_symbol.logical_sheet_symbol_id)
+    logical_symbol = {symbol.id: symbol for symbol in compiled.sheet_symbols}.get(
+        physical_symbol.logical_sheet_symbol_id
+    )
     return bool(
         logical_symbol
         and (
@@ -468,7 +477,9 @@ def _compiled_hierarchy_level(
             else document.parent_sheet_symbol_id or ""
         ),
         "child_filename": (
-            logical_symbol.child_filename if logical_symbol is not None else document.file_name
+            logical_symbol.child_filename
+            if logical_symbol is not None
+            else document.file_name
         ),
     }
     designator = (
@@ -563,7 +574,9 @@ def _build_compiled_channels(
     symbol_by_id = {symbol.id: symbol for symbol in compiled.sheet_symbols}
     rows: list[dict] = []
     for document in sorted(compiled.physical_documents, key=lambda item: item.ordinal):
-        if not document.parent_id or not _is_channel_physical_document(compiled, document.id):
+        if not document.parent_id or not _is_channel_physical_document(
+            compiled, document.id
+        ):
             continue
         parent_document = physical_by_id.get(document.parent_id)
         logical_symbol = symbol_by_id.get(document.parent_sheet_symbol_id or "")
@@ -614,11 +627,19 @@ def _build_compiled_channels(
 def _document_pair_for_link_net(
     compiled: AltiumCompiledDesign,
     net: AltiumCompiledNet,
-) -> tuple[AltiumCompiledPhysicalDocument | None, AltiumCompiledPhysicalDocument | None]:
+) -> tuple[
+    AltiumCompiledPhysicalDocument | None, AltiumCompiledPhysicalDocument | None
+]:
     physical_by_id = {document.id: document for document in compiled.physical_documents}
-    candidates = [physical_by_id[doc_id] for doc_id in net.physical_document_ids if doc_id in physical_by_id]
+    candidates = [
+        physical_by_id[doc_id]
+        for doc_id in net.physical_document_ids
+        if doc_id in physical_by_id
+    ]
     for document in candidates:
-        if document.parent_id and any(parent.id == document.parent_id for parent in candidates):
+        if document.parent_id and any(
+            parent.id == document.parent_id for parent in candidates
+        ):
             return physical_by_id.get(document.parent_id), document
     if len(candidates) >= 2:
         return candidates[0], candidates[1]
@@ -670,8 +691,7 @@ def _build_compiled_hierarchy_links(
         if parent_item is None or child_item is None:
             continue
         match_by_harness = (
-            parent_item.kind == "harness_entry"
-            or child_item.kind == "harness_entry"
+            parent_item.kind == "harness_entry" or child_item.kind == "harness_entry"
         )
         if match_by_harness:
             parent_entry_name = _strip_harness_parent_name(parent_item.parent_id)
@@ -683,7 +703,9 @@ def _build_compiled_hierarchy_links(
             child_name = child_item.name or parent_item.name
         parent_logical = logical_by_id.get(parent_document.logical_document_id)
         child_logical = logical_by_id.get(child_document.logical_document_id)
-        parent_sheet_index = parent_logical.ordinal if parent_logical is not None else None
+        parent_sheet_index = (
+            parent_logical.ordinal if parent_logical is not None else None
+        )
         child_sheet_index = child_logical.ordinal if child_logical is not None else None
         sheet_symbol_id = logical_symbol.source_object_id or logical_symbol.id
         parent_graphical_id = _sheet_entry_graphical_id(
@@ -708,9 +730,7 @@ def _build_compiled_hierarchy_links(
                 "child": {
                     "sheet_index": child_sheet_index,
                     "compiled_sheet_index": child_document.ordinal,
-                    "object_kind": "harness_entry"
-                    if match_by_harness
-                    else "port",
+                    "object_kind": "harness_entry" if match_by_harness else "port",
                     "object_ids": _unique_nonempty(
                         [
                             child_item.object_id,
@@ -748,11 +768,14 @@ def _build_harness_bundle_endpoint_map(
         sheet_index = logical.ordinal if logical is not None else None
         compiled_sheet_index = getattr(physical, "ordinal", sheet_index)
         port_location_map = _build_port_location_map(schdoc)
+        display_unit = int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0))
+        internal_tolerance = altium_internal_tolerance_for_display_unit(display_unit)
         for connector in schdoc.harness_connectors:
             bundle_info = find_harness_bundle_info(
                 connector,
                 getattr(schdoc, "signal_harnesses", None),
                 port_location_map,
+                internal_tolerance,
             )
             port_name_value = bundle_info.get("port_name")
             port_name = port_name_value if isinstance(port_name_value, str) else ""
@@ -771,7 +794,9 @@ def _build_harness_bundle_endpoint_map(
                 else []
             )
             connector_id = str(getattr(connector, "unique_id", "") or "").strip()
-            object_ids = _unique_nonempty([*port_ids, *signal_harness_ids, connector_id])
+            object_ids = _unique_nonempty(
+                [*port_ids, *signal_harness_ids, connector_id]
+            )
             endpoint_map[port_name.lower()].append(
                 {
                     "name": port_name,
@@ -990,10 +1015,14 @@ def _build_compiled_hierarchy_unresolved(
             schdoc_by_logical_id.get(symbol.logical_document_id),
         )
         child_schdoc = schdoc_by_logical_id.get(child_logical.id)
-        child_port_names = {
-            str(getattr(port, "name", "") or "").lower()
-            for port in child_schdoc.get_ports()
-        } if child_schdoc is not None else set()
+        child_port_names = (
+            {
+                str(getattr(port, "name", "") or "").lower()
+                for port in child_schdoc.get_ports()
+            }
+            if child_schdoc is not None
+            else set()
+        )
         for entry in getattr(source_symbol, "entries", ()) or ():
             entry_name = _entry_display_name(entry)
             if not entry_name:
@@ -1079,10 +1108,7 @@ def compiled_design_to_netlist(compiled: AltiumCompiledDesign) -> Netlist:
             exclude_from_bom=component.exclude_from_bom,
         )
     legacy_terminal_designators = _legacy_terminal_designator_map(compiled)
-    nets = [
-        _compiled_net_to_net(net, legacy_terminal_designators)
-        for net in flat_nets
-    ]
+    nets = [_compiled_net_to_net(net, legacy_terminal_designators) for net in flat_nets]
     return Netlist(nets=nets, components=list(components_by_designator.values()))
 
 

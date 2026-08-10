@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING
 from .altium_api_markers import public_api
 
 if TYPE_CHECKING:
+    from .altium_compiled_schematic_graph import (
+        AltiumCompiledSchematicGraph,
+        AltiumPhysicalPageMetadata,
+    )
     from .altium_netlist_model import Netlist
 
 COMPILED_DESIGN_SCHEMA = "altium_monkey.sch.compiled_design_model.b0"
@@ -93,6 +97,7 @@ class AltiumProjectCompileOptions:
     power_port_names_take_priority: bool
     name_nets_hierarchically: bool
     auto_sheet_numbering: bool
+    allow_device_sheet_editing: bool
     channel_designator_format: str
     channel_room_naming_style: int
     channel_room_level_separator: str
@@ -117,6 +122,7 @@ class AltiumProjectCompileOptions:
             "power_port_names_take_priority": self.power_port_names_take_priority,
             "name_nets_hierarchically": self.name_nets_hierarchically,
             "auto_sheet_numbering": self.auto_sheet_numbering,
+            "allow_device_sheet_editing": self.allow_device_sheet_editing,
             "channel_designator_format": self.channel_designator_format,
             "channel_room_naming_style": self.channel_room_naming_style,
             "channel_room_level_separator": self.channel_room_level_separator,
@@ -148,9 +154,7 @@ class AltiumCompiledAnnotationState:
             "designator_record_count": self.designator_record_count,
             "sheet_number_record_count": self.sheet_number_record_count,
             "net_name_override_count": self.net_name_override_count,
-            "diagnostics": [
-                diagnostic.to_dict() for diagnostic in self.diagnostics
-            ],
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
 
 
@@ -182,9 +186,7 @@ class AltiumCompiledLogicalDocument:
             "parent_sheet_symbol_ids": list(self.parent_sheet_symbol_ids),
             "component_source_count": self.component_source_count,
             "local_net_count": self.local_net_count,
-            "diagnostics": [
-                diagnostic.to_dict() for diagnostic in self.diagnostics
-            ],
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
 
 
@@ -230,9 +232,7 @@ class AltiumCompiledSheetSymbol:
             "repeat_start": self.repeat_start,
             "repeat_end": self.repeat_end,
             "entry_count": self.entry_count,
-            "diagnostics": [
-                diagnostic.to_dict() for diagnostic in self.diagnostics
-            ],
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
 
 
@@ -300,6 +300,7 @@ class AltiumCompiledPhysicalDocument:
     component_ids: tuple[str, ...] = ()
     sheet_number: str | None = None
     document_number: str | None = None
+    physical_room_name: str = ""
     diagnostics: tuple[AltiumCompileDiagnostic, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -322,9 +323,8 @@ class AltiumCompiledPhysicalDocument:
             "component_ids": list(self.component_ids),
             "sheet_number": self.sheet_number,
             "document_number": self.document_number,
-            "diagnostics": [
-                diagnostic.to_dict() for diagnostic in self.diagnostics
-            ],
+            "physical_room_name": self.physical_room_name,
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
 
 
@@ -352,11 +352,13 @@ class AltiumCompiledComponent:
     description: str
     parameters: tuple[tuple[str, str], ...]
     pin_count: int
+    all_pin_count: int
     part_count: int
     current_part_id: int
     annotation_state: str = "logical"
     annotation_locked: bool = False
     diagnostics: tuple[AltiumCompileDiagnostic, ...] = ()
+    _project_multipart_collapsed: bool = False
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible component record."""
@@ -380,13 +382,12 @@ class AltiumCompiledComponent:
             "description": self.description,
             "parameters": dict(self.parameters),
             "pin_count": self.pin_count,
+            "all_pin_count": self.all_pin_count,
             "part_count": self.part_count,
             "current_part_id": self.current_part_id,
             "annotation_state": self.annotation_state,
             "annotation_locked": self.annotation_locked,
-            "diagnostics": [
-                diagnostic.to_dict() for diagnostic in self.diagnostics
-            ],
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
 
 
@@ -536,9 +537,7 @@ class AltiumCompiledNet:
             "parent_net_id": self.parent_net_id,
             "child_net_id": self.child_net_id,
             "link_ids": list(self.link_ids),
-            "diagnostics": [
-                diagnostic.to_dict() for diagnostic in self.diagnostics
-            ],
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
 
 
@@ -560,6 +559,9 @@ class AltiumCompiledDesign:
     physical_sheet_symbols: tuple[AltiumCompiledPhysicalSheetSymbol, ...] = ()
     compile: dict[str, object] = field(default_factory=dict)
     debug: dict[str, object] = field(default_factory=dict)
+    compiled_schematic_graph: AltiumCompiledSchematicGraph | None = None
+    physical_page_metadata: tuple[AltiumPhysicalPageMetadata, ...] = ()
+    _component_body_evidence: tuple[AltiumCompiledComponent, ...] = ()
 
     @property
     def top_physical_document(self) -> AltiumCompiledPhysicalDocument | None:
@@ -600,11 +602,7 @@ class AltiumCompiledDesign:
                 for component in self.components
                 for diagnostic in component.diagnostics
             ],
-            *[
-                diagnostic
-                for net in self.nets
-                for diagnostic in net.diagnostics
-            ],
+            *[diagnostic for net in self.nets for diagnostic in net.diagnostics],
         ]
         net_flattening = self.compile.get("net_flattening")
         flattened_net_count = len(
@@ -624,7 +622,9 @@ class AltiumCompiledDesign:
             net_count=len(self.nets),
             flattened_net_count=flattened_net_count,
             diagnostic_count=len(diagnostics),
-            has_errors=any(diagnostic.severity == "error" for diagnostic in diagnostics),
+            has_errors=any(
+                diagnostic.severity == "error" for diagnostic in diagnostics
+            ),
             has_warnings=any(
                 diagnostic.severity == "warning" for diagnostic in diagnostics
             ),
@@ -649,9 +649,7 @@ class AltiumCompiledDesign:
             ],
             "components": [component.to_dict() for component in self.components],
             "nets": [net.to_dict() for net in self.nets],
-            "diagnostics": [
-                diagnostic.to_dict() for diagnostic in self.diagnostics
-            ],
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
             "source_path": self.source_path,
             "compile": dict(sorted(self.compile.items())),
         }

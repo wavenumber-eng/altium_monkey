@@ -937,9 +937,9 @@ class Netlist:
         """
         Serialize netlist to JSON-compatible dict.
 
-                The resulting payload is the package-owned raw netlist contract.
-                It preserves grouped graphical connectivity metadata without
-                relying on the deprecated WireList serialization.
+        The resulting payload is the package-owned raw netlist contract. It
+        preserves grouped graphical connectivity metadata directly, with no
+        legacy wire-list serialization.
         """
         return {
             "schema": NETLIST_JSON_SCHEMA,

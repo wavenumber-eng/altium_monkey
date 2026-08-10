@@ -1541,6 +1541,16 @@ class AltiumSchComponent(SchGraphicalObject):
         result: list[str] = []
         seen: set[str] = set()
         for record in self._display_body_records(part_id=part_id):
+            if getattr(record, "record_type", None) in {
+                SchRecordType.LABEL,
+                SchRecordType.NET_LABEL,
+                SchRecordType.SHEET_NAME,
+                SchRecordType.FILE_NAME,
+            } and (
+                getattr(record, "is_hidden", False)
+                or not str(getattr(record, "text", "") or "")
+            ):
+                continue
             unique_id = str(getattr(record, "unique_id", "") or "").strip()
             if not unique_id or unique_id in seen:
                 continue

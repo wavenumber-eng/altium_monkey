@@ -35,6 +35,10 @@ if TYPE_CHECKING:
         AltiumCompiledSheetSymbol,
         AltiumProjectCompileOptions,
     )
+    from .altium_compiled_schematic_graph import (
+        AltiumCompiledSchematicGraph,
+        AltiumPhysicalPageMetadata,
+    )
     from .altium_design import AltiumDesign
     from .altium_draftsman import (
         AltiumDraftsmanDocument,
@@ -664,6 +668,8 @@ __all__ = [
     "AltiumCompiledComponent",
     "AltiumCompiledDesign",
     "AltiumCompiledDesignSummary",
+    "AltiumCompiledSchematicGraph",
+    "AltiumPhysicalPageMetadata",
     "AltiumCompiledLogicalDocument",
     "AltiumCompiledNet",
     "AltiumCompiledNetEndpoint",
@@ -904,6 +910,8 @@ _LAZY_PUBLIC_EXPORTS = {
     "AltiumCompiledComponent": "altium_compiled_design_model",
     "AltiumCompiledDesign": "altium_compiled_design_model",
     "AltiumCompiledDesignSummary": "altium_compiled_design_model",
+    "AltiumCompiledSchematicGraph": "altium_compiled_schematic_graph",
+    "AltiumPhysicalPageMetadata": "altium_compiled_schematic_graph",
     "AltiumCompiledLogicalDocument": "altium_compiled_design_model",
     "AltiumCompiledNet": "altium_compiled_design_model",
     "AltiumCompiledNetEndpoint": "altium_compiled_design_model",

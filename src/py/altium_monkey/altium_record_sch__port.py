@@ -62,6 +62,7 @@ class AltiumSchPort(SingleFontBindableRecordMixin, SchGraphicalObject):
         self.io_type: PortIOType = PortIOType.UNSPECIFIED
         self.alignment: SchHorizontalAlign = SchHorizontalAlign.LEFT
         self.width: int = 10  # Port width in Altium units
+        self._width_frac: int = 0
         self.height: int = 10  # Port height in Altium units
         self.text_color: int = 0  # Text color (Win32 BGR format)
         self.cross_reference: bool = False  # Show cross-reference instead of name
@@ -134,7 +135,9 @@ class AltiumSchPort(SingleFontBindableRecordMixin, SchGraphicalObject):
         self.io_type = PortIOType(io_val)
         alignment_val, _ = s.read_int(record, Fields.ALIGNMENT, default=0)
         self.alignment = SchHorizontalAlign(alignment_val)
-        self.width, _ = s.read_int(record, Fields.WIDTH, default=10)
+        self.width, self._width_frac, width_present = s.read_coord(record, "Width")
+        if not width_present:
+            self.width = 10
         self.height, _ = s.read_int(record, Fields.HEIGHT, default=10)
         self.text_color, _ = s.read_int(record, Fields.TEXT_COLOR, default=0)
         # Border width: absence means "smallest" (0), values 1-3 are small/medium/large
@@ -196,8 +199,15 @@ class AltiumSchPort(SingleFontBindableRecordMixin, SchGraphicalObject):
         else:
             s.remove_field(record, Fields.ALIGNMENT)
 
-        if self.width != 0:
-            s.write_int(record, Fields.WIDTH, self.width, raw)
+        if self.width != 0 or self._width_frac != 0:
+            s.write_coord(
+                record,
+                "Width",
+                "",
+                self.width,
+                self._width_frac,
+                raw,
+            )
         else:
             s.remove_field(record, Fields.WIDTH)
         if self.height != 0:

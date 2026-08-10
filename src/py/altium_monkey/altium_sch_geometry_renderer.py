@@ -414,6 +414,15 @@ class SchGeometrySvgRenderer:
                 'data-doc-ver="2"',
             ]
         )
+        render_hints = document.render_hints or {}
+        page_occurrence_ref = str(render_hints.get("page_occurrence_ref", "") or "")
+        artifact_key = str(render_hints.get("artifact_key", "") or "")
+        if page_occurrence_ref:
+            svg_attrs.append(
+                f'data-page-occurrence-ref="{html.escape(page_occurrence_ref)}"'
+            )
+        if artifact_key:
+            svg_attrs.append(f'data-artifact-key="{html.escape(artifact_key)}"')
         lines.append(f"<svg {' '.join(svg_attrs)}>")
         lines.extend(self._render_font_face_style(document))
         lines.append('<g id = "scene" >')
@@ -510,12 +519,48 @@ class SchGeometrySvgRenderer:
         if not primitives:
             return []
         if record.unique_id:
+            graph_attrs = self._compiled_graph_group_attrs(document, record.unique_id)
             return [
-                f'<g id = "{html.escape(record.unique_id)}" >',
+                f'<g id = "{html.escape(record.unique_id)}"{graph_attrs} >',
                 *primitives,
                 "</g>",
             ]
         return primitives
+
+    @staticmethod
+    def _compiled_graph_group_attrs(
+        document: SchGeometryDocument, element_id: str
+    ) -> str:
+        """Return scoped compiled-graph attributes for a retained record group."""
+
+        raw_links = (document.extras or {}).get(
+            "compiled_schematic_graphical_links", []
+        )
+        if not isinstance(raw_links, list):
+            return ""
+        link = next(
+            (
+                value
+                for value in raw_links
+                if isinstance(value, dict)
+                and str(value.get("element_id", "")) == element_id
+            ),
+            None,
+        )
+        if link is None:
+            return ""
+        attrs = {
+            "data-page-occurrence-ref": link.get("page_occurrence_ref", ""),
+            "data-artifact-key": link.get("artifact_key", ""),
+            "data-element-id": element_id,
+            "data-graph-target-type": link.get("target_type", ""),
+            "data-graph-target-ref": link.get("target_ref", ""),
+        }
+        return "".join(
+            f' {name}="{html.escape(str(value))}"'
+            for name, value in attrs.items()
+            if value
+        )
 
     def _render_record_primitives(
         self,
@@ -552,6 +597,7 @@ class SchGeometrySvgRenderer:
                 kind,
                 payload=payload,
                 record=record,
+                document=document,
                 rendered_stack=rendered_stack,
                 transform_stack=transform_stack,
                 units_per_px=units_per_px,
@@ -622,6 +668,7 @@ class SchGeometrySvgRenderer:
         *,
         payload: dict[str, Any],
         record: SchGeometryRecord,
+        document: SchGeometryDocument,
         rendered_stack: list[dict[str, Any]],
         transform_stack: list[tuple[float, float, float, float, float, float]],
         units_per_px: float,
@@ -657,6 +704,7 @@ class SchGeometrySvgRenderer:
                 {
                     "frame_type": "group",
                     "group_id": group_id,
+                    "graph_attrs": self._compiled_graph_group_attrs(document, group_id),
                     "content": [],
                 }
             )
@@ -869,8 +917,9 @@ class SchGeometrySvgRenderer:
                 )
         group_id = str(frame.get("group_id", "") or "")
         if group_id:
+            graph_attrs = str(frame.get("graph_attrs", "") or "")
             return [
-                f'<g id = "{html.escape(group_id)}" >',
+                f'<g id = "{html.escape(group_id)}"{graph_attrs} >',
                 *content,
                 "</g>",
             ]

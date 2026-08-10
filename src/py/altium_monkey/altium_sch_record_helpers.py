@@ -199,6 +199,73 @@ def _coord_scalar_to_native_units(
     return int(value) + int(frac) / 100000.0
 
 
+def _rounded_native_numerator(numerator: int) -> int:
+    magnitude = (abs(numerator) + 50_000) // 100_000
+    return int(magnitude if numerator >= 0 else -magnitude)
+
+
+def _coord_scalar_to_rounded_native_units(
+    value: int | float | str,
+    frac: int | float | str = 0,
+) -> int:
+    """Reduce a full coord-style scalar to the integer connectivity grid."""
+    numerator = int(value) * 100_000 + int(frac)
+    return _rounded_native_numerator(numerator)
+
+
+def _coord_numerator_to_parts(numerator: int) -> tuple[int, int]:
+    """Return a normalized whole/fraction pair for a coordinate numerator."""
+    return divmod(int(numerator), 100_000)
+
+
+def _coord_scalar_to_native_parts(
+    value: int | float | str,
+    frac: int | float | str = 0,
+) -> tuple[int, int]:
+    """Compose stored whole/fraction fields without reducing their precision."""
+    return _coord_numerator_to_parts(int(value) * 100_000 + int(frac))
+
+
+def _coord_scalar_with_basic_entry_distance_to_native_parts(
+    value: int | float | str,
+    frac: int | float | str,
+    distance_from_top: int | float | str,
+    distance_from_top_frac1: int | float | str = 0,
+    *,
+    direction: int,
+) -> tuple[int, int]:
+    """Compose a stored coordinate and basic-entry offset without grid reduction."""
+    coord_numerator = int(value) * 100_000 + int(frac)
+    distance_numerator = int(distance_from_top) * 1_000_000 + int(
+        distance_from_top_frac1
+    )
+    return _coord_numerator_to_parts(coord_numerator + direction * distance_numerator)
+
+
+def _effective_basic_entry_distance_frac1(value: object) -> int:
+    """Return AD's internal fractional distance for a basic entry record."""
+    frac = int(getattr(value, "distance_from_top_frac", 0))
+    if frac != 0:
+        return frac * 10
+    return int(getattr(value, "distance_from_top_frac1", 0))
+
+
+def _coord_scalar_with_basic_entry_distance_to_rounded_native_units(
+    value: int | float | str,
+    frac: int | float | str,
+    distance_from_top: int | float | str,
+    distance_from_top_frac1: int | float | str = 0,
+    *,
+    direction: int,
+) -> int:
+    """Apply a full-precision basic-entry offset before grid reduction."""
+    coord_numerator = int(value) * 100_000 + int(frac)
+    distance_numerator = int(distance_from_top) * 1_000_000 + int(
+        distance_from_top_frac1
+    )
+    return _rounded_native_numerator(coord_numerator + direction * distance_numerator)
+
+
 def _public_mils_to_coord_scalar(value: float) -> tuple[int, int]:
     """
     Convert a public mil value to Altium coord-style whole/fraction storage.
@@ -247,7 +314,7 @@ def _basic_entry_distance_to_rounded_native_units(
     tie-to-even behavior and must not define this public connectivity path.
     """
     if not isinstance(value, (int, float, str)):
-        frac1 = getattr(value, "distance_from_top_frac1", frac1)
+        frac1 = _effective_basic_entry_distance_frac1(value)
         value = getattr(value, "distance_from_top", 0)
     value_scalar = value if isinstance(value, (int, float, str)) else 0
     frac_scalar = frac1 if isinstance(frac1, (int, float, str)) else 0
@@ -266,6 +333,58 @@ def _public_mils_to_basic_entry_distance(value: float) -> tuple[int, int]:
         whole_steps += 1
         frac1 = 0
     return whole_steps, frac1
+
+
+class _BasicEntryDistanceRecord(Protocol):
+    distance_from_top: int
+    distance_from_top_frac: int
+    distance_from_top_frac1: int
+    _has_distance_from_top_frac: bool
+
+
+def _set_basic_entry_distance_mils(
+    record: _BasicEntryDistanceRecord,
+    value: float,
+) -> None:
+    """Store a public distance using AD's canonical Frac1 representation."""
+    record.distance_from_top, record.distance_from_top_frac1 = (
+        _public_mils_to_basic_entry_distance(value)
+    )
+    record.distance_from_top_frac = 0
+    record._has_distance_from_top_frac = False
+
+
+class BasicEntryDistanceMilsMixin:
+    """Public and internal distance accessors shared by basic entry records."""
+
+    distance_from_top: int
+    distance_from_top_frac: int
+    distance_from_top_frac1: int
+    _has_distance_from_top_frac: bool
+
+    @property
+    def distance_from_top_mils(self) -> float:
+        """Distance from the owning symbol or connector edge in mils."""
+        return _basic_entry_distance_to_public_mils(
+            self.distance_from_top,
+            _effective_basic_entry_distance_frac1(self),
+        )
+
+    @distance_from_top_mils.setter
+    def distance_from_top_mils(self, value: float) -> None:
+        _set_basic_entry_distance_mils(self, value)
+
+    def _distance_from_top_native_units(self) -> float:
+        return _basic_entry_distance_to_native_units(
+            self.distance_from_top,
+            _effective_basic_entry_distance_frac1(self),
+        )
+
+    def _rounded_distance_from_top_native_units(self) -> int:
+        return _basic_entry_distance_to_rounded_native_units(
+            self.distance_from_top,
+            _effective_basic_entry_distance_frac1(self),
+        )
 
 
 class CornerXRadiusMilsMixin:

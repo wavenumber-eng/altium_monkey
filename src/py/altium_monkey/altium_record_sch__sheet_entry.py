@@ -18,12 +18,7 @@ from .altium_serializer import (
     Fields,
     read_dynamic_string_field,
 )
-from .altium_sch_record_helpers import (
-    _basic_entry_distance_to_native_units,
-    _basic_entry_distance_to_public_mils,
-    _basic_entry_distance_to_rounded_native_units,
-    _public_mils_to_basic_entry_distance,
-)
+from .altium_sch_record_helpers import BasicEntryDistanceMilsMixin
 
 
 class SchSheetEntryArrowKind(IntEnum):
@@ -83,7 +78,11 @@ def _sheet_entry_color_raw_from_hex(color_hex: str) -> int:
     return red | (green << 8) | (blue << 16)
 
 
-class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
+class AltiumSchSheetEntry(
+    BasicEntryDistanceMilsMixin,
+    SingleFontBindableRecordMixin,
+    SchPrimitive,
+):
     """
     Sheet entry record.
 
@@ -105,6 +104,7 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
         self.distance_from_top: int = (
             0  # Offset from top/left (1 unit = 10 CoordPoint units = 100 mils)
         )
+        self.distance_from_top_frac: int = 0
         self.distance_from_top_frac1: int = 0
         # Visual properties
         self.color: int = 0x000000  # Border color
@@ -124,6 +124,7 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
         self._has_side: bool = False
         self._has_io_type: bool = False
         self._has_distance_from_top: bool = False
+        self._has_distance_from_top_frac: bool = False
         self._has_distance_from_top_frac1: bool = False
         self._has_color: bool = False
         self._has_area_color: bool = False
@@ -141,41 +142,6 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
     @property
     def record_type(self) -> SchRecordType:
         return SchRecordType.SHEET_ENTRY
-
-    @property
-    def distance_from_top_mils(self) -> float:
-        """
-        Distance from the symbol edge in mils.
-
-        Native sheet-entry spacing uses 100-mil steps, matching the visible
-        sheet-entry placement grid used by Altium. Fractional native storage
-        is preserved when present.
-        """
-        return _basic_entry_distance_to_public_mils(
-            self.distance_from_top,
-            self.distance_from_top_frac1,
-        )
-
-    @distance_from_top_mils.setter
-    def distance_from_top_mils(self, value: float) -> None:
-        """
-        Set distance from a value in mils.
-        """
-        self.distance_from_top, self.distance_from_top_frac1 = (
-            _public_mils_to_basic_entry_distance(value)
-        )
-
-    def _distance_from_top_native_units(self) -> float:
-        return _basic_entry_distance_to_native_units(
-            self.distance_from_top,
-            self.distance_from_top_frac1,
-        )
-
-    def _rounded_distance_from_top_native_units(self) -> int:
-        return _basic_entry_distance_to_rounded_native_units(
-            self.distance_from_top,
-            self.distance_from_top_frac1,
-        )
 
     @property
     def display_name(self) -> str:
@@ -237,6 +203,9 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
         # count plus optional DistanceFromTop_Frac1 millionths of one step.
         self.distance_from_top, self._has_distance_from_top = s.read_int(
             record, Fields.DISTANCE_FROM_TOP, default=0
+        )
+        self.distance_from_top_frac, self._has_distance_from_top_frac = s.read_int(
+            record, Fields.DISTANCE_FROM_TOP_FRAC, default=0
         )
         self.distance_from_top_frac1, self._has_distance_from_top_frac1 = s.read_int(
             record, Fields.DISTANCE_FROM_TOP_FRAC1, default=0
@@ -317,14 +286,30 @@ class AltiumSchSheetEntry(SingleFontBindableRecordMixin, SchPrimitive):
         if self._has_side or self.side != 0:
             s.write_int(record, Fields.SIDE, self.side, raw)
 
-        record.pop("DISTANCEFROMTOP_FRAC1", None)
-        record.pop("DistanceFromTop_Frac1", None)
         if self._has_distance_from_top or self.distance_from_top != 0:
             s.write_int(record, Fields.DISTANCE_FROM_TOP, self.distance_from_top, raw)
         else:
             s.remove_field(record, Fields.DISTANCE_FROM_TOP)
+        if self._has_distance_from_top_frac or self.distance_from_top_frac != 0:
+            s.write_int(
+                record,
+                Fields.DISTANCE_FROM_TOP_FRAC,
+                self.distance_from_top_frac,
+                raw,
+                force=True,
+            )
+        else:
+            s.remove_field(record, Fields.DISTANCE_FROM_TOP_FRAC)
         if self._has_distance_from_top_frac1 or self.distance_from_top_frac1 != 0:
-            record["DistanceFromTop_Frac1"] = str(self.distance_from_top_frac1)
+            s.write_int(
+                record,
+                Fields.DISTANCE_FROM_TOP_FRAC1,
+                self.distance_from_top_frac1,
+                raw,
+                force=True,
+            )
+        else:
+            s.remove_field(record, Fields.DISTANCE_FROM_TOP_FRAC1)
         s.write_int(record, Fields.COLOR, self.color, raw, force=self.color != 0)
         s.write_int(
             record,

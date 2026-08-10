@@ -50,6 +50,7 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         self.orientation: TextOrientation = TextOrientation.DEGREES_0
         self.justification: TextJustification = TextJustification.BOTTOM_LEFT
         self.is_mirrored: bool = False
+        self.is_hidden: bool = False
         self._used_utf8_text: bool = False
 
     @property
@@ -95,6 +96,7 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         justify_val, _ = s.read_int(record, Fields.JUSTIFICATION, default=0)
         self.justification = TextJustification(justify_val)
         self.is_mirrored, _ = s.read_bool(record, Fields.IS_MIRRORED, default=False)
+        self.is_hidden, _ = s.read_bool(record, Fields.IS_HIDDEN, default=False)
 
     def serialize_to_record(self) -> dict[str, Any]:
         """
@@ -134,6 +136,10 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
             s.write_bool(record, Fields.IS_MIRRORED, self.is_mirrored, raw)
         else:
             s.remove_field(record, Fields.IS_MIRRORED)
+        if self.is_hidden:
+            s.write_bool(record, Fields.IS_HIDDEN, self.is_hidden, raw)
+        else:
+            s.remove_field(record, Fields.IS_HIDDEN)
 
         return record
 

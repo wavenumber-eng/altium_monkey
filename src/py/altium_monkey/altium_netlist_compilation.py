@@ -37,14 +37,12 @@ def compile_netlist(
 ) -> "Netlist":
     """
     Compile a design netlist through the primary entrypoint.
-    
-        Single-sheet and multi-sheet designs compile through the top-level
-        netlist compilers.
+
+    Single-sheet and multi-sheet project inputs follow the same compiled-design
+    pipeline.
     """
 
     from .altium_design import AltiumDesign
-    from .altium_netlist_options import NetlistOptions
-    from .altium_netlist_single_sheet import AltiumNetlistSingleSheetCompiler
 
     if not schdocs:
         raise ValueError("compile_netlist() requires at least one schematic document")
@@ -53,12 +51,6 @@ def compile_netlist(
         schdocs,
         project,
     )
-    if len(schdocs) == 1:
-        return AltiumNetlistSingleSheetCompiler(
-            schdocs[0],
-            options=effective_options,
-        ).generate()
-
     design = AltiumDesign(
         project=project,
         schdocs=list(schdocs),

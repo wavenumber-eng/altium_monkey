@@ -1,5 +1,13 @@
 @font-face {
   font-family: 'Altium Stroke';
+  src: url('altium-stroke-light.woff2') format('woff2'), url('altium-stroke-light.woff') format('woff'), url('altium-stroke-light.ttf') format('truetype'), url('altium-stroke-light.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Altium Stroke';
   src: url('altium-stroke.woff2') format('woff2'), url('altium-stroke.woff') format('woff'), url('altium-stroke.ttf') format('truetype'), url('altium-stroke.otf') format('opentype');
   font-weight: 400;
   font-style: normal;
@@ -9,6 +17,54 @@
 @font-face {
   font-family: 'Altium Stroke';
   src: url('altium-stroke-bold.woff2') format('woff2'), url('altium-stroke-bold.woff') format('woff'), url('altium-stroke-bold.ttf') format('truetype'), url('altium-stroke-bold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Altium Stroke Sans';
+  src: url('altium-stroke-sans-light.woff2') format('woff2'), url('altium-stroke-sans-light.woff') format('woff'), url('altium-stroke-sans-light.ttf') format('truetype'), url('altium-stroke-sans-light.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Altium Stroke Sans';
+  src: url('altium-stroke-sans.woff2') format('woff2'), url('altium-stroke-sans.woff') format('woff'), url('altium-stroke-sans.ttf') format('truetype'), url('altium-stroke-sans.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Altium Stroke Sans';
+  src: url('altium-stroke-sans-bold.woff2') format('woff2'), url('altium-stroke-sans-bold.woff') format('woff'), url('altium-stroke-sans-bold.ttf') format('truetype'), url('altium-stroke-sans-bold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Altium Stroke Serif';
+  src: url('altium-stroke-serif-light.woff2') format('woff2'), url('altium-stroke-serif-light.woff') format('woff'), url('altium-stroke-serif-light.ttf') format('truetype'), url('altium-stroke-serif-light.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Altium Stroke Serif';
+  src: url('altium-stroke-serif.woff2') format('woff2'), url('altium-stroke-serif.woff') format('woff'), url('altium-stroke-serif.ttf') format('truetype'), url('altium-stroke-serif.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Altium Stroke Serif';
+  src: url('altium-stroke-serif-bold.woff2') format('woff2'), url('altium-stroke-serif-bold.woff') format('woff'), url('altium-stroke-serif-bold.ttf') format('truetype'), url('altium-stroke-serif-bold.otf') format('opentype');
   font-weight: 700;
   font-style: normal;
   font-display: swap;

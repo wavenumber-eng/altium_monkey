@@ -63,6 +63,12 @@ class _RecordLocationInfoMixin:
             return (loc.x, loc.y)
         return (0, 0)
 
+    @property
+    def _precise_connection_point(self) -> tuple[int, int, int, int]:
+        """Record location including persisted fractional coordinates."""
+        location = self.record.location
+        return (location.x, location.y, location.x_frac, location.y_frac)
+
 
 @public_api
 @dataclass
@@ -314,6 +320,12 @@ class SchPinInfo:
         """
         return self.pin.connection_point
 
+    @property
+    def _precise_connection_point(self) -> tuple[int, int, int, int]:
+        """Pin hot spot including the persisted fractional coordinate fields."""
+        point = self.pin.get_hot_spot()
+        return (point.x, point.y, point.x_frac, point.y_frac)
+
 
 @public_api
 @dataclass
@@ -341,12 +353,33 @@ class SchPortInfo(_RecordLocationInfoMixin):
     @property
     def connection_points(self) -> list[tuple[int, int]]:
         """
-        Connection points on the left and right edges.
+        Connection points at both ends of the port.
         """
-        x, y = self.location
-        points = [(x, y)]
-        if self.width > 0:
-            points.append((x + self.width, y))
+        return [(x, y) for x, y, _x_frac, _y_frac in self._precise_connection_points]
+
+    @property
+    def _precise_connection_points(self) -> list[tuple[int, int, int, int]]:
+        """Port endpoints including location and width fractional fields."""
+        location = self.record.location
+        scale = 100000
+        points = [
+            (location.x, location.y, location.x_frac, location.y_frac),
+        ]
+        width_frac = self.record._width_frac
+        width_total = self.width * scale + width_frac
+        if width_total > 0:
+            if int(self.record.style) <= 3:
+                end_total = location.x * scale + location.x_frac + width_total
+                end_x, end_x_frac = divmod(end_total, scale)
+                points.append(
+                    (end_x, location.y, end_x_frac, location.y_frac),
+                )
+            else:
+                end_total = location.y * scale + location.y_frac + width_total
+                end_y, end_y_frac = divmod(end_total, scale)
+                points.append(
+                    (location.x, end_y, location.x_frac, end_y_frac),
+                )
         return points
 
     @property

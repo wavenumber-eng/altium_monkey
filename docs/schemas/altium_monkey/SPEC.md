@@ -1,6 +1,6 @@
 # Altium Monkey Contract Specification
 
-Version family: `a0`/`a1`/`a2`
+Version family: `a0`/`a1`/`a2`/`b0`
 
 This directory documents the JSON-shaped contracts emitted directly by
 `altium-monkey`. These contracts are Altium-oriented API payloads. They are not
@@ -8,7 +8,8 @@ the generic cross-CAD `design_a0` data-model contract.
 
 ## Bundled Entry Points
 
-- `design_a2.schema.json`: schema for current `altium_monkey.design.a2`
+- `design_b0.schema.json`: schema for current `altium_monkey.design.b0`
+- `design_a2.schema.json`: schema for predecessor `altium_monkey.design.a2`
 - `design_a1.schema.json`: schema for predecessor `altium_monkey.design.a1`
 - `design_a0.schema.json`: schema for predecessor `altium_monkey.design.a0`
 - `netlist_a0.schema.json`: schema for `altium_monkey.netlist.a0`
@@ -23,27 +24,26 @@ The prose specification is intentionally kept next to the machine-readable
 schemas so downstream tools and AI agents can discover the contract intent
 without reading Python source.
 
-`design_a2.schema.json` is self-contained for strict validation. Older sibling
+`design_b0.schema.json` is self-contained for strict validation. Older sibling
 schemas remain bundled for consumers pinned to earlier contracts or validating
 other payload families directly.
 
 ## Revision Scheme
 
-Schema suffixes use a stepping-style revision scheme:
+The leading letter is the major revision and changes for a breaking contract
+change. The trailing number identifies an additive minor revision within that
+major family: existing fields retain their meaning and required shape.
+Consumers should still match a supported schema ID exactly unless they
+implement an explicit migration or compatibility range.
 
-- The leading letter is the major revision. Moving from `a` to `b` indicates a
-  potentially breaking contract change.
-- The trailing number is the minor revision. Moving from `a0` to `a1` indicates
-  fields may have been added while preserving the existing `a` major-revision
-  shape.
-- Moving from `a1` to `a2` marks the compiled physical-page design JSON
-  projection. The Python call surface stayed compatible, but strict
-  `design.a1` validators reject new root fields because that predecessor
-  schema uses `additionalProperties: false`.
+- Moving from Design a2 to Design b0 removes the duplicated physical-page
+  projection and requires the source-neutral compiled schematic graph. That is
+  a breaking change, so the major revision advances from `a` to `b`. Strict
+  predecessor validators reject this new root shape by design.
 - The Python package version is release metadata. The serialized payload
   contract version is the `schema` string.
 
-## `altium_monkey.design.a2`
+## `altium_monkey.design.b0`
 
 Emitter: `AltiumDesign.to_json(...)`
 
@@ -51,12 +51,13 @@ Generator: `altium_monkey`
 
 This is the full Altium project/design analysis contract. It combines project
 metadata, schematic sheet metadata, variants, enriched schematic components,
-compiled nets, resolved schematic hierarchy metadata, physical page
-projections, optional PCB pick-and-place data, and optional lookup indexes.
+compiled nets, resolved schematic hierarchy metadata, the compiled schematic
+graph, narrow physical-page presentation metadata, optional PCB pick-and-place
+data, and optional lookup indexes.
 
 Required root fields:
 
-- `schema`: always `altium_monkey.design.a2`
+- `schema`: always `altium_monkey.design.b0`
 - `generator`: always `altium_monkey`
 - `project`: project identity and project parameters
 - `variants`: project variant definitions, including DNP lists and parameter overrides when available
@@ -64,7 +65,9 @@ Required root fields:
 - `sheets`: reachable schematic documents and sheet metadata
 - `components`: schematic components enriched for downstream consumers
 - `schematic_hierarchy`: resolved schematic hierarchy metadata for visualizers
-- `physical_pages`: compiled physical schematic page projection
+- `compiled_schematic_graph`: required variant-neutral source-neutral graph
+- `physical_page_metadata`: required Altium presentation facts keyed by graph
+  page occurrence
 - `nets`: compiled net records
 
 Optional root fields:
@@ -181,41 +184,48 @@ aggregates public diagnostics from the compile owner, annotation parser,
 logical documents, physical documents, physical sheet symbols, compiled
 components, and compiled nets.
 
-### Physical Pages and SVG Identity
+### Compiled Schematic Graph and Drawing Identity
 
-`physical_pages` is always present and is the compiled physical schematic page
-projection. Each row
-identifies one physical sheet instance and includes page-local components,
-page-local nets, graphical evidence, hierarchy identity, and source document
-metadata where available.
+`compiled_schematic_graph` is always present and uses schema
+`altium_monkey.compiled_schematic_graph.a0` with identity namespace
+`sch.compiled_schematic_graph.a0`. Its ten collections are:
+
+- `unit_definitions`
+- `page_definitions`
+- `unit_occurrences`
+- `page_occurrences`
+- `hierarchy_occurrences`
+- `component_occurrences`
+- `local_net_occurrences`
+- `terminal_occurrences`
+- `hierarchy_terminal_bindings`
+- `graphical_artifact_links`
+
+Definitions describe reusable logical source material. Occurrences describe
+the realized compiled design. Local scalar nets belong to page occurrences,
+and hierarchy terminal bindings explicitly connect parent sheet entries to
+child ports. Aggregate bus and harness carriers remain drawing evidence and do
+not become fake scalar terminals or local nets.
 
 The review-safe identity for rendered schematic graphics is:
 
 ```text
-physical_page.id + svg_id
+page_occurrence_ref + artifact_key + element_id
 ```
 
-This matters for repeated sheets and multi-channel projects because one logical
-`.SchDoc` object and SVG ID can represent several physical components with
-different resolved designators.
+Current schematic SVG/IR links use `artifact_key="sch.dwg_scene"`.
+`graphical_artifact_links` resolve each scoped selector to a semantic target.
+This matters because one logical `.SchDoc` object and element id can occur in
+several realized pages with different resolved designators.
 
-When `include_indexes=True`, physical-page-aware lookup maps are emitted:
+`physical_page_metadata` is keyed by `page_occurrence_ref` and carries only
+Altium presentation facts: physical instance path, channel index/prefix/alpha,
+logical and physical room names, and document number. It does not repeat
+components or nets.
 
-- `svg_to_component`: legacy scalar map, containing only unambiguous one-to-one
-  SVG/component mappings
-- `svg_to_components`: logical SVG ID to all physical component designators
-- `physical_svg_to_components`: `"{physical_page.id}|{svg_id}"` to page-local
-  physical component designators
-- `component_to_physical_page`: physical component designator to page id
-- `physical_page_to_components`: page id to component designators
-- `physical_page_to_nets`: page id to net names
-- `net_to_physical_pages`: net name to physical page ids
-
-Simple projects without repeated physical sheet instances decay to the
-historical scalar component/net/SVG shape while still being produced through
-the compiled design path. Repeated and channelized projects should use
-`physical_pages`, `svg_to_components`, or `physical_svg_to_components` rather
-than assuming a single `svg_id` identifies one physical component.
+When `include_indexes=True`, compatibility indexes may include
+`svg_to_component`, `svg_to_components`, `component_to_nets`, and
+`net_to_components`. Design a2 page-derived indexes are not emitted.
 
 ### Design Nets
 
@@ -251,10 +261,12 @@ Each placement contains:
 - `description`
 - `parameters`
 
-`design_a1.schema.json` remains bundled for strict validators pinned to the
-pre-compiled-design project contract. `design_a0.schema.json` remains bundled
-for readers that need the first public design contract. Current
-`AltiumDesign.to_json(...)` output uses `altium_monkey.design.a2`.
+`design_a2.schema.json` remains bundled for archived physical-page payloads.
+`design_a1.schema.json` and `design_a0.schema.json` remain bundled for earlier
+contracts. Current `AltiumDesign.to_json(...)` output uses
+`altium_monkey.design.b0`. A graph-absent or unknown-graph-schema schematic
+payload must be rejected with a clear migration error rather than synthesized
+from Design a2 `physical_pages`.
 
 ## `altium_monkey.netlist.a0`
 

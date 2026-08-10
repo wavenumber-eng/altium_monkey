@@ -1,3 +1,64 @@
+# altium-monkey 2026.08.10 Release Notes
+
+Package version: `2026.8.10`
+
+`2026.08.10` is represented in Python package metadata as the PEP 440
+canonical form `2026.8.10`.
+
+This release publishes the consolidated schematic design compiler, the
+source-neutral compiled schematic graph, cross-platform project discovery
+fixes, and the complete three-family Altium stroke webfont bundle.
+
+## Breaking Design b0 Contract
+
+Project Design JSON advances from `altium_monkey.design.a2` to
+`altium_monkey.design.b0`. Design b0 requires the embedded
+`altium_monkey.compiled_schematic_graph.a0`, which retains realized hierarchy,
+multipart component bodies, page-local scalar nets, terminals, hierarchy
+bindings, and scoped drawing evidence with stable canonical identities.
+
+Design b0 removes the duplicated Design a2 `physical_pages` projection. Its
+replacement, `physical_page_metadata`, is narrow presentation metadata keyed by
+canonical page-occurrence IDs. Project variants and DNP/fitted state remain in
+the surrounding Design payload and are intentionally outside the
+variant-neutral graph. The Design a2 schema remains bundled only for validating
+archived payloads; consumers must explicitly migrate to Design b0.
+
+Python and native C++ emit identical graph and page-metadata payloads.
+
+## Consolidated Schematic Compilation
+
+`AltiumDesign.to_netlist()` and the function-level `compile_netlist()` entry now
+both compile an `AltiumCompiledDesign` and project its netlist. The superseded
+Python multi-sheet project compiler and public WireList serialization path were
+removed; WireList cannot represent repeated/channel hierarchy without losing
+information.
+
+The compiler now preserves Altium's fractional scalar connectivity, metric
+endpoint tolerance, port-body electrical lines, bus/harness object dispatch,
+sheet-entry fractional placement, repeated-channel naming and provenance,
+physical sheet expansion, sheet/document numbering, device-sheet behavior, and
+multipart duplicate-designator semantics. These fixes cover flat, hierarchical,
+repeated-channel, metric, bus/harness, and multipart projects.
+
+## Cross-Platform Project Discovery
+
+Fixed `.PrjPcb` document discovery on Linux, macOS, and WSL when Altium stores
+nested `SchDoc`, `PcbDoc`, or `OutJob` paths with Windows-style backslash
+separators. Reachable sheets are distinguished by full project-relative paths
+when folders contain duplicate filenames, and managed device-sheet sections
+survive project save without duplicate document entries.
+
+## Complete Altium Stroke Webfont Bundle
+
+Expanded the packaged webfont bundle to all three native stroke styles.
+`Altium Stroke`, `Altium Stroke Sans`, and `Altium Stroke Serif` each ship in
+Light, Regular, and Bold weights with per-style stroke ratios tuned against
+Altium rendering. Sans and serif include newly authored Greek, math, and
+electronics symbols, corrected proportional symbol spacing, and family-native
+e-grave glyphs. The bundled demo shows the same equation, BOM, symbol, weight,
+and fabrication-note specimens in all three families.
+
 # altium-monkey 2026.08.01 Release Notes
 
 Package version: `2026.8.1`
@@ -203,8 +264,7 @@ For review-safe graphical identity in repeated/channel projects, combine a
 ## WireList API Removal
 
 WireList serialization APIs are removed from the public output path:
-`AltiumDesign.to_wirelist()`, `Netlist.to_wirelist()`, and
-`AltiumSchDoc.to_netlist(format="wirelist")`. WireList can lose hierarchy,
+`AltiumDesign.to_wirelist()` and `Netlist.to_wirelist()`. WireList can lose hierarchy,
 zero-pin interface, long-name, alias, and repeated-channel information. Use
 `AltiumDesign.to_json()`, `AltiumDesign.compile().to_dict()`, or
 `AltiumDesign.to_netlist().to_json()` for programmatic consumers.

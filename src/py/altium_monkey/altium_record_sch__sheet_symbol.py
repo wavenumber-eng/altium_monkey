@@ -49,7 +49,9 @@ class AltiumSchSheetSymbol(SchGraphicalObject):
         super().__init__()
         # Dimensions from SchDataRectangularGroup base class
         self.x_size: int = 400  # Width in mils
+        self.x_size_frac: int = 0
         self.y_size: int = 300  # Height in mils
+        self.y_size_frac: int = 0
         # SheetSymbol-specific fields
         self.is_solid: bool = True  # Fill interior
         self.line_width: LineWidth = LineWidth.SMALL  # Border thickness
@@ -68,7 +70,9 @@ class AltiumSchSheetSymbol(SchGraphicalObject):
         self.file_name = None  # AltiumSchFileName  record
         # Track field presence for round-trip fidelity
         self._has_x_size: bool = False
+        self._has_x_size_frac: bool = False
         self._has_y_size: bool = False
+        self._has_y_size_frac: bool = False
         self._has_is_solid: bool = False
         self._has_line_width: bool = False
         self._has_symbol_type: bool = False
@@ -300,7 +304,13 @@ class AltiumSchSheetSymbol(SchGraphicalObject):
 
         # Parse dimensions
         self.x_size, self._has_x_size = s.read_int(record, Fields.X_SIZE, default=400)
+        self.x_size_frac, self._has_x_size_frac = s.read_int(
+            record, "XSize_Frac", default=0
+        )
         self.y_size, self._has_y_size = s.read_int(record, Fields.Y_SIZE, default=300)
+        self.y_size_frac, self._has_y_size_frac = s.read_int(
+            record, "YSize_Frac", default=0
+        )
 
         # Parse IsSolid
         self.is_solid, self._has_is_solid = s.read_bool(
@@ -356,7 +366,15 @@ class AltiumSchSheetSymbol(SchGraphicalObject):
         raw = self._raw_record
 
         s.write_int(record, Fields.X_SIZE, self.x_size, raw)
+        if self._has_x_size_frac or self.x_size_frac != 0:
+            s.write_int(record, "XSize_Frac", self.x_size_frac, raw, force=True)
+        else:
+            s.remove_field(record, "XSize_Frac")
         s.write_int(record, Fields.Y_SIZE, self.y_size, raw)
+        if self._has_y_size_frac or self.y_size_frac != 0:
+            s.write_int(record, "YSize_Frac", self.y_size_frac, raw, force=True)
+        else:
+            s.remove_field(record, "YSize_Frac")
         s.write_bool(record, Fields.IS_SOLID, self.is_solid, raw)
         s.write_int(record, Fields.LINE_WIDTH, self.line_width.value, raw)
         s.write_str(record, Fields.SYMBOL_TYPE, self.symbol_type, raw)

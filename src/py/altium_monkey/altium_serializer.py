@@ -780,6 +780,7 @@ class Fields:
     TEXT_STYLE = FieldDef.simple("TextStyle")
     SIDE = FieldDef.simple("Side")
     DISTANCE_FROM_TOP = FieldDef.simple("DistanceFromTop")
+    DISTANCE_FROM_TOP_FRAC = FieldDef.simple("DistanceFromTop_Frac")
     DISTANCE_FROM_TOP_FRAC1 = FieldDef.simple("DistanceFromTop_Frac1")
     OWNER_INDEX_ADDITIONAL_LIST = FieldDef.simple("OwnerIndexAdditionalList")
     NOT_AUTO_POSITION = FieldDef.simple("NotAutoPosition")

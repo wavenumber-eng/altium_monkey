@@ -5613,14 +5613,15 @@ class AltiumSchDoc(JsonApplyMixin):
         Returns:
             Set of (x, y) tuples in Altium coordinates where junctions render
         """
-        from collections.abc import Iterable
         from collections import Counter
 
         def object_points_signature(
             objects: Iterable[object],
         ) -> tuple[tuple[tuple[int, int], ...], ...]:
             return tuple(
-                tuple((int(point.x), int(point.y)) for point in getattr(obj, "points", ()))
+                tuple(
+                    (int(point.x), int(point.y)) for point in getattr(obj, "points", ())
+                )
                 for obj in objects
             )
 
@@ -6808,12 +6809,13 @@ class AltiumSchDoc(JsonApplyMixin):
                         safe_name=safe_name,
                         component_count=len(instances),
                         component_designators=tuple(
-                            self._component_designator_text(comp)
-                            for comp in instances
+                            self._component_designator_text(comp) for comp in instances
                         ),
                         selected_designator=self._component_designator_text(template),
                         lib_reference=str(getattr(template, "lib_reference", "") or ""),
-                        design_item_id=str(getattr(template, "design_item_id", "") or ""),
+                        design_item_id=str(
+                            getattr(template, "design_item_id", "") or ""
+                        ),
                         original_name=symbol_key,
                         pin_count=len(getattr(template, "pins", []) or []),
                         object_count=self._component_symbol_inventory_object_count(
@@ -6935,7 +6937,8 @@ class AltiumSchDoc(JsonApplyMixin):
         )
         return AltiumExtractedAsset(
             ref=ref,
-            filename=summaries[index].extraction_filename or f"symbol_{index:03d}.SchLib",
+            filename=summaries[index].extraction_filename
+            or f"symbol_{index:03d}.SchLib",
             schlib=self.extract_symbol(ref),
         )
 
