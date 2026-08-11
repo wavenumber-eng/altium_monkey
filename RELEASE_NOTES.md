@@ -1,3 +1,32 @@
+# altium-monkey 2026.08.11 Release Notes
+
+Package version: `2026.8.11`
+
+`2026.08.11` is represented in Python package metadata as the PEP 440
+canonical form `2026.8.11`.
+
+This patch release fixes schematic parameter-stream Unicode compatibility for
+SchDoc and SchLib files.
+
+## Schematic Unicode Encoding
+
+- Writers now follow Altium's native representation for non-ASCII text:
+  a lossless `%UTF8%<Field>` sidecar plus a Windows-1252-safe ordinary field.
+- Leading and trailing whitespace is preserved exactly in authoritative UTF-8
+  sidecars.
+- Readers recover legacy unmarked UTF-8 emitted by older Monkey versions when
+  Windows-1252 cannot decode the record, and report the affected stream,
+  record, pair, and field where that context is available.
+- Malformed content that is neither valid Windows-1252 nor valid UTF-8 now
+  fails closed consistently in Python and the native implementation.
+
+## Verification
+
+The release was checked with exact reported CJK byte sequences, byte-exact
+Python/native writer parity, SchDoc and SchLib Unicode round trips, project
+compilation, public package tests, clean wheel installation, and distribution
+metadata checks.
+
 # altium-monkey 2026.08.10 Release Notes
 
 Package version: `2026.8.10`

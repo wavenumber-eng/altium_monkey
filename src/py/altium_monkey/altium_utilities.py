@@ -5,6 +5,7 @@ Internal helpers for low-level Altium OLE stream parsing and serialization.
 import logging
 import struct
 import zlib
+from collections.abc import Mapping
 from typing import Any
 
 from .altium_ole import AltiumOleFile
@@ -118,8 +119,15 @@ def get_records_in_section(
                 result = {}
                 empty_pair_cnt = 0
 
-                for pair in parse_byte_record(record):
-                    pair = decode_byte_array(pair)
+                for pair_index, raw_pair in enumerate(parse_byte_record(record)):
+                    field_name = raw_pair.partition(b"=")[0].decode(
+                        "ascii", errors="replace"
+                    )
+                    context = (
+                        f"section {section!r}, record {len(records)}, "
+                        f"pair {pair_index}, field {field_name!r}"
+                    )
+                    pair = decode_byte_array(raw_pair, context=context)
 
                     try:
                         if "=" in pair:
@@ -161,7 +169,7 @@ def create_stream_from_records(records: list[dict[str, Any]]) -> bytes:
         - Text records are serialized as "|key=value|key=value..." format
         - Binary records with '__BINARY_DATA__' preserve original data exactly
         - Binary records with '__SUBRECORDS__' are re-serialized from parsed SubRecords
-        - Text encoding uses UTF-8 for keys with "%UTF8%" prefix, cp1252 otherwise
+        - Non-ASCII values receive a UTF-8 sidecar plus a cp1252-safe fallback
         - UNHANDLED keys (malformed pairs) are serialized without key=value format
         - Each record is prefixed with a 4-byte little-endian length field
         - Text records are null-terminated; binary records use original format
@@ -209,29 +217,11 @@ def create_stream_from_records(records: list[dict[str, Any]]) -> bytes:
                 stream_data.extend(binary_data)
 
         else:
-            # Handle text record
-            # Convert dictionary to "|key=value|key=value|key=value" format
-            pairs = []
-            for key, value in record.items():
-                # Skip our special binary record keys
-                if key.startswith("__") and key.endswith("__"):
-                    continue
-
-                if "UNHANDLED" in key:
-                    pairs.append("|".encode("cp1252"))
-                else:
-                    if "%UTF8%" in key:
-                        pairs.append(f"|{key}={value}".encode())
-                    else:
-                        # For non-UTF8 keys, handle Unicode characters gracefully
-                        try:
-                            pairs.append(f"|{key}={value}".encode("cp1252"))
-                        except UnicodeEncodeError:
-                            # Fall back to UTF-8 for Unicode characters
-                            pairs.append(f"|{key}={value}".encode())
-
-            # Join all pairs (each already starts with |)
-            record_bytes = b"".join(pairs)
+            # Handle text record. Altium emits a UTF-8 sidecar followed by an
+            # ACP-safe fallback whenever a value contains non-ASCII text.
+            record_bytes = b"".join(
+                _encode_altium_text_pairs(record, skip_private_keys=False)
+            )
 
             # Encode to UTF-8
             # record_bytes = record_string.encode('utf-8')
@@ -566,7 +556,7 @@ def parse_byte_record(record: bytes) -> list[bytes]:
     return result
 
 
-def decode_byte_array(byte_array: bytes) -> str:
+def decode_byte_array(byte_array: bytes, *, context: str | None = None) -> str:
     """
     Decode byte array as UTF-8 if it starts with %UTF8%, otherwise as cp1252.
 
@@ -584,6 +574,9 @@ def decode_byte_array(byte_array: bytes) -> str:
     - 0xA6 (broken bar) -> | (pipe)
     - 0x8E alone -> | (pipe)
     - 0x8E 0x8E -> 0x8E (literal, un-doubled)
+
+    Legacy unmarked UTF-8 is recovered only when strict cp1252 fails. ``context``
+    is included in the recovery warning when supplied.
 
     See native StrUtils.ProcessMBCSString() for authoritative behavior.
     """
@@ -605,11 +598,25 @@ def decode_byte_array(byte_array: bytes) -> str:
         # maps to U+017D (Z with caron) in cp1252 but U+008E in ISO-8859-1.
         processed = _process_pipe_escapes_bytes(byte_array)
 
-        # Decode as cp1252 (Windows-1252) - Altium is a Windows application
+        # Decode as cp1252 (Windows-1252) - Altium is a Windows application.
+        # Older Monkey writers could put raw UTF-8 beneath an unmarked key. Only
+        # recover that legacy defect when strict cp1252 fails and the original
+        # bytes form valid UTF-8; valid cp1252 remains authoritative.
         try:
             decoded = processed.decode("cp1252")
-        except UnicodeDecodeError as e:
-            raise ValueError(f"Failed to decode cp1252 content: {e}") from e
+        except UnicodeDecodeError as cp1252_error:
+            try:
+                decoded = byte_array.decode("utf-8")
+            except UnicodeDecodeError as utf8_error:
+                raise ValueError(
+                    f"Failed to decode cp1252 content: {cp1252_error}"
+                ) from utf8_error
+            location = f" ({context})" if context else ""
+            log.warning(
+                "Recovered unmarked UTF-8 in Altium text record%s; "
+                "rewrite the file to add a %%UTF8%% sidecar",
+                location,
+            )
 
     return decoded
 
@@ -694,12 +701,73 @@ def _escape_pipe_for_altium(value: str) -> str:
     return "".join(result)
 
 
+_UTF8_FIELD_PREFIX = "%UTF8%"
+
+
+def _needs_utf8_sidecar(value: str) -> bool:
+    """Match Altium's dynamic-string sidecar decision for text parameters."""
+
+    return any(ord(char) > 0x7E and char != "\x8e" for char in value)
+
+
+def _encode_altium_pair(key: str, value: str, *, utf8: bool) -> bytes:
+    escaped_value = _escape_pipe_for_altium(value)
+    pair = f"|{key}={escaped_value}"
+    if utf8:
+        return pair.encode("utf-8")
+    return pair.encode("cp1252", errors="replace")
+
+
+def _skip_altium_text_key(key: str, *, skip_private_keys: bool) -> bool:
+    if skip_private_keys:
+        return key.startswith("_")
+    return key.startswith("__") and key.endswith("__")
+
+
+def _encode_altium_field_pairs(
+    key: str, raw_value: object, explicit_keys: set[str]
+) -> list[bytes]:
+    if "UNHANDLED" in key:
+        return [b"|"]
+
+    value = str(raw_value)
+    is_utf8 = key.startswith(_UTF8_FIELD_PREFIX)
+    pairs: list[bytes] = []
+    sibling_key = f"{_UTF8_FIELD_PREFIX}{key}".casefold()
+    if not is_utf8 and _needs_utf8_sidecar(value) and sibling_key not in explicit_keys:
+        pairs.append(
+            _encode_altium_pair(f"{_UTF8_FIELD_PREFIX}{key}", value, utf8=True)
+        )
+    pairs.append(_encode_altium_pair(key, value, utf8=is_utf8))
+    return pairs
+
+
+def _encode_altium_text_pairs(
+    record: Mapping[str, object], *, skip_private_keys: bool
+) -> list[bytes]:
+    """Encode Altium parameter pairs with UTF-8 sidecars and safe fallbacks."""
+
+    explicit_keys = {
+        key.casefold()
+        for key in record
+        if isinstance(key, str) and key.startswith(_UTF8_FIELD_PREFIX)
+    }
+    pairs: list[bytes] = []
+    for key, raw_value in record.items():
+        if _skip_altium_text_key(key, skip_private_keys=skip_private_keys):
+            continue
+        pairs.extend(_encode_altium_field_pairs(key, raw_value, explicit_keys))
+    return pairs
+
+
 def encode_altium_record(record: dict) -> bytes:
     """
     Encode a record dictionary back to Altium format (round-trip support).
 
     Handles both text records (key-value pairs) and binary records (PIN, etc.).
-    Text records have pipe characters in values escaped per native StrUtils.ReplaceSpecialParameterChars.
+    Text records have pipe characters escaped per native
+    StrUtils.ReplaceSpecialParameterChars. Non-ASCII values use Altium's
+    UTF-8-sidecar plus ACP-safe-fallback representation.
 
     Args:
         record: Dictionary of key-value pairs, or binary record with special keys
@@ -730,30 +798,7 @@ def encode_altium_record(record: dict) -> bytes:
             )
         return length_bytes + binary_data
 
-    # Text record: Build pipe-separated key=value pairs
-    # Each pair is encoded separately - %UTF8% keys use UTF-8, others use cp1252
-    # This matches the behavior in create_stream_from_records
-    encoded_pairs = []
-    for key, value in record.items():
-        # Skip internal metadata fields (starting with underscore)
-        if key.startswith("_"):
-            continue
-        # Escape pipe and special characters in values
-        escaped_value = _escape_pipe_for_altium(str(value))
-
-        # Encode %UTF8% keys as UTF-8, others as cp1252
-        if "%UTF8%" in key:
-            # UTF-8 encoding for %UTF8% prefixed keys (preserves special chars correctly)
-            pair_str = f"|{key}={escaped_value}"
-            encoded_pairs.append(pair_str.encode("utf-8"))
-        else:
-            pair_str = f"|{key}={escaped_value}"
-            try:
-                encoded_pairs.append(pair_str.encode("cp1252"))
-            except UnicodeEncodeError:
-                # Characters outside cp1252 range require %UTF8% prefix
-                pair_str = f"|%UTF8%{key}={escaped_value}"
-                encoded_pairs.append(pair_str.encode("utf-8"))
+    encoded_pairs = _encode_altium_text_pairs(record, skip_private_keys=True)
 
     # Join all encoded pairs
     record_bytes = b"".join(encoded_pairs)
