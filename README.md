@@ -54,7 +54,8 @@ Common workflows:
 
 ## Install
 
-Python 3.11 and Python 3.12 are supported for this release.
+Normal GIL-enabled CPython 3.12 through Python 3.14 are supported. Free-threaded
+Python builds are not currently part of the support contract.
 
 ```powershell
 pip install altium-monkey

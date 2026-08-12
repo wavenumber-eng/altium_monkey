@@ -401,6 +401,9 @@ class AltiumCompiledNetTerminal:
     pin: str
     pin_name: str = ""
     pin_type: str = "PASSIVE"
+    _source_component_uid: str = field(default="", repr=False)
+    _source_pin_uid: str = field(default="", repr=False)
+    _source_owner_part_id: int = field(default=1, repr=False)
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible terminal record."""

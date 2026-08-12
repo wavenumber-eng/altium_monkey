@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .altium_compiled_design_model import (
+    AltiumCompileDiagnostic,
     AltiumCompiledComponent,
     AltiumCompiledDesign,
     AltiumCompiledNet,
@@ -276,53 +277,31 @@ def _realized_page_occurrences(
     return tuple(occurrences)
 
 
-def _component_part_suffix(part_count: int, part_id: int) -> str:
-    if part_count <= 1 or part_id <= 0:
-        return ""
-    value = part_id
-    suffix = ""
-    while value > 0:
-        value, remainder = divmod(value - 1, 26)
-        suffix = chr(ord("A") + remainder) + suffix
-    return suffix
-
-
-def _body_terminal_designators(body: _BodyOccurrenceEvidence) -> set[str]:
-    values = {
-        str(body.physical_designator or ""),
-        str(body.display_designator or ""),
-    }
-    suffix = _component_part_suffix(body.part_count, body.current_part_id)
-    if suffix:
-        values.update(
-            {
-                f"{body.physical_designator}{suffix}",
-                f"{body.display_designator}{suffix}",
-            }
-        )
-    return {value for value in values if value}
-
-
-def _source_components_by_logical_designator(
+def _source_components_by_logical_uid(
     design: "AltiumDesign", compiled: AltiumCompiledDesign
-) -> dict[tuple[str, str], list[SchComponentInfo]]:
-    result: dict[tuple[str, str], list[SchComponentInfo]] = defaultdict(list)
+) -> dict[tuple[str, str], SchComponentInfo]:
+    result: dict[tuple[str, str], SchComponentInfo] = {}
     for logical in compiled.logical_documents:
         if logical.ordinal >= len(design.schdocs):
             continue
         for component in design.schdocs[logical.ordinal].get_components():
-            designator = str(component.designator or "").casefold()
-            if designator:
-                result[(logical.id, designator)].append(component)
-    return dict(result)
+            source_uid = str(component.unique_id or "")
+            if not source_uid:
+                continue
+            source_key = (logical.id, source_uid)
+            if source_key in result:
+                raise ValueError(
+                    "duplicate component source UID in one logical document: "
+                    f"{logical.id}:{source_uid}"
+                )
+            result[source_key] = component
+    return result
 
 
 def _body_occurrence_evidence(
     group: AltiumCompiledComponent, source_component: SchComponentInfo
 ) -> _BodyOccurrenceEvidence:
     source_uid = str(getattr(source_component, "unique_id", "") or "")
-    if not source_uid:
-        raise ValueError(f"compiled component body {group.id} has no stable source UID")
     record = getattr(source_component, "record", source_component)
     return _BodyOccurrenceEvidence(
         id=f"{group.id}:body:{source_uid}",
@@ -340,30 +319,44 @@ def _body_occurrence_evidence(
 
 
 def _expanded_component_body_evidence(
-    design: "AltiumDesign",
-    compiled: AltiumCompiledDesign,
+    state: "_ProjectionState",
     component_body_evidence: Sequence[AltiumCompiledComponent],
 ) -> tuple[_BodyOccurrenceEvidence, ...]:
-    source_components_by_logical_and_designator = (
-        _source_components_by_logical_designator(design, compiled)
+    source_components_by_logical_uid = _source_components_by_logical_uid(
+        state.design, state.compiled
     )
     result: list[_BodyOccurrenceEvidence] = []
     seen: set[tuple[str, str]] = set()
     for group in component_body_evidence:
-        source_components = source_components_by_logical_and_designator.get(
-            (group.logical_document_id, group.logical_designator.casefold()), []
-        )
-        if not source_components:
-            raise ValueError(
-                f"compiled component group {group.id} has no source symbol bodies"
+        source_uid = str(group.source_object_id or "")
+        if not source_uid:
+            _add_compile_diagnostic(
+                state,
+                code="missing_component_source_identity",
+                message=(
+                    "Component body was omitted from the compiled schematic graph "
+                    "because it has no stable source identity."
+                ),
+                source_id=group.id,
             )
-        for source_component in source_components:
-            body = _body_occurrence_evidence(group, source_component)
-            key = (group.physical_document_id, body.source_object_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append(body)
+            continue
+        source_component = source_components_by_logical_uid.get(
+            (group.logical_document_id, source_uid)
+        )
+        if source_component is None:
+            raise ValueError(
+                "compiled component body has unresolved source UID: "
+                f"{group.logical_document_id}:{source_uid}"
+            )
+        body = _body_occurrence_evidence(group, source_component)
+        key = (group.physical_document_id, body.source_object_id)
+        if key in seen:
+            raise ValueError(
+                "duplicate component body source UID in one physical document: "
+                f"{group.physical_document_id}:{body.source_object_id}"
+            )
+        seen.add(key)
+        result.append(body)
     return tuple(result)
 
 
@@ -375,17 +368,14 @@ def _pin_matches_terminal(
     pin_name: str,
     pin_source_uid: str,
 ) -> bool:
-    return (
+    source_uid = str(getattr(pin, "unique_id", "") or "")
+    selector_matches = (
         str(getattr(pin, "designator", "") or "") == pin_designator
         and str(getattr(pin, "name", "") or "") == pin_name
-        and (
-            not pin_source_uid
-            or str(getattr(pin, "unique_id", "") or "") == pin_source_uid
-        )
-        and (
-            (owner_part := int(getattr(pin, "owner_part_id", None) or 1)) <= 0
-            or owner_part == max(1, body.current_part_id)
-        )
+    )
+    return (source_uid == pin_source_uid if pin_source_uid else selector_matches) and (
+        (owner_part := int(getattr(pin, "owner_part_id", None) or 1)) <= 0
+        or owner_part == max(1, body.current_part_id)
     )
 
 
@@ -484,8 +474,12 @@ def _component_body_drawing_element_ids(
 def _physical_local_net_evidence(net: AltiumCompiledNet) -> frozenset[str]:
     selectors: set[str] = set()
     for terminal in getattr(net, "terminals", ()) or ():
+        component_uid = str(getattr(terminal, "_source_component_uid", "") or "")
+        pin_uid = str(getattr(terminal, "_source_pin_uid", "") or "")
         selectors.add(
             "terminal\u001f"
+            f"{component_uid}\u001f"
+            f"{pin_uid}\u001f"
             f"{getattr(terminal, 'designator', '')}\u001f"
             f"{getattr(terminal, 'pin', '')}\u001f"
             f"{getattr(terminal, 'pin_name', '')}"
@@ -551,6 +545,29 @@ class _ProjectionState:
     page_occurrence_by_key: dict[str, str]
     page_occurrences_by_physical: dict[str, list[str]]
     hierarchy_by_child_page: dict[str, str]
+    compile_diagnostics: list[AltiumCompileDiagnostic]
+    compile_diagnostic_keys: set[tuple[str, str | None]]
+
+
+def _add_compile_diagnostic(
+    state: _ProjectionState,
+    *,
+    code: str,
+    message: str,
+    source_id: str | None,
+) -> None:
+    key = (code, source_id)
+    if key in state.compile_diagnostic_keys:
+        return
+    state.compile_diagnostic_keys.add(key)
+    state.compile_diagnostics.append(
+        AltiumCompileDiagnostic(
+            severity="warning",
+            code=code,
+            message=message,
+            source_id=source_id,
+        )
+    )
 
 
 def _add_graphical_link(
@@ -587,6 +604,7 @@ def _build_definition_and_occurrence_rows(
     compiled: AltiumCompiledDesign,
     allocator: SchCompiledSchematicGraphIdentityAllocator,
     graph: AltiumCompiledSchematicGraph,
+    compile_diagnostics: list[AltiumCompileDiagnostic],
 ) -> _ProjectionState:
     unit_definition_by_logical: dict[str, str] = {}
     page_definition_by_logical: dict[str, str] = {}
@@ -671,6 +689,11 @@ def _build_definition_and_occurrence_rows(
         page_occurrence_by_key=page_occurrence_by_key,
         page_occurrences_by_physical=page_occurrences_by_physical,
         hierarchy_by_child_page={},
+        compile_diagnostics=compile_diagnostics,
+        compile_diagnostic_keys={
+            (diagnostic.code, diagnostic.source_id)
+            for diagnostic in compile_diagnostics
+        },
     )
     _build_hierarchy_rows(state, unit_occurrence_by_key)
     return state
@@ -736,12 +759,8 @@ def _build_component_rows(
     component_body_evidence: Sequence[AltiumCompiledComponent],
 ) -> tuple[dict[tuple[str, str], str], dict[tuple[str, str], _BodyOccurrenceEvidence]]:
     component_by_body_and_page: dict[tuple[str, str], str] = {}
-    body_candidates: dict[tuple[str, str], list[_BodyOccurrenceEvidence]] = defaultdict(
-        list
-    )
-    for body in _expanded_component_body_evidence(
-        state.design, state.compiled, component_body_evidence
-    ):
+    body_by_page_and_source_uid: dict[tuple[str, str], _BodyOccurrenceEvidence] = {}
+    for body in _expanded_component_body_evidence(state, component_body_evidence):
         page_refs = state.page_occurrences_by_physical.get(
             body.physical_document_id, ()
         )
@@ -764,8 +783,14 @@ def _build_component_rows(
             )
             state.graph.component_occurrences.append(component)
             component_by_body_and_page[(body.id, page_ref)] = str(component["id"])
-            for designator in _body_terminal_designators(body):
-                body_candidates[(page_ref, designator.casefold())].append(body)
+            source_key = (page_ref, body.source_object_id)
+            previous = body_by_page_and_source_uid.get(source_key)
+            if previous is not None and previous.id != body.id:
+                raise ValueError(
+                    "duplicate component source UID in one realized page: "
+                    f"{page_ref}:{body.source_object_id}"
+                )
+            body_by_page_and_source_uid[source_key] = body
             for element_id in _component_body_drawing_element_ids(body):
                 _add_graphical_link(
                     state,
@@ -774,12 +799,7 @@ def _build_component_rows(
                     target_ref=component["id"],
                     element_id=element_id,
                 )
-    unambiguous_bodies = {
-        key: candidates[0]
-        for key, candidates in body_candidates.items()
-        if len({candidate.id for candidate in candidates}) == 1
-    }
-    return component_by_body_and_page, unambiguous_bodies
+    return component_by_body_and_page, body_by_page_and_source_uid
 
 
 def _aggregate_net_elements(
@@ -795,41 +815,20 @@ def _aggregate_net_elements(
     return {key for key, net_ids in net_ids_by_element.items() if len(net_ids) > 1}
 
 
-def _pin_endpoint_uids(
-    net: AltiumCompiledNet, terminal: AltiumCompiledNetTerminal
-) -> set[str]:
-    result: set[str] = set()
-    for endpoint in net.endpoints:
-        element_id = _graphical_element_id(endpoint)
-        if (
-            endpoint.role == "pin"
-            and endpoint.designator.casefold() == terminal.designator.casefold()
-            and endpoint.pin == terminal.pin
-            and endpoint.pin_name == terminal.pin_name
-            and element_id
-        ):
-            result.add(element_id)
-    return result
-
-
 def _component_pin_terminal_row(
     state: _ProjectionState,
     *,
-    net: AltiumCompiledNet,
     terminal: AltiumCompiledNetTerminal,
     page_ref: str,
     body: _BodyOccurrenceEvidence,
     component_by_body_and_page: dict[tuple[str, str], str],
 ) -> tuple[dict[str, object], str]:
-    pin_endpoint_uids = _pin_endpoint_uids(net, terminal)
     pin = _source_pin_for_terminal(
         body.source_component,
         body,
         pin_designator=terminal.pin,
         pin_name=terminal.pin_name,
-        pin_source_uid=next(iter(pin_endpoint_uids))
-        if len(pin_endpoint_uids) == 1
-        else "",
+        pin_source_uid=terminal._source_pin_uid,
     )
     source = compiled_schematic_pin_source_identity(
         component_source_uid=body.source_object_id,
@@ -853,6 +852,48 @@ def _component_pin_terminal_row(
         source_identity=source,
     )
     return row, str(getattr(pin, "unique_id", "") or "")
+
+
+def _unresolved_component_pin_terminal_row(
+    state: _ProjectionState,
+    *,
+    terminal: AltiumCompiledNetTerminal,
+    page_ref: str,
+) -> dict[str, object] | None:
+    try:
+        source = compiled_schematic_pin_source_identity(
+            component_source_uid=terminal._source_component_uid,
+            owner_part_id=terminal._source_owner_part_id,
+            pin_designator=terminal.pin,
+            pin_name=terminal.pin_name,
+            pin_source_uid=terminal._source_pin_uid,
+        )
+    except ValueError:
+        _add_compile_diagnostic(
+            state,
+            code="missing_terminal_source_identity",
+            message=(
+                "Component-pin terminal was omitted from the compiled schematic "
+                "graph because it has no stable source identity."
+            ),
+            source_id=terminal.id,
+        )
+        return None
+    return _source_row(
+        state.allocator,
+        "sch.terminal_occurrence",
+        source,
+        owner_refs=(page_ref,),
+        page_occurrence_ref=page_ref,
+        role="component_pin",
+        name=terminal.pin_name,
+        pin_designator=terminal.pin,
+        resolution_diagnostics=[
+            "component_occurrence_unresolved",
+            "logical_pin_unresolved",
+        ],
+        source_identity=source,
+    )
 
 
 def _boundary_terminal_row(
@@ -885,22 +926,25 @@ def _collect_net_page_terminals(
     page_ref: str,
     aggregate_elements: set[tuple[str, str]],
     component_by_body_and_page: dict[tuple[str, str], str],
-    body_by_page_and_designator: dict[tuple[str, str], _BodyOccurrenceEvidence],
+    body_by_page_and_source_uid: dict[tuple[str, str], _BodyOccurrenceEvidence],
     row_by_page_element: dict[tuple[str, str], dict[str, object]],
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for terminal in net.terminals:
-        body = body_by_page_and_designator.get(
-            (page_ref, terminal.designator.casefold())
+        body = body_by_page_and_source_uid.get(
+            (page_ref, terminal._source_component_uid)
         )
         if body is None:
-            raise ValueError(
-                "compiled schematic pin terminal has no component body evidence: "
-                f"{physical_id}:{terminal.designator}:{terminal.pin}"
+            unresolved = _unresolved_component_pin_terminal_row(
+                state,
+                terminal=terminal,
+                page_ref=page_ref,
             )
+            if unresolved is not None:
+                rows.append(unresolved)
+            continue
         row, element_id = _component_pin_terminal_row(
             state,
-            net=net,
             terminal=terminal,
             page_ref=page_ref,
             body=body,
@@ -936,7 +980,7 @@ def _collect_terminal_candidates(
     physical_local_nets: Sequence[AltiumCompiledNet],
     aggregate_elements: set[tuple[str, str]],
     component_by_body_and_page: dict[tuple[str, str], str],
-    body_by_page_and_designator: dict[tuple[str, str], _BodyOccurrenceEvidence],
+    body_by_page_and_source_uid: dict[tuple[str, str], _BodyOccurrenceEvidence],
 ) -> tuple[
     dict[tuple[str, str], list[dict[str, object]]],
     dict[tuple[str, str], dict[str, object]],
@@ -953,7 +997,7 @@ def _collect_terminal_candidates(
                 page_ref=page_ref,
                 aggregate_elements=aggregate_elements,
                 component_by_body_and_page=component_by_body_and_page,
-                body_by_page_and_designator=body_by_page_and_designator,
+                body_by_page_and_source_uid=body_by_page_and_source_uid,
                 row_by_page_element=row_by_page_element,
             )
     return rows_by_net_page, row_by_page_element
@@ -1083,7 +1127,7 @@ def _build_net_drawing_links(
 def _build_net_rows(
     state: _ProjectionState,
     component_by_body_and_page: dict[tuple[str, str], str],
-    body_by_page_and_designator: dict[tuple[str, str], _BodyOccurrenceEvidence],
+    body_by_page_and_source_uid: dict[tuple[str, str], _BodyOccurrenceEvidence],
 ) -> dict[tuple[str, str], list[dict[str, object]]]:
     nets = _scalar_physical_local_nets(state.compiled)
     if any(len(net.physical_document_ids) != 1 for net in nets):
@@ -1094,7 +1138,7 @@ def _build_net_rows(
         physical_local_nets=nets,
         aggregate_elements=aggregate_elements,
         component_by_body_and_page=component_by_body_and_page,
-        body_by_page_and_designator=body_by_page_and_designator,
+        body_by_page_and_source_uid=body_by_page_and_source_uid,
     )
     local_refs = _materialize_local_nets(state, nets, rows_by_net_page)
     _build_net_drawing_links(
@@ -1333,6 +1377,7 @@ def build_compiled_schematic_graph(
     compiled: AltiumCompiledDesign,
     *,
     component_body_evidence: Sequence[AltiumCompiledComponent],
+    compile_diagnostics: list[AltiumCompileDiagnostic] | None = None,
 ) -> tuple[AltiumCompiledSchematicGraph, tuple[AltiumPhysicalPageMetadata, ...]]:
     """Build the generic graph and narrow Altium physical-page metadata."""
 
@@ -1343,15 +1388,24 @@ def build_compiled_schematic_graph(
     allocator = SchCompiledSchematicGraphIdentityAllocator(design_scope=scope)
     graph = AltiumCompiledSchematicGraph()
 
-    state = _build_definition_and_occurrence_rows(design, compiled, allocator, graph)
-    component_occurrence_by_body_and_page, body_by_page_and_designator = (
+    projection_diagnostics = (
+        compile_diagnostics if compile_diagnostics is not None else []
+    )
+    state = _build_definition_and_occurrence_rows(
+        design,
+        compiled,
+        allocator,
+        graph,
+        projection_diagnostics,
+    )
+    component_occurrence_by_body_and_page, body_by_page_and_source_uid = (
         _build_component_rows(state, component_body_evidence)
     )
 
     terminal_rows_by_net_and_page = _build_net_rows(
         state,
         component_occurrence_by_body_and_page,
-        body_by_page_and_designator,
+        body_by_page_and_source_uid,
     )
 
     _build_hierarchy_bindings(state, terminal_rows_by_net_and_page)

@@ -1,3 +1,42 @@
+# altium-monkey 2026.08.11-2 Release Notes
+
+Package version: `2026.8.11.post1`
+
+`2026.08.11-2` is represented in Python package metadata as the PEP 440
+canonical form `2026.8.11.post1`.
+
+This second 2026.08.11 release adds Python 3.14 support and fixes compiled
+schematic identity for distinct unannotated components with the same displayed
+designator.
+
+## Python 3.14 Support
+
+- Normal GIL-enabled CPython 3.12, 3.13, and 3.14 are supported. Free-threaded
+  Python builds remain outside the current support contract.
+- Pillow is updated to 12.3.0 so clean Python 3.14 installs resolve from wheels.
+- CadQuery remains an optional example/test dependency; Trimesh and Cascadio
+  are not core dependencies.
+- Release validation now builds first and runs the complete public suite from
+  the exact installed wheel in a clean Python 3.14 environment. A separate
+  plain-wheel environment verifies optional geometry packages are absent.
+
+## Duplicate Unannotated Components
+
+- Distinct terminal-bearing components that share a displayed designator such
+  as `R?` or `M?` retain their exact source component and pin ownership.
+- Identity now survives single-sheet connectivity, hierarchy, repeated sheets,
+  compiled-graph projection, and design-review serialization.
+- Projection consumes exact source-body evidence without expanding candidates
+  by displayed designator. Missing source identity omits only the affected
+  semantic row and emits a compile warning rather than aborting the graph.
+
+## Verification
+
+The release was checked with clean wheel-only installs on CPython 3.12, 3.13,
+and 3.14, the complete installed-wheel public suite on Python 3.14, targeted
+image, text, STEP, Draftsman, and webfont tests, private signoff, exact
+Python/native compiled-graph parity, and native CLI smoke tests.
+
 # altium-monkey 2026.08.11 Release Notes
 
 Package version: `2026.8.11`

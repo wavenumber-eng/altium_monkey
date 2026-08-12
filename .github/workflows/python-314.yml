@@ -1,0 +1,57 @@
+name: Python 3.14 wheel validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Build and validate Python 3.14 wheel
+    runs-on: ubuntu-latest
+    env:
+      UV_LINK_MODE: copy
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Prove selected interpreter
+        run: |
+          uv run --locked --python 3.14 python -c "import sys; assert sys.version_info[:2] == (3, 14), sys.version; print(sys.executable); print(sys.version)"
+
+      - name: Build distributions
+        run: uv run --locked --python 3.14 --with build python -m build
+
+      - name: Check distributions
+        run: uv run --locked --python 3.14 --with twine python -m twine check dist/*
+
+      - name: Test installed wheel with public test extra
+        shell: bash
+        run: |
+          mapfile -d '' wheels < <(find dist -maxdepth 1 -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "Expected exactly one wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          uv run --locked --python 3.14 python tools/validate_wheel.py --mode test --python 3.14 --wheel "${wheel}" --tests-root tests
+
+      - name: Validate plain core wheel isolation
+        shell: bash
+        run: |
+          mapfile -d '' wheels < <(find dist -maxdepth 1 -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "Expected exactly one wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          uv run --locked --python 3.14 python tools/validate_wheel.py --mode core --python 3.14 --wheel "${wheel}" --tests-root tests
