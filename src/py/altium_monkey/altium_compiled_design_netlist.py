@@ -104,6 +104,9 @@ def _compiled_terminal_to_terminal(
         pin=terminal.pin,
         pin_name=terminal.pin_name,
         pin_type=_pin_type_from_name(terminal.pin_type),
+        _source_component_uid=terminal._source_component_uid,
+        _source_pin_uid=terminal._source_pin_uid,
+        _source_owner_part_id=terminal._source_owner_part_id,
     )
 
 

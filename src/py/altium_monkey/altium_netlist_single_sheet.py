@@ -5,7 +5,7 @@ Single-sheet netlist compiler.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Callable, Protocol, TypeAlias, cast
 
 from .altium_netlist_options import NetlistOptions
@@ -202,7 +202,7 @@ class AltiumNetlistSingleSheetCompiler:
         )
 
         # Internal storage
-        self._components: dict[str, SchComponentInfo] = {}
+        self._components: list[SchComponentInfo] = []
         self._pins: list[SchPinInfo] = []
         self._wires: list = []  # Wire objects
         self._junctions: list[RootPoint] = []
@@ -227,7 +227,9 @@ class AltiumNetlistSingleSheetCompiler:
         # Spatial index for wire geometry (built in _build_wire_connectivity)
         self._geo_index: WireGeometryIndex | None = None
         self._net_item_roots: dict[RootPoint, tuple[RootPoint, bool]] = {}
-        self._compiled_pin_roots: dict[tuple[str, str], tuple[SchPinInfo, ...]] = {}
+        self._compiled_pin_roots: dict[
+            tuple[str, str, str], tuple[SchPinInfo, ...]
+        ] = {}
         self._nonwire_net_label_object_ids: set[int] = set()
         self._active_pin_designators_by_component: dict[str, set[str]] = defaultdict(
             set
@@ -337,7 +339,7 @@ class AltiumNetlistSingleSheetCompiler:
                     )
                     masked_count += 1
                     continue
-                self._components[comp.designator] = comp
+                self._components.append(comp)
         if masked_count > 0:
             log.debug(f"Excluded {masked_count} components inside compile masks")
 
@@ -724,7 +726,7 @@ class AltiumNetlistSingleSheetCompiler:
         Build NetlistComponent list from extracted components.
         """
         result = []
-        for comp in self._components.values():
+        for comp in self._components:
             # Wire List uses Comment field with parameter evaluation.
             # If expression resolves to empty, fall back to raw Comment text
             # (Altium shows "=Value" literally when the Value param is empty).
@@ -767,6 +769,7 @@ class AltiumNetlistSingleSheetCompiler:
                     parameters=parameters,
                     component_kind=kind_value,
                     exclude_from_bom=exclude_from_bom,
+                    _source_component_uid=comp.unique_id,
                 )
             )
         return result
@@ -789,7 +792,7 @@ class AltiumNetlistSingleSheetCompiler:
 
     def _compiled_pin_roots_by_component(
         self,
-    ) -> dict[tuple[str, str], tuple[SchPinInfo, ...]]:
+    ) -> dict[tuple[str, str, str], tuple[SchPinInfo, ...]]:
         """Return one active pin representative for each compiled signal root."""
         return self._compiled_pin_roots
 
@@ -806,11 +809,18 @@ class AltiumNetlistSingleSheetCompiler:
         self,
         pin_groups: dict[RootPoint, list[SchPinInfo]],
     ) -> None:
-        representatives: dict[tuple[str, str], list[SchPinInfo]] = defaultdict(list)
+        representatives: dict[tuple[str, str, str], list[SchPinInfo]] = defaultdict(
+            list
+        )
         for pins in pin_groups.values():
-            root_representatives: dict[tuple[str, str], SchPinInfo] = {}
+            root_representatives: dict[tuple[str, str, str], SchPinInfo] = {}
             for pin in pins:
-                key = (pin.component_designator.lower(), pin.designator)
+                component_key = pin.component_unique_id or pin.unique_id
+                key = (
+                    component_key or pin.component_designator.lower(),
+                    pin.component_designator.lower(),
+                    pin.designator,
+                )
                 current = root_representatives.get(key)
                 if current is None or self._ad_common_pin_sort_key(
                     pin
@@ -1565,13 +1575,22 @@ class AltiumNetlistSingleSheetCompiler:
         )
 
         for candidate in pins:
-            key = (candidate.component_designator, candidate.designator)
+            component_key = (
+                str(getattr(candidate, "component_unique_id", "") or "")
+                or str(getattr(candidate, "unique_id", "") or "")
+                or candidate.component_designator
+            )
+            key = (component_key, candidate.designator)
             current = representative_pins.get(key)
             if current is None or self._ad_common_pin_sort_key(
                 candidate
             ) < self._ad_common_pin_sort_key(current):
                 representative_pins[key] = candidate
 
+        display_pin_counts = Counter(
+            (pin.component_designator, pin.designator)
+            for pin in representative_pins.values()
+        )
         for pin in representative_pins.values():
             comp_des = pin.component_designator
             pin_des = pin.designator
@@ -1580,7 +1599,7 @@ class AltiumNetlistSingleSheetCompiler:
             pin_type = _pin_electrical_to_pintype(pin.electrical)
 
             # Resolve part value for parameter evaluation side effects.
-            comp = self._components.get(comp_des)
+            comp = getattr(pin, "component", None)
             if comp:
                 _resolve_component_display_value(
                     comp,
@@ -1595,6 +1614,13 @@ class AltiumNetlistSingleSheetCompiler:
                     pin=pin_des,
                     pin_name=pin_name,
                     pin_type=pin_type,
+                    _source_component_uid=str(
+                        getattr(pin, "component_unique_id", "") or ""
+                    ),
+                    _source_pin_uid=str(getattr(pin, "unique_id", "") or ""),
+                    _source_owner_part_id=int(
+                        getattr(getattr(pin, "pin", None), "owner_part_id", None) or 1
+                    ),
                 )
             )
 
@@ -1603,11 +1629,18 @@ class AltiumNetlistSingleSheetCompiler:
                 graphical.pins.append(
                     GraphicalPinRef(designator=comp_des, pin=pin_des, svg_id=pin_svg_id)
                 )
+            endpoint_id = f"pin:{comp_des}:{pin_des}"
+            if display_pin_counts[(comp_des, pin_des)] > 1:
+                source_suffix = pin_svg_id or str(
+                    getattr(pin, "component_unique_id", "") or ""
+                )
+                if source_suffix:
+                    endpoint_id = f"{endpoint_id}:{source_suffix}"
             self._append_net_endpoint(
                 endpoints,
                 endpoint_seen,
                 NetEndpoint(
-                    endpoint_id=f"pin:{comp_des}:{pin_des}",
+                    endpoint_id=endpoint_id,
                     role="pin",
                     element_id=pin_svg_id,
                     object_id=pin_svg_id,

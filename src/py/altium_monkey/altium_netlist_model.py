@@ -221,6 +221,9 @@ class Terminal:
     pin: str  # Pin designator (e.g., "1", "VCC")
     pin_name: str = ""  # Pin name (e.g., "GPIO5")
     pin_type: PinType = PinType.PASSIVE
+    _source_component_uid: str = field(default="", repr=False)
+    _source_pin_uid: str = field(default="", repr=False)
+    _source_owner_part_id: int = field(default=1, repr=False)
 
     @property
     def full_name(self) -> str:
@@ -650,6 +653,7 @@ class NetlistComponent:
     parameters: dict[str, str] = field(default_factory=dict)
     component_kind: int = 0  # Raw Altium ComponentKind value
     exclude_from_bom: bool = False  # BOM filtering flag derived from component_kind
+    _source_component_uid: str = field(default="", repr=False)
 
     @property
     def prefix(self) -> str:
@@ -888,7 +892,14 @@ class Netlist:
         for n in self.nets:
             self._net_lookup[n.name].append(n)
         self._uid_lookup = {n.uid: n for n in self.nets}
-        self._component_lookup = {c.designator: c for c in self.components}
+        components_by_designator: dict[str, list[NetlistComponent]] = defaultdict(list)
+        for component in self.components:
+            components_by_designator[component.designator].append(component)
+        self._component_lookup = {
+            designator: rows[0]
+            for designator, rows in components_by_designator.items()
+            if len(rows) == 1
+        }
 
     def get_net(self, name: str) -> Net | None:
         """
@@ -961,7 +972,7 @@ class Netlist:
                     "name": n.name,
                     "auto_named": n.auto_named,
                     "source_sheets": _unique_sorted_strings(n.source_sheets),
-                    "terminals": _unique_sorted_dicts(
+                    "terminals": sorted(
                         [
                             {
                                 "designator": t.designator,
@@ -971,7 +982,7 @@ class Netlist:
                             }
                             for t in n.terminals
                         ],
-                        _terminal_sort_key,
+                        key=_terminal_sort_key,
                     ),
                     "graphical": n.graphical.to_json(),
                     "aliases": _unique_sorted_strings(n.aliases),

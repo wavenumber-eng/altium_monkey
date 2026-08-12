@@ -160,6 +160,7 @@ class _SheetEntryWireEndpoint:
 @dataclass(frozen=True, slots=True)
 class _CompiledComponentSourceInfo:
     component: "SchComponentInfo"
+    components: tuple["SchComponentInfo", ...]
     include_in_netlist: bool
     logical_designator: str
     part_count: int
@@ -643,11 +644,16 @@ def _component_record_current_part_id(component: object) -> int:
     return int(getattr(getattr(component, "record", None), "current_part_id", 1) or 1)
 
 
+def _designator_binds_multipart_records(designator: str) -> bool:
+    """Return whether Altium annotation can bind separate placed part records."""
+    return bool(designator) and "?" not in designator
+
+
 def _local_multipart_designators(schdoc: "AltiumSchDoc") -> set[str]:
     placed_part_ids_by_designator: dict[str, set[int]] = defaultdict(set)
     for component in schdoc.get_components():
         logical_designator = str(component.designator or "")
-        if logical_designator:
+        if _designator_binds_multipart_records(logical_designator):
             placed_part_ids_by_designator[logical_designator].add(
                 _component_record_current_part_id(component)
             )
@@ -708,7 +714,10 @@ def _compiled_component_source_groups(
     multipart_groups: dict[str, list[tuple[int, set[int]]]] = defaultdict(list)
     for component in components:
         designator = str(getattr(component, "designator", "") or "")
-        if not designator or _component_record_part_count(component) <= 1:
+        if (
+            not _designator_binds_multipart_records(designator)
+            or _component_record_part_count(component) <= 1
+        ):
             groups.append([component])
             continue
         part_id = _component_record_current_part_id(component)
@@ -779,7 +788,9 @@ def _collapse_multipart_component_rows(
     result: list[AltiumCompiledComponent] = []
     groups_by_designator: dict[str, list[tuple[int, set[int], int]]] = {}
     for component in component_rows:
-        if component.part_count <= 1 or not component.physical_designator:
+        if component.part_count <= 1 or not _designator_binds_multipart_records(
+            component.physical_designator
+        ):
             result.append(component)
             continue
         key = component.physical_designator.lower()
@@ -1078,6 +1089,9 @@ def _compiled_terminal_for_physical(
         pin=terminal.pin,
         pin_name=terminal.pin_name,
         pin_type=terminal.pin_type,
+        _source_component_uid=terminal._source_component_uid,
+        _source_pin_uid=terminal._source_pin_uid,
+        _source_owner_part_id=terminal._source_owner_part_id,
     )
 
 
@@ -3479,6 +3493,7 @@ def _compiled_component_source_infos(
         infos.append(
             _CompiledComponentSourceInfo(
                 component=component,
+                components=component_group,
                 include_in_netlist=_component_includes_in_netlist(
                     component,
                     compile_mask_bounds,
@@ -3620,6 +3635,33 @@ def _compiled_component_row_for_physical_document(
         annotation_locked=annotation_locked,
         diagnostics=component_diagnostics,
         _project_multipart_collapsed=component_info.cross_document_multipart,
+    )
+
+
+def _compiled_component_body_rows_for_physical_document(
+    physical_row: AltiumCompiledPhysicalDocument,
+    component_info: _CompiledComponentSourceInfo,
+    component_row: AltiumCompiledComponent,
+) -> tuple[AltiumCompiledComponent, ...]:
+    """Retain exact source-body evidence before multipart presentation collapse."""
+
+    return tuple(
+        replace(
+            component_row,
+            id=(
+                f"{component_row.id}:body:{body_index}:"
+                f"{source_component.unique_id or 'missing'}"
+            ),
+            source_object_id=source_component.unique_id,
+            source_unique_id_path=_component_unique_id_path(
+                physical_row.physical_instance_unique_id,
+                source_component.unique_id,
+            ),
+            logical_designator=source_component.designator,
+            part_count=_component_record_part_count(source_component),
+            current_part_id=_component_record_current_part_id(source_component),
+        )
+        for body_index, source_component in enumerate(component_info.components)
     )
 
 
@@ -3814,7 +3856,10 @@ def _cross_document_multipart_designators(
     logical_ids_by_designator: dict[str, set[str]] = defaultdict(set)
     for logical_id, source_components in component_rows_by_logical_id.items():
         for component in source_components:
-            if component.designator and _component_record_part_count(component) > 1:
+            if (
+                _designator_binds_multipart_records(component.designator)
+                and _component_record_part_count(component) > 1
+            ):
                 logical_ids_by_designator[component.designator.lower()].add(logical_id)
     return {
         designator
@@ -3858,6 +3903,7 @@ def _build_compiled_component_rows(
     sheet_symbol_designator_by_id: Mapping[str, str],
 ) -> tuple[
     list[AltiumCompiledComponent],
+    list[AltiumCompiledComponent],
     dict[str, list[str]],
     dict[str, RoomDetails],
 ]:
@@ -3880,6 +3926,7 @@ def _build_compiled_component_rows(
     source_info_by_logical_id: dict[str, tuple[_CompiledComponentSourceInfo, ...]] = {}
     naming_rooms_by_physical_id: dict[str, RoomDetails] = {}
     component_rows: list[AltiumCompiledComponent] = []
+    component_body_rows: list[AltiumCompiledComponent] = []
     physical_component_ids: dict[str, list[str]] = {}
 
     for physical_row in physical_rows:
@@ -3925,11 +3972,23 @@ def _build_compiled_component_rows(
             if component_row is None:
                 continue
             component_rows.append(component_row)
+            component_body_rows.extend(
+                _compiled_component_body_rows_for_physical_document(
+                    physical_row,
+                    component_info,
+                    component_row,
+                )
+            )
             physical_component_ids.setdefault(physical_row.id, []).append(
                 component_row.id
             )
 
-    return component_rows, physical_component_ids, naming_rooms_by_physical_id
+    return (
+        component_rows,
+        component_body_rows,
+        physical_component_ids,
+        naming_rooms_by_physical_id,
+    )
 
 
 def _finalize_physical_tree_rows(
@@ -4114,20 +4173,22 @@ def _build_physical_and_component_rows(
         annotation,
     )
     diagnostics.extend(sheet_number_diagnostics)
-    component_rows, physical_component_ids, naming_rooms_by_physical_id = (
-        _build_compiled_component_rows(
-            physical_rows_tuple,
-            component_rows_by_logical_id=component_source_rows_by_logical_id,
-            compile_mask_bounds_by_logical_id=compile_mask_bounds_by_logical_id,
-            cross_document_multipart_designators=(cross_document_multipart_designators),
-            compile_options=compile_options,
-            options=options,
-            annotation=annotation,
-            channel_designator_format=channel_designator_format,
-            sheet_symbol_designator_by_id=sheet_symbol_designator_by_id,
-        )
+    (
+        component_rows,
+        component_body_rows,
+        physical_component_ids,
+        naming_rooms_by_physical_id,
+    ) = _build_compiled_component_rows(
+        physical_rows_tuple,
+        component_rows_by_logical_id=component_source_rows_by_logical_id,
+        compile_mask_bounds_by_logical_id=compile_mask_bounds_by_logical_id,
+        cross_document_multipart_designators=(cross_document_multipart_designators),
+        compile_options=compile_options,
+        options=options,
+        annotation=annotation,
+        channel_designator_format=channel_designator_format,
+        sheet_symbol_designator_by_id=sheet_symbol_designator_by_id,
     )
-    component_body_rows = tuple(component_rows)
     component_rows = _collapse_multipart_component_rows(component_rows)
     physical_rows_final, sheet_symbol_rows, physical_sheet_symbol_rows_final = (
         _finalize_physical_tree_rows(
@@ -4145,7 +4206,7 @@ def _build_physical_and_component_rows(
     return (
         physical_rows_final,
         tuple(component_rows),
-        component_body_rows,
+        tuple(component_body_rows),
         sheet_symbol_rows,
         physical_sheet_symbol_rows_final,
         tuple(diagnostics),
@@ -4157,7 +4218,7 @@ def _compiled_component_single_pin_local_nets(
     *,
     logical_document: AltiumCompiledLogicalDocument,
     first_net_index: int,
-    pin_roots_by_component: Mapping[tuple[str, str], Sequence["SchPinInfo"]],
+    pin_roots_by_component: Mapping[tuple[str, str, str], Sequence["SchPinInfo"]],
     multipart_designators: set[str] | frozenset[str] | None = None,
     local_multipart_designators: set[str] | frozenset[str] | None = None,
 ) -> tuple[AltiumCompiledNet, ...]:
@@ -4221,6 +4282,11 @@ def _compiled_component_single_pin_local_nets(
                 pin_type=_pin_electrical_to_pintype(
                     getattr(pin, "electrical", None)
                 ).name,
+                _source_component_uid=str(
+                    getattr(pin, "component_unique_id", "") or ""
+                ),
+                _source_pin_uid=str(getattr(pin, "unique_id", "") or ""),
+                _source_owner_part_id=owner_part_id,
             )
             rows.append(
                 AltiumCompiledNet(
@@ -4246,6 +4312,29 @@ def _bus_range_suffix(name: str) -> str:
     if start == -1 or end <= start:
         return ""
     return name[start : end + 1]
+
+
+def _compiled_terminal_from_net_terminal(
+    terminal_id: str,
+    terminal: object,
+    terminal_full_designators_by_pin: Mapping[tuple[str, str], str],
+) -> AltiumCompiledNetTerminal:
+    designator = str(getattr(terminal, "designator", "") or "")
+    pin = str(getattr(terminal, "pin", "") or "")
+    return AltiumCompiledNetTerminal(
+        id=terminal_id,
+        designator=terminal_full_designators_by_pin.get((designator, pin), designator),
+        pin=pin,
+        pin_name=str(getattr(terminal, "pin_name", "") or ""),
+        pin_type=str(
+            getattr(getattr(terminal, "pin_type", None), "name", "") or "PASSIVE"
+        ),
+        _source_component_uid=str(getattr(terminal, "_source_component_uid", "") or ""),
+        _source_pin_uid=str(getattr(terminal, "_source_pin_uid", "") or ""),
+        _source_owner_part_id=int(
+            getattr(terminal, "_source_owner_part_id", None) or 1
+        ),
+    )
 
 
 def _compiled_local_net_row(
@@ -4274,17 +4363,10 @@ def _compiled_local_net_row(
         for terminal_index, terminal in enumerate(net_terminals)
     )
     terminals = tuple(
-        AltiumCompiledNetTerminal(
-            id=terminal_id,
-            designator=terminal_full_designators_by_pin.get(
-                (str(terminal.designator), str(terminal.pin)),
-                str(terminal.designator),
-            ),
-            pin=str(terminal.pin),
-            pin_name=str(getattr(terminal, "pin_name", "") or ""),
-            pin_type=str(
-                getattr(getattr(terminal, "pin_type", None), "name", "") or "PASSIVE"
-            ),
+        _compiled_terminal_from_net_terminal(
+            terminal_id,
+            terminal,
+            terminal_full_designators_by_pin,
         )
         for terminal_id, terminal in zip(
             terminal_ids,
@@ -4443,7 +4525,7 @@ def _project_multipart_designators(schdocs: list["AltiumSchDoc"]) -> set[str]:
     for schdoc in schdocs:
         for component in schdoc.get_components():
             logical_designator = str(component.designator or "")
-            if logical_designator:
+            if _designator_binds_multipart_records(logical_designator):
                 placed_part_ids_by_designator[logical_designator].add(
                     _component_record_current_part_id(component)
                 )
@@ -4700,6 +4782,7 @@ def _compile_local_connectivity(
             )
             component_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
             for (
+                _component_occurrence_key,
                 component_designator,
                 _pin_designator,
             ), roots in pin_roots_by_component.items():
@@ -8269,13 +8352,16 @@ def compile_design(
         build_compiled_schematic_graph,
     )
 
+    projection_diagnostics: list[AltiumCompileDiagnostic] = []
     graph, physical_page_metadata = build_compiled_schematic_graph(
         design,
         compiled_design,
         component_body_evidence=component_body_evidence,
+        compile_diagnostics=projection_diagnostics,
     )
     return replace(
         compiled_design,
+        diagnostics=(*compiled_design.diagnostics, *projection_diagnostics),
         compiled_schematic_graph=graph,
         physical_page_metadata=physical_page_metadata,
         _component_body_evidence=component_body_evidence,

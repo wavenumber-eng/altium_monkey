@@ -31,6 +31,25 @@ MANIFEST_PATH = EXAMPLES_ROOT / "manifest.toml"
 PCB_LAYER_API_AUDIT_PATH = EXAMPLES_ROOT / "pcb_layer_api_audit.toml"
 CONTRACTS_ROOT = PUBLIC_ROOT / "docs" / "schemas" / "altium_monkey"
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\((?P<target>[^)]+)\)")
+EXPECTED_REQUIRES_PYTHON = ">=3.12,<3.15"
+EXPECTED_RUNTIME_DEPENDENCIES = {
+    "freetype-py",
+    "lxml",
+    "lz4",
+    "pillow",
+    "uharfbuzz",
+    "wn-geometer",
+}
+REMOVED_DIRECT_DEPENDENCIES = {
+    "cascadio",
+    "colorama",
+    "easyeda-monkey",
+    "json-with-comments",
+    "mapbox-earcut",
+    "openpyxl",
+    "rtree",
+    "trimesh",
+}
 
 
 def _load_examples() -> list[dict[str, object]]:
@@ -45,6 +64,17 @@ def _as_str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
+
+
+def _requirement_name(requirement: str) -> str:
+    match = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
+    if match is None:
+        raise AssertionError(f"invalid dependency requirement: {requirement!r}")
+    return re.sub(r"[-_.]+", "-", match.group(0)).lower()
+
+
+def _dependency_names(requirements: object) -> set[str]:
+    return {_requirement_name(value) for value in _as_str_list(requirements)}
 
 
 def _extractable_asset_schema_validator() -> Draft202012Validator:
@@ -201,6 +231,60 @@ def test_public_gitignore_tracks_lockfile_and_ignores_example_outputs() -> None:
     assert (PUBLIC_ROOT / "uv.lock").exists()
     assert "uv.lock" not in gitignore_lines
     assert "examples/**/output/" in gitignore_lines
+
+
+def test_public_python_and_dependency_metadata_contract() -> None:
+    metadata = tomllib.loads((PUBLIC_ROOT / "pyproject.toml").read_text("utf-8"))
+    project = metadata["project"]
+
+    assert project["requires-python"] == EXPECTED_REQUIRES_PYTHON
+    assert _dependency_names(project["dependencies"]) == EXPECTED_RUNTIME_DEPENDENCIES
+    assert _dependency_names(project["optional-dependencies"]["examples"]) == {
+        "cadquery"
+    }
+    direct_names = _dependency_names(project["dependencies"])
+    optional_names = {
+        name
+        for requirements in project["optional-dependencies"].values()
+        for name in _dependency_names(requirements)
+    }
+    assert not REMOVED_DIRECT_DEPENDENCIES & (direct_names | optional_names)
+    classifiers = set(project["classifiers"])
+    assert {
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+    } <= classifiers
+
+
+def test_python_314_workflows_build_before_installed_wheel_tests() -> None:
+    workflows = PUBLIC_ROOT / ".github" / "workflows"
+    validation = (workflows / "python-314.yml").read_text(encoding="utf-8")
+    release = (workflows / "release.yml").read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in validation
+    assert not re.search(
+        r"^\s+(?:push|pull_request|release):", validation, re.MULTILINE
+    )
+    assert "matrix:" not in validation
+    assert 'python-version: "3.14"' in validation
+    assert "uv run --locked --python 3.14" in validation
+    assert validation.index("python -m build") < validation.index(
+        "validate_wheel.py --mode test"
+    )
+    assert "validate_wheel.py --mode core" in validation
+
+    assert "release:" in release
+    assert "types: [published]" in release
+    assert "workflow_dispatch:" not in release
+    assert release.count("pypa/gh-action-pypi-publish") == 1
+    assert 'python-version: "3.14"' in release
+    assert (
+        release.index("python -m build")
+        < release.index("validate_wheel.py --mode test")
+        < release.index("pypa/gh-action-pypi-publish")
+    )
+    assert "validate_wheel.py --mode core" in release
 
 
 def test_manifest_inputs_and_assets_do_not_use_ignored_output_dirs() -> None:

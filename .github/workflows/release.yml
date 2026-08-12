@@ -23,13 +23,17 @@ jobs:
       - name: Check out release source
         uses: actions/checkout@v6
 
-      - name: Set up Python
+      - name: Set up Python 3.14
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Prove selected interpreter
+        run: |
+          uv run --locked --python 3.14 python -c "import sys; assert sys.version_info[:2] == (3, 14), sys.version; print(sys.executable); print(sys.version)"
 
       - name: Verify release tag matches package version
         shell: bash
@@ -38,7 +42,7 @@ jobs:
             echo "PyPI publish must run from a release tag, not ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}."
             exit 1
           fi
-          version="$(uv run python - <<'PY'
+          version="$(uv run --locked --python 3.14 python - <<'PY'
           from importlib.util import module_from_spec, spec_from_file_location
           spec = spec_from_file_location("version", "src/py/altium_monkey/_version.py")
           module = module_from_spec(spec)
@@ -56,7 +60,7 @@ jobs:
       - name: Verify release notes mention package version
         shell: bash
         run: |
-          version="$(uv run python - <<'PY'
+          version="$(uv run --locked --python 3.14 python - <<'PY'
           from importlib.util import module_from_spec, spec_from_file_location
           spec = spec_from_file_location("version", "src/py/altium_monkey/_version.py")
           module = module_from_spec(spec)
@@ -67,14 +71,33 @@ jobs:
           )"
           grep -F "Package version: \`${version}\`" RELEASE_NOTES.md
 
-      - name: Run public tests
-        run: uv run --extra test pytest tests -q
-
       - name: Build distributions
-        run: uv run --with build python -m build
+        run: uv run --locked --python 3.14 --with build python -m build
 
       - name: Check distributions
-        run: uv run --with twine python -m twine check dist/*
+        run: uv run --locked --python 3.14 --with twine python -m twine check dist/*
+
+      - name: Test installed wheel with public test extra
+        shell: bash
+        run: |
+          mapfile -d '' wheels < <(find dist -maxdepth 1 -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "Expected exactly one wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          uv run --locked --python 3.14 python tools/validate_wheel.py --mode test --python 3.14 --wheel "${wheel}" --tests-root tests
+
+      - name: Validate plain core wheel isolation
+        shell: bash
+        run: |
+          mapfile -d '' wheels < <(find dist -maxdepth 1 -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "Expected exactly one wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          uv run --locked --python 3.14 python tools/validate_wheel.py --mode core --python 3.14 --wheel "${wheel}" --tests-root tests
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

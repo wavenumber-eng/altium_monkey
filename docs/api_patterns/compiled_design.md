@@ -37,6 +37,23 @@ and page occurrence IDs. Local nets belong to page occurrences; hierarchy
 bindings explicitly connect parent sheet-entry terminals to child port
 terminals.
 
+Displayed component designators are labels, not occurrence identities. Two
+unannotated components may both display `R?` or `M?` while retaining distinct
+component occurrences and component-pin terminal ownership. Use
+`component_occurrence_ref` for semantic joins; display-keyed indexes are
+compatibility conveniences only and omit ambiguous singleton mappings.
+
+Terminal ownership is derived from terminal-specific source component and pin
+evidence captured before connectivity reduction. When a terminal has stable
+identity but its component owner cannot be resolved, its diagnostics include
+`component_occurrence_unresolved`. A terminal without stable source identity is
+not invented from display text, geometry, or order. Component bodies are also
+projected only from exact source-UID evidence and are never expanded by display
+designator. Missing component or terminal source identity omits only that row
+and emits `missing_component_source_identity` or
+`missing_terminal_source_identity` in the raw compiled-design diagnostics;
+conflicting supposedly unique source IDs are rejected as corrupt evidence.
+
 ## Page selection and rendering
 
 Select pages from the graph, then use their canonical IDs for project-aware
