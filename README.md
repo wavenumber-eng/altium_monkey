@@ -73,7 +73,7 @@ environment drift.
 
 The package includes dependencies for SVG text shaping and STEP-model bounds.
 STEP bounds use `wn-geometer`, with published wheels currently available for
-Windows amd64, macOS arm64, and Linux x86_64 tagged `manylinux_2_39`. See
+Windows amd64, macOS arm64, Linux x86_64, and Linux arm64. See
 [RELEASE_NOTES.md](RELEASE_NOTES.md) for platform and Python-version
 boundaries. The CadQuery dependency is only needed for the public example that
 synthesizes new STEP models.

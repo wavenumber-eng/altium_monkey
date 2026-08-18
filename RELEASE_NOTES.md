@@ -1,3 +1,27 @@
+# altium-monkey 2026.08.18 Release Notes
+
+Package version: `2026.8.18`
+
+This dependency-alignment release updates the STEP geometry runtime to
+`wn-geometer==2026.8.18` so Altium Monkey can be installed alongside the
+released authoritative MATZ stack in `wn-data-models-core` and Viz.
+
+## Geometer Compatibility
+
+- STEP model bounds continue to use the public `geometer.model_bounds` API;
+  no Altium document or geometry semantics change in this release.
+- The Geometer dependency now matches the analytic MATZ release consumed by
+  Data Models, eliminating the incompatible `2026.6.10`/`2026.8.18` package
+  pins that previously required an Appz workspace override.
+- Published Geometer 2026.8.18 wheels cover Windows amd64, macOS arm64, Linux
+  x86_64, and Linux arm64 for the supported Python range.
+
+## Verification
+
+The release is checked locally with the complete public suite, exact wheel
+metadata, an isolated wheel-only installation, and the STEP-bounds runtime
+tests against `wn-geometer==2026.8.18`.
+
 # altium-monkey 2026.08.11-2 Release Notes
 
 Package version: `2026.8.11.post1`
