@@ -1904,7 +1904,7 @@ def _room_details_for_compiled_naming(
         ),
     )
     if "$RoomName" not in channel_designator_format:
-        index = instance_offset + 1
+        index = document.channel_index or instance_offset + 1
         room = replace(
             room,
             channel_prefix=document.room_name or room.channel_prefix,
