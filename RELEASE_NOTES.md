@@ -1,26 +1,99 @@
-# altium-monkey 2026.08.18 Release Notes
+# altium-monkey 2026.08.21 Release Notes
 
-Package version: `2026.8.18`
+Package version: `2026.8.21`
 
-This dependency-alignment release updates the STEP geometry runtime to
-`wn-geometer==2026.8.18` so Altium Monkey can be installed alongside the
-released authoritative MATZ stack in `wn-data-models-core` and Viz.
+This release fixes PCB parameter text decoding for non-ASCII characters,
+multichannel channel numbering and naming under non-default project options,
+sheet-symbol child resolution for extension-less references, compiled-graph
+projection, and SchDoc/SchLib SVG paint order.
 
-## Geometer Compatibility
+## PCB Parameter Unicode
 
-- STEP model bounds continue to use the public `geometer.model_bounds` API;
-  no Altium document or geometry semantics change in this release.
-- The Geometer dependency now matches the analytic MATZ release consumed by
-  Data Models, eliminating the incompatible `2026.6.10`/`2026.8.18` package
-  pins that previously required an Appz workspace override.
-- Published Geometer 2026.8.18 wheels cover Windows amd64, macOS arm64, Linux
-  x86_64, and Linux arm64 for the supported Python range.
+- Fixed PCB component parameter text decoding for non-ASCII characters such
+  as the degree (U+00B0) and plus-minus (U+00B1) signs, which previously read
+  back as mojibake like `A-circumflex + degree` pairs (GitHub issue #32).
+  PcbDoc and PcbLib parameter readers now prefer Altium's authoritative
+  `UNICODE__<FIELD>` UTF-16 code-unit sidebands over the plain fields, whose
+  byte encoding depends on the writing machine's ANSI code page, so parameter
+  text decodes correctly regardless of the system code page the file was
+  saved under.
+- The PcbDoc builder also emits `UNICODE=EXISTS` and `UNICODE__NAME` /
+  `UNICODE__VALUE` sidebands when authoring non-ASCII parameters so Altium
+  reads them back losslessly on any system code page.
 
-## Verification
+## Multichannel Numbering And Naming
 
-The release is checked locally with the complete public suite, exact wheel
-metadata, an isolated wheel-only installation, and the STEP-bounds runtime
-tests against `wn-geometer==2026.8.18`.
+- Fixed multichannel `$ChannelIndex` / `$ChannelAlpha` numbering (GitHub
+  issue #40; thanks to the PR #42 reporter for the diagnosis and verification
+  data). When the same child schematic is instantiated by two or more
+  discrete sheet symbols, channels were numbered by sheet-symbol record order
+  in the parent document instead of Altium's hierarchy-rank order, swapping
+  physical designators and channel-scoped net names relative to what Altium
+  writes to the PcbDoc and its netlists. The compiler now assigns the
+  channel index as the 1-based rank in Altium's hierarchy-path sort,
+  unconditionally for every channel designator format. This matches Altium
+  for reversed stored order, non-contiguous designators (for example
+  `PSU_5`/`PSU_9` yield indices 1/2), nested multichannel designs, and
+  `Repeat()` ranges starting above 1, all pinned by new Altium
+  compile-oracle regression fixtures.
+- Fixed three multichannel naming behaviors that diverged from Altium when
+  non-default `[Design]` project options are set, pinned by a new 700-variant
+  Altium compile-oracle matrix sweeping channel designator formats, room
+  naming styles, and room-suffix options:
+  - `Repeat()` channels now apply Altium's alpha room-name swap under the
+    flat-alpha, alpha-name-path, and mixed-name-path room naming styles.
+  - `$ChannelPrefix` now resolves to the `Repeat()` base name for repeat
+    channels instead of the expanded channel designator.
+  - Channel-expanded net-name detection now follows Altium's source-object
+    priority, so a sheet-entry-named root net no longer replaces the
+    channel-expanded net spellings under `$RoomName`-leading channel
+    designator formats ([GitHub issue #47](https://github.com/wavenumber-eng/altium_monkey/issues/47)).
+- Fixed compiled-design channel formatting for designators whose prefix
+  contains punctuation, such as `Leaf_1`; `$ComponentPrefix` now preserves
+  `Leaf_` and `$ComponentIndex` resolves to `1`, matching Altium Designer.
+- Fixed compiled sheet/document numbering for `Repeat()` channels: each path
+  level now uses the repeat value at that expansion position (or 1 for the
+  first position when the project uses old sheet-symbol indexing) instead of
+  the expansion ordinal, matching the sheet numbers Altium reports.
+- Compiled physical sheet-symbol rows now report the resolved child
+  document's file name, so extension-less sheet-symbol references surface
+  the child's real file name instead of the raw reference text.
+
+## Sheet-Symbol Child Resolution
+
+- Fixed sheet-symbol child document resolution when the stored reference has
+  no schematic extension (for example `Power` instead of `Power.SchDoc`),
+  which previously raised `unresolved_sheet_symbol_child` and silently
+  compiled only a subset of the design's sheets (GitHub issue #38).
+  Extension-less references are first-class in Altium; both compiler
+  resolution paths now match references to loaded documents by
+  case-insensitive filename stem (stripping `.SchDoc`/`.SchDot`/`.sch`),
+  and ambiguous stem matches are reported with the
+  `ambiguous_sheet_symbol_child` diagnostic instead of resolving
+  arbitrarily.
+
+## Compiled Graph And SVG Rendering
+
+- Fixed compiled-design and compiled-schematic graph projection for multipart
+  shared-pin cardinality, duplicate loaded source paths, and repeated-page
+  component SVG indexes.
+- Fixed [GitHub issue #43](https://github.com/wavenumber-eng/altium_monkey/issues/43):
+  SchDoc and SchLib IR/SVG output now follows Altium's owner-scoped paint order,
+  including UID-less nested graphics and Altium's component/library
+  transparency ordering rule.
+
+## Import And Authoring Corrections
+
+- Fixed schematic component-description parsing so MBCS pipe escapes are
+  normalized consistently when Altium supplies a preferred UTF-8 sidecar.
+- Aligned newly authored native harness connectors with Altium and Python's
+  right-side default while preserving the left-side fallback for imported
+  sparse legacy records.
+
+## Dependencies
+
+- The `wn-geometer` dependency is updated to `2026.8.21` (ABI `20260821`),
+  including endpoint/radius arc support for planar regions.
 
 # altium-monkey 2026.08.11-2 Release Notes
 

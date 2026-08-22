@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         AltiumCompiledNet,
         AltiumCompiledPhysicalDocument,
     )
+    from .altium_compiled_schematic_graph import AltiumCompiledSchematicGraph
     from .altium_netlist_options import NetlistOptions
     from .altium_netlist_model import (
         ComponentHierarchy,
@@ -157,6 +158,26 @@ def _design_json_sheet_number_value(sheet_number: str) -> int | str:
     if _CANONICAL_DECIMAL_RE.fullmatch(sheet_number):
         return int(sheet_number)
     return sheet_number
+
+
+def _graph_component_svg_index_rows(
+    graph: "AltiumCompiledSchematicGraph",
+) -> list[tuple[str, str]]:
+    component_designators = {
+        str(row.get("id", "")): str(
+            row.get("display_designator", "") or row.get("physical_designator", "")
+        )
+        for row in graph.component_occurrences
+    }
+    rows: list[tuple[str, str]] = []
+    for link in graph.graphical_artifact_links:
+        if link.get("target_type") != "sch.component_occurrence":
+            continue
+        element_id = str(link.get("element_id", ""))
+        designator = component_designators.get(str(link.get("target_ref", "")), "")
+        if element_id and designator:
+            rows.append((element_id, designator))
+    return rows
 
 
 def _resolve_component_value_from_parameters(
@@ -952,6 +973,7 @@ class AltiumDesign:
             result["indexes"] = self._build_indexes(
                 components_data,
                 nets_data,
+                graph,
             )
 
         return result
@@ -1760,6 +1782,7 @@ class AltiumDesign:
     @staticmethod
     def _build_component_svg_indexes(
         components_data: list[dict],
+        graph: "AltiumCompiledSchematicGraph",
     ) -> tuple[dict[str, str], dict[str, list[str]]]:
         svg_to_components: dict[str, list[str]] = {}
         for comp_data in components_data:
@@ -1767,6 +1790,9 @@ class AltiumDesign:
             designator = str(comp_data.get("designator", ""))
             if svg_id:
                 svg_to_components.setdefault(str(svg_id), []).append(designator)
+
+        for svg_id, designator in _graph_component_svg_index_rows(graph):
+            svg_to_components.setdefault(svg_id, []).append(designator)
 
         svg_to_component = {
             svg_id: designators[0]
@@ -1811,12 +1837,14 @@ class AltiumDesign:
         self,
         components_data: list[dict],
         nets_data: list[dict],
+        graph: "AltiumCompiledSchematicGraph",
     ) -> dict:
         """
         Build pre-computed lookup indexes.
         """
         svg_to_component, svg_to_components = self._build_component_svg_indexes(
-            components_data
+            components_data,
+            graph,
         )
         component_to_nets, net_to_components = self._build_net_component_indexes(
             nets_data

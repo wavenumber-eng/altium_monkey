@@ -56,6 +56,7 @@ from .altium_sch_record_factory import (
     create_record_from_record,
     create_record_from_type,
 )
+from .altium_serializer import AltiumSerializer, Fields, read_dynamic_string_field
 from .altium_schdoc_symbol_extractor import _sanitize_filename
 from .altium_schlib_aux_streams import (
     build_pinfrac_stream_for_pins,
@@ -1171,11 +1172,12 @@ class AltiumSymbol:
             or record.get("DESIGNITEMID")
             or self.original_name
         )
-        self.description = (
-            record.get("%UTF8%ComponentDescription")
-            or record.get("%UTF8%COMPONENTDESCRIPTION")
-            or record.get("ComponentDescription")
-            or record.get("COMPONENTDESCRIPTION", "")
+        self.description, _, _ = read_dynamic_string_field(
+            AltiumSerializer(),
+            record,
+            record,
+            Fields.COMPONENT_DESCRIPTION,
+            default="",
         )
         # Altium stores the part count field as actual_count + 1.
         part_count_stored = int(record.get("PartCount", record.get("PARTCOUNT", 1)))
@@ -2696,7 +2698,8 @@ class AltiumSchLib(JsonApplyMixin):
         )
         return AltiumExtractedAsset(
             ref=ref,
-            filename=summaries[index].extraction_filename or f"symbol_{index:03d}.SchLib",
+            filename=summaries[index].extraction_filename
+            or f"symbol_{index:03d}.SchLib",
             schlib=self.extract_symbol(ref),
         )
 
@@ -3125,6 +3128,21 @@ class AltiumSchLib(JsonApplyMixin):
             document_id=doc_unique_id,
             part_id=part_id,
             display_mode=display_mode,
+        )
+
+        from .altium_sch_paint_order import order_geometry_records_by_source
+
+        eligible_source_objects = [
+            source_object
+            for source_object in symbol.objects
+            if self._record_belongs_to_part(source_object, part_id)
+            and record_belongs_to_display_mode(source_object, display_mode)
+        ]
+        records = order_geometry_records_by_source(
+            records,
+            symbol.objects,
+            sort_root_transparency=True,
+            eligible_source_objects=eligible_source_objects,
         )
 
         document = SchGeometryDocument(

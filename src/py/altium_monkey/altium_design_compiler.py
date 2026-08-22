@@ -72,7 +72,7 @@ from .altium_netlist_single_sheet import (
     AltiumNetlistSingleSheetCompiler,
     _sheet_entry_precise_connection_point,
 )
-from .altium_prjpcb import NetIdentifierScope
+from .altium_prjpcb import ChannelRoomNamingStyle, NetIdentifierScope
 from .altium_sch_record_helpers import (
     _effective_basic_entry_distance_frac1,
     _coord_scalar_to_rounded_native_units,
@@ -512,6 +512,20 @@ def _normalize_project_reference(value: str) -> str:
 
 def _reference_basename(value: str) -> str:
     return _normalize_project_reference(value).rsplit("/", 1)[-1]
+
+
+# Altium resolves sheet-symbol child references stem-to-stem: references with
+# a recognized schematic extension are stripped to their stem, and
+# extension-less references are first-class.
+_SCHEMATIC_REFERENCE_SUFFIXES = (".schdoc", ".schdot", ".sch")
+
+
+def _reference_stem(value: str) -> str:
+    basename = _reference_basename(value)
+    for suffix in _SCHEMATIC_REFERENCE_SUFFIXES:
+        if basename.endswith(suffix):
+            return basename[: -len(suffix)]
+    return basename
 
 
 def _sheet_symbol_id(
@@ -1397,7 +1411,24 @@ def _resolve_referenced_schdoc(
     file_matches = schdoc_by_file_name.get(_reference_basename(child_ref), ())
     if len(file_matches) == 1:
         return file_matches[0]
+    stem_matches = _schdoc_stem_matches(child_ref, schdoc_by_file_name)
+    if len(stem_matches) == 1:
+        return stem_matches[0]
     return None
+
+
+def _schdoc_stem_matches(
+    child_ref: str,
+    schdoc_by_file_name: dict[str, tuple["AltiumSchDoc", ...]],
+) -> tuple["AltiumSchDoc", ...]:
+    reference_stem = _reference_stem(child_ref)
+    if not reference_stem:
+        return ()
+    matches: list["AltiumSchDoc"] = []
+    for file_name, schdocs in schdoc_by_file_name.items():
+        if _reference_stem(file_name) == reference_stem:
+            matches.extend(schdocs)
+    return tuple(matches)
 
 
 def _bus_member_names_by_logical_id(
@@ -1571,6 +1602,8 @@ def _physical_child_instances(
     symbol: AltiumCompiledSheetSymbol,
     multi_ref_room: RoomDetails | None,
     repeat_channel_values: dict[tuple[str, int], int],
+    *,
+    new_indexing: bool,
 ) -> tuple[_PhysicalChildInstance, ...]:
     if (
         symbol.is_repeat
@@ -1593,6 +1626,17 @@ def _physical_child_instances(
                 instance_offset,
                 sheet_designator=symbol.designator,
             )
+            # AD26 sheet/document-number path levels for Repeat() channels use
+            # the raw repeat VALUE at this expansion position under new
+            # indexing (not the expansion ordinal), or 1 for the first
+            # position under old indexing.
+            sheets_index = (
+                repeat_value
+                if new_indexing
+                else (1 if instance_offset == 0 else repeat_value)
+            )
+            room.sheet_number = str(sheets_index)
+            room.document_number = str(sheets_index)
             instances.append(
                 _physical_child_instance_from_room(
                     instance_key=f"repeat:{repeat_value}",
@@ -1767,9 +1811,12 @@ def _compiled_alpha_index(index: int) -> str:
 
 
 def _compiled_room_style_uses_alpha(style: int, depth: int) -> bool:
-    if style in {1, 3}:
+    if style in {
+        ChannelRoomNamingStyle.FLAT_ALPHA_WITH_NAMES,
+        ChannelRoomNamingStyle.ALPHA_NAME_PATH,
+    }:
         return True
-    if style == 4:
+    if style == ChannelRoomNamingStyle.MIXED_NAME_PATH:
         return depth % 2 == 0
     return False
 
@@ -1778,6 +1825,82 @@ def _compiled_room_suffix(index: int, *, style: int, depth: int) -> str:
     if _compiled_room_style_uses_alpha(style, depth):
         return _compiled_alpha_index(index)
     return str(index)
+
+
+def _is_repeat_channel_document(
+    document: AltiumCompiledPhysicalDocument,
+    physical_document_by_id: dict[str, AltiumCompiledPhysicalDocument],
+) -> bool:
+    """True when the document was instantiated by a ``Repeat()`` sheet symbol.
+
+    A non-repeat sheet symbol yields exactly one child instance per physical
+    parent instance, so sibling documents sharing
+    ``(parent_id, parent_sheet_symbol_id)`` can only come from the repeat
+    branch of ``_physical_child_instances``.
+    """
+    if document.parent_sheet_symbol_id is None:
+        return False
+    return any(
+        row.id != document.id
+        and row.parent_id == document.parent_id
+        and row.parent_sheet_symbol_id == document.parent_sheet_symbol_id
+        for row in physical_document_by_id.values()
+    )
+
+
+def _repeat_channel_alpha_room_name(
+    document: AltiumCompiledPhysicalDocument,
+    physical_document_by_id: dict[str, AltiumCompiledPhysicalDocument],
+    *,
+    compile_options: AltiumProjectCompileOptions,
+) -> str | None:
+    """AD26 alpha swap for unique-designator ``Repeat()`` channel rooms.
+
+    HierarchyBuilderRoomDetails.GetRoomName (:57-61): when the bottom channel
+    value is set (Repeat expansion) and GetSwapToAlphanumericForm holds at the
+    bottom hierarchy depth, the room is the designator prefix plus
+    GetIndexInAlphanumericForm of the channel value (plus one under
+    NewIndexingOfSheetSymbols) instead of the expanded designator.
+    """
+    if not _is_repeat_channel_document(document, physical_document_by_id):
+        return None
+    depth = 0
+    node = physical_document_by_id.get(document.parent_id or "")
+    while node is not None and node.parent_sheet_symbol_id is not None:
+        depth += 1
+        node = physical_document_by_id.get(node.parent_id or "")
+    style = compile_options.channel_room_naming_style
+    if not _compiled_room_style_uses_alpha(style, depth):
+        return None
+    room_name = document.room_name or Path(document.file_name).stem
+    match = re.match(r"^(.*?)(\d+)$", room_name)
+    if match is None:
+        return None
+    value = document.channel_index
+    if compile_options.new_indexing_of_sheet_symbols:
+        value += 1
+    return f"{match.group(1)}{_compiled_alpha_index(value)}"
+
+
+def _documents_sharing_room_name(
+    physical_document_by_id: dict[str, AltiumCompiledPhysicalDocument],
+    *,
+    logical_document_id: str,
+    room_name: str,
+) -> list[AltiumCompiledPhysicalDocument]:
+    """Physical instances of a logical document with the same effective room name."""
+    lowered = room_name.lower()
+    return [
+        physical_document
+        for physical_document in physical_document_by_id.values()
+        if (
+            physical_document.logical_document_id == logical_document_id
+            and (
+                physical_document.room_name or Path(physical_document.file_name).stem
+            ).lower()
+            == lowered
+        )
+    ]
 
 
 def _component_naming_room_name(
@@ -1792,39 +1915,29 @@ def _component_naming_room_name(
         return document.physical_instance_path.rsplit("/", 1)[-1]
     room_name = document.room_name or Path(document.file_name).stem
     style = compile_options.channel_room_naming_style
-    if style in {0, 1}:
-        duplicate_room_count = sum(
-            1
-            for physical_document in physical_document_by_id.values()
-            if (
-                physical_document.logical_document_id == document.logical_document_id
-                and (
-                    physical_document.room_name
-                    or Path(physical_document.file_name).stem
-                ).lower()
-                == room_name.lower()
-            )
+    if style in {
+        ChannelRoomNamingStyle.FLAT_NUMERIC_WITH_NAMES,
+        ChannelRoomNamingStyle.FLAT_ALPHA_WITH_NAMES,
+    }:
+        matching_documents = _documents_sharing_room_name(
+            physical_document_by_id,
+            logical_document_id=document.logical_document_id,
+            room_name=room_name,
         )
-        if duplicate_room_count <= 1:
-            return room_name
-        matching_documents = sorted(
-            (
-                physical_document
-                for physical_document in physical_document_by_id.values()
-                if (
-                    physical_document.logical_document_id
-                    == document.logical_document_id
-                    and (
-                        physical_document.room_name
-                        or Path(physical_document.file_name).stem
-                    ).lower()
-                    == room_name.lower()
+        if len(matching_documents) <= 1:
+            return (
+                _repeat_channel_alpha_room_name(
+                    document,
+                    physical_document_by_id,
+                    compile_options=compile_options,
                 )
-            ),
+                or room_name
+            )
+        matching_documents.sort(
             key=lambda physical_document: (
                 _natural_sort_key(physical_document.physical_instance_path),
                 physical_instance_offsets.get(physical_document.id, 0),
-            ),
+            )
         )
         instance_index = next(
             index
@@ -1850,21 +1963,22 @@ def _component_naming_room_name(
         path_room_name = (
             path_documents[0].room_name or Path(path_documents[0].file_name).stem
         )
-        duplicate_room_count = sum(
-            1
-            for physical_document in physical_document_by_id.values()
-            if (
-                physical_document.logical_document_id
-                == path_documents[0].logical_document_id
-                and (
-                    physical_document.room_name
-                    or Path(physical_document.file_name).stem
-                ).lower()
-                == path_room_name.lower()
+        duplicate_room_count = len(
+            _documents_sharing_room_name(
+                physical_document_by_id,
+                logical_document_id=path_documents[0].logical_document_id,
+                room_name=path_room_name,
             )
         )
         if duplicate_room_count <= 1:
-            return path_room_name
+            return (
+                _repeat_channel_alpha_room_name(
+                    document,
+                    physical_document_by_id,
+                    compile_options=compile_options,
+                )
+                or path_room_name
+            )
 
     separator = compile_options.channel_room_level_separator or "_"
     parts: list[str] = []
@@ -1903,15 +2017,108 @@ def _room_details_for_compiled_naming(
             compile_options=compile_options,
         ),
     )
-    if "$RoomName" not in channel_designator_format:
-        index = instance_offset + 1
+    # Altium substitutes the designator-sorted channel rank into every
+    # channel designator format; there is no format gate.
+    rank = _channel_rank_for_document(document, physical_document_by_id)
+    room = replace(
+        room,
+        channel_index=str(rank),
+        channel_alpha=_compiled_alpha_index(rank),
+    )
+    # AD26 channel-prefix resolution: discrete channels use the bottom
+    # designator, but Repeat() channels use the repeat base name, which the
+    # physical document already carries as channel_prefix.
+    if "$RoomName" not in channel_designator_format and not (
+        _is_repeat_channel_document(document, physical_document_by_id)
+    ):
         room = replace(
             room,
             channel_prefix=document.room_name or room.channel_prefix,
-            channel_index=str(index),
-            channel_alpha=_compiled_alpha_index(index),
         )
     return room
+
+
+def _channel_rank_for_document(
+    document: AltiumCompiledPhysicalDocument,
+    physical_document_by_id: dict[str, AltiumCompiledPhysicalDocument],
+) -> int:
+    """Return the 1-based rank of a channel among its child document's instances.
+
+    Altium's ``$ChannelIndex`` is the hierarchy-path-sorted position of the
+    channel among ALL physical instances of the child schematic: paths are
+    compared level by level from the root on ``designator + localIndex``
+    (alphanumeric), where the local index orders the distinct channels of the
+    child schematic by (parent schematic name, channel name). It is not the
+    instantiation order, the designator's trailing digits, or the Repeat()
+    value.
+    """
+    siblings = [
+        row
+        for row in physical_document_by_id.values()
+        if row.logical_document_id == document.logical_document_id
+    ]
+    if len(siblings) <= 1:
+        return 1
+    local_indices = _channel_local_indices(physical_document_by_id)
+
+    def path_key(row: AltiumCompiledPhysicalDocument) -> tuple[tuple[object, ...], ...]:
+        levels: list[tuple[object, ...]] = []
+        node: AltiumCompiledPhysicalDocument | None = row
+        while node is not None and node.parent_id:
+            levels.append(
+                tuple(_natural_sort_key(f"{node.room_name}{local_indices[node.id]}"))
+            )
+            node = physical_document_by_id.get(node.parent_id)
+        return tuple(reversed(levels))
+
+    siblings.sort(key=path_key)
+    for rank, row in enumerate(siblings, start=1):
+        if row.id == document.id:
+            return rank
+    return 1
+
+
+def _channel_identity(
+    row: AltiumCompiledPhysicalDocument,
+    physical_document_by_id: dict[str, AltiumCompiledPhysicalDocument],
+) -> tuple[str, str]:
+    """Identity of a distinct channel, shared across parent instances."""
+    parent = physical_document_by_id.get(row.parent_id or "")
+    parent_logical_id = parent.logical_document_id if parent is not None else ""
+    return (parent_logical_id, row.room_name.lower())
+
+
+def _channel_local_indices(
+    physical_document_by_id: dict[str, AltiumCompiledPhysicalDocument],
+) -> dict[str, int]:
+    """Local channel index per physical document id.
+
+    Mirrors Altium's per-child ``ChannelInfo`` sort: the distinct channels of
+    each child schematic (deduplicated across parent instances) are ordered by
+    (parent schematic name, channel name alphanumeric) and indexed from 0.
+    """
+    rows_by_logical_id: dict[str, list[AltiumCompiledPhysicalDocument]] = defaultdict(
+        list
+    )
+    for row in physical_document_by_id.values():
+        rows_by_logical_id[row.logical_document_id].append(row)
+    local_indices: dict[str, int] = {}
+    for rows in rows_by_logical_id.values():
+        sort_key_by_identity: dict[tuple[str, str], tuple[object, ...]] = {}
+        for row in rows:
+            parent = physical_document_by_id.get(row.parent_id or "")
+            parent_name = parent.file_name.lower() if parent is not None else ""
+            identity = _channel_identity(row, physical_document_by_id)
+            sort_key_by_identity.setdefault(
+                identity, (parent_name, _natural_sort_key(row.room_name))
+            )
+        ordered = sorted(sort_key_by_identity, key=sort_key_by_identity.__getitem__)
+        index_by_identity = {identity: index for index, identity in enumerate(ordered)}
+        for row in rows:
+            local_indices[row.id] = index_by_identity[
+                _channel_identity(row, physical_document_by_id)
+            ]
+    return local_indices
 
 
 def _logical_instance_offsets(
@@ -3348,17 +3555,36 @@ def _build_logical_and_symbol_rows(
                         child_match_kind = "ambiguous_file_name"
                         child_candidates = file_matches
                     else:
-                        child_match_kind = "unresolved"
+                        stem_matches = tuple(
+                            logical_id
+                            for file_name, ids in logical_ids_by_file_name.items()
+                            if _reference_stem(file_name) == _reference_stem(child_ref)
+                            for logical_id in ids
+                        )
+                        if len(stem_matches) == 1:
+                            child_logical_id = stem_matches[0]
+                            child_source_path = source_path_by_logical_id[
+                                child_logical_id
+                            ]
+                            child_match_kind = "file_stem"
+                            child_candidates = stem_matches
+                        elif len(stem_matches) > 1:
+                            child_match_kind = "ambiguous_file_stem"
+                            child_candidates = stem_matches
+                        else:
+                            child_match_kind = "unresolved"
             if child_match_kind in {
                 "missing_filename",
                 "ambiguous_source_path",
                 "ambiguous_file_name",
+                "ambiguous_file_stem",
                 "unresolved",
             }:
                 code = {
                     "missing_filename": "missing_sheet_symbol_child_filename",
                     "ambiguous_source_path": "ambiguous_sheet_symbol_child",
                     "ambiguous_file_name": "ambiguous_sheet_symbol_child",
+                    "ambiguous_file_stem": "ambiguous_sheet_symbol_child",
                     "unresolved": "unresolved_sheet_symbol_child",
                 }[child_match_kind]
                 diagnostic = AltiumCompileDiagnostic(
@@ -3672,6 +3898,7 @@ class _PhysicalInstantiationState:
     channel_rooms_by_symbol_id: dict[str, RoomDetails]
     repeat_channel_values: dict[tuple[str, int], int]
     options: NetlistOptions
+    new_indexing_of_sheet_symbols: bool
     flat_physical_tree: bool
     physical_rows: list[AltiumCompiledPhysicalDocument]
     physical_sheet_symbol_rows: list[AltiumCompiledPhysicalSheetSymbol]
@@ -3745,6 +3972,7 @@ def _instantiate_physical_document(
             symbol,
             state.channel_rooms_by_symbol_id.get(symbol.id),
             state.repeat_channel_values,
+            new_indexing=state.new_indexing_of_sheet_symbols,
         ):
             parent_index_path = state.physical_rows[physical_ordinal].sheet_number or ""
             child_sheet_number = parent_index_path or None
@@ -3821,7 +4049,13 @@ def _instantiate_physical_document(
                     source_object_id=symbol.source_object_id,
                     logical_designator=child_instance.path_segment,
                     physical_designator=child_instance.path_segment,
-                    sheet_symbol_file_name=symbol.child_filename,
+                    # AD26 reports the resolved child document file name here,
+                    # so extension-less symbol references still surface the
+                    # child's real file name; the raw symbol filename is only a
+                    # fallback for unresolved symbols, which never reach
+                    # physical instantiation (SheetSymbolAdapter
+                    # DM_SheetSymbolFileName / DM_RawSheetSymbolFileName).
+                    sheet_symbol_file_name=child_logical_document.file_name,
                     child_logical_document_id=child_logical_id,
                     child_source_path=symbol.child_source_path,
                     child_physical_document_id=child_physical_id,
@@ -4114,6 +4348,7 @@ def _build_physical_and_component_rows(
         channel_rooms_by_symbol_id=channel_rooms_by_symbol_id,
         repeat_channel_values=repeat_channel_values,
         options=options,
+        new_indexing_of_sheet_symbols=(compile_options.new_indexing_of_sheet_symbols),
         flat_physical_tree=flat_physical_tree,
         physical_rows=physical_rows,
         physical_sheet_symbol_rows=physical_sheet_symbol_rows,
@@ -6028,10 +6263,29 @@ def _dedupe_compiled_endpoints(
 def _dedupe_compiled_terminals(
     terminals: list[AltiumCompiledNetTerminal],
 ) -> tuple[AltiumCompiledNetTerminal, ...]:
-    seen: set[str] = set()
+    seen: set[tuple[str, ...]] = set()
     result: list[AltiumCompiledNetTerminal] = []
     for terminal in terminals:
-        key = terminal.id or f"{terminal.designator}\0{terminal.pin}"
+        pin_source_uid = str(terminal._source_pin_uid or "")
+        if pin_source_uid or "?" in terminal.designator:
+            key = (
+                "source",
+                terminal.id,
+                str(terminal._source_component_uid or ""),
+                pin_source_uid,
+            )
+        else:
+            source_net_id, _separator, _terminal_selector = terminal.id.rpartition(
+                ":terminal:"
+            )
+            key = (
+                "uidless_physical_pin",
+                source_net_id,
+                terminal.designator,
+                terminal.pin,
+                terminal.pin_name,
+                str(terminal._source_owner_part_id),
+            )
         if key in seen:
             continue
         seen.add(key)
@@ -6834,8 +7088,23 @@ def _compiled_hierarchical_channel_terminal_name_candidate(
             )
             for document_id in net.physical_document_ids
         )
+        # Channel-expanded spellings win over root sheet-entry-named nets
+        # independent of ChannelDesignatorFormatString token order: AD26
+        # selects the source object by priority before expanding
+        # (NamingFunctionsProvider.Create registers eSheetEntry below ePort;
+        # SignalsCreatorUtils.ShouldBeNewSignalName compares ObjectPriority
+        # first and GetSignalFullName expands only the winner). The
+        # original_name clause detects expansion when the format does not
+        # lead with the base net name (e.g. $RoomName_$Component). This is
+        # an approximation: equal-priority (sheet-entry vs sheet-entry)
+        # candidates fall to alphanumeric comparison in AD26, so a renamed
+        # (not channel-expanded) child spelling could match here too.
         and any(
-            net.name.lower().startswith(root_name) and net.name.lower() != root_name
+            net.name.lower() != root_name
+            and (
+                net.name.lower().startswith(root_name)
+                or (net.original_name or "").lower() == root_name
+            )
             for root_name in root_physical_names
         )
     ]
@@ -7434,12 +7703,10 @@ def _compiled_flat_row_source_parts(
 ]:
     evidence_link_rows = [link for link in link_rows if ":bus_member_link:" in link.id]
     source_net_ids = [net.id for net in ordered_group]
-    terminal_ids = _dedupe_compiled_net_values(
-        [terminal_id for net in ordered_group for terminal_id in net.terminal_ids]
-    )
     terminals = _dedupe_compiled_terminals(
         [terminal for net in ordered_group for terminal in net.terminals]
     )
+    terminal_ids = _dedupe_compiled_net_values([terminal.id for terminal in terminals])
     endpoint_ids = _dedupe_compiled_net_values(
         [
             endpoint_id

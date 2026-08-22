@@ -445,7 +445,7 @@ def apply_channel_pattern(
     result = result.replace("$SheetNumber", room.sheet_number)
     result = result.replace("$DocumentNumber", room.document_number)
 
-    match = re.match(r"^([A-Za-z]+)(\d+)$", designator)
+    match = re.match(r"^(.*?)(\d+)$", designator)
     component_prefix = match.group(1) if match else designator
     component_index = match.group(2) if match else ""
     result = result.replace("$ComponentPrefix", component_prefix)

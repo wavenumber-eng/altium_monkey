@@ -8,11 +8,16 @@ re-implementing layer decoding.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import re
 from typing import Any
 
-from .altium_pcb_layer_ref import _normalize_layer_token
+from .altium_pcb_layer_ref import (
+    PcbLayerFamily,
+    PcbLayerRef,
+    PcbLayerResolutionError,
+    _normalize_layer_token,
+)
 from .altium_pcb_stream_helpers import parse_altium_int_token as _parse_altium_int_token
 from .altium_record_types import PcbLayer
 
@@ -305,6 +310,12 @@ class ResolvedLayer:
     stack_index: int | None = None
     thickness_mils: float = 0.0
     material: str | None = None
+    layer_ref: PcbLayerRef | None = None
+    family: str = ""
+    side: str | None = None
+    registry_ref: str = ""
+    source_record_id: str = ""
+    physical_row: bool = False
 
 
 @dataclass(frozen=True)
@@ -381,6 +392,8 @@ class ResolvedDrillPair:
     guide_layer_name: str
     is_backdrill: bool = False
     substack_refs: tuple[str, ...] = ()
+    start_layer_ref: PcbLayerRef | None = None
+    end_layer_ref: PcbLayerRef | None = None
 
 
 @dataclass(frozen=True)
@@ -446,6 +459,9 @@ class ResolvedLayerStack:
     _layers_by_legacy: dict[int, ResolvedLayer] = field(
         init=False, repr=False, default_factory=dict
     )
+    _layers_by_v7: dict[int, ResolvedLayer] = field(
+        init=False, repr=False, default_factory=dict
+    )
     _layers_by_token: dict[str, ResolvedLayer] = field(
         init=False, repr=False, default_factory=dict
     )
@@ -465,6 +481,7 @@ class ResolvedLayerStack:
     def __post_init__(self) -> None:
         self._layers_by_name = {layer.display_name: layer for layer in self.layers}
         legacy_map: dict[int, ResolvedLayer] = {}
+        v7_map: dict[int, ResolvedLayer] = {}
         token_map: dict[str, ResolvedLayer] = {}
         for layer in self.layers:
             token_map.setdefault(_normalize_layer_token(layer.display_name), layer)
@@ -476,7 +493,10 @@ class ResolvedLayerStack:
                 standard_token = _standard_layer_token(layer.legacy_id)
                 if standard_token:
                     token_map.setdefault(standard_token, layer)
+            if layer.v7_id is not None:
+                v7_map.setdefault(layer.v7_id, layer)
         self._layers_by_legacy = legacy_map
+        self._layers_by_v7 = v7_map
         self._layers_by_token = token_map
         self._substacks_by_source_ref = {
             item.source_stackup_ref: item
@@ -519,6 +539,11 @@ class ResolvedLayerStack:
         Lookup layer by legacy primitive layer ID.
         """
         return self._layers_by_legacy.get(legacy_id)
+
+    def layer_by_v7_id(self, v7_id: int) -> ResolvedLayer | None:
+        """Lookup layer by exact saved V7 layer ID."""
+
+        return self._layers_by_v7.get(v7_id)
 
     def layer_by_token(self, token: str) -> ResolvedLayer | None:
         """
@@ -1533,60 +1558,247 @@ def _append_required_mechanical_layers(
 
 
 def _build_drill_pair_metadata(
-    board: Any,
+    board: object,
     *,
     drill_pairs: set[tuple[int, int]],
-    layer_pairs: tuple[Any, ...],
+    layer_pairs: tuple[object, ...],
     layer_names: list[str],
     layer_id_map: dict[int, str],
+    v9_stack: list[object],
+    v9_layer_cache: dict[int, str],
 ) -> tuple[dict[tuple[int, int], tuple[str, str]], list[ResolvedDrillPair]]:
     drill_pairs.add((PcbLayer.TOP.value, PcbLayer.BOTTOM.value))
-    pair_substack_refs_by_span: dict[tuple[int, int], tuple[str, ...]] = {}
-    pair_backdrill_by_span: dict[tuple[int, int], bool] = {}
-    for pair in layer_pairs:
-        lo_id = _legacy_layer_id_from_token(
-            str(getattr(pair, "low_layer_token", "") or "")
-        )
-        hi_id = _legacy_layer_id_from_token(
-            str(getattr(pair, "high_layer_token", "") or "")
-        )
-        if lo_id is None or hi_id is None:
+    source_pairs = _source_drill_pair_seeds(layer_pairs, layer_id_map, v9_stack)
+    exact_pairs = dict(source_pairs)
+    for key, value in _legacy_drill_pair_seeds(
+        drill_pairs, layer_id_map, v9_stack
+    ).items():
+        start_ref, end_ref, _, _ = key
+        if any(
+            candidate[0] == start_ref
+            and candidate[1] == end_ref
+            and candidate[2] is False
+            for candidate in source_pairs
+        ):
             continue
-        pair_span = (min(lo_id, hi_id), max(lo_id, hi_id))
-        drill_pairs.add(pair_span)
-        substack_refs = tuple(getattr(pair, "source_substack_refs", ()) or ())
-        if substack_refs:
-            pair_substack_refs_by_span[pair_span] = substack_refs
-        if getattr(pair, "is_backdrill", None):
-            pair_backdrill_by_span[pair_span] = True
+        exact_pairs[key] = value
 
     drill_pair_layer_names: dict[tuple[int, int], tuple[str, str]] = {}
     drill_pair_items: list[ResolvedDrillPair] = []
-    for start_id, end_id in sorted(drill_pairs):
-        start_name = layer_id_map.get(start_id, _layer_display_name(start_id, board))
-        end_name = layer_id_map.get(end_id, _layer_display_name(end_id, board))
-        is_backdrill = pair_backdrill_by_span.get((start_id, end_id), False)
-        span = f"{'[BD] ' if is_backdrill else ''}{start_name} - {end_name}"
-        drawing_name = f"Drill Drawing ({span})"
-        guide_name = f"Drill Guide ({span})"
-        if drawing_name not in layer_names:
-            layer_names.append(drawing_name)
-        if guide_name not in layer_names:
-            layer_names.append(guide_name)
-        drill_pair_layer_names[(start_id, end_id)] = (drawing_name, guide_name)
-        drill_pair_items.append(
-            ResolvedDrillPair(
-                start_legacy_id=start_id,
-                end_legacy_id=end_id,
-                start_layer_name=start_name,
-                end_layer_name=end_name,
-                drawing_layer_name=drawing_name,
-                guide_layer_name=guide_name,
-                is_backdrill=is_backdrill,
-                substack_refs=pair_substack_refs_by_span.get((start_id, end_id), ()),
-            )
+    for (start_ref, end_ref, _, _), (substack_refs, is_backdrill) in sorted(
+        exact_pairs.items(), key=_drill_pair_order
+    ):
+        item = _resolved_drill_pair(
+            start_ref,
+            end_ref,
+            substack_refs=substack_refs,
+            is_backdrill=is_backdrill,
+            board=board,
+            layer_id_map=layer_id_map,
+            v9_stack=v9_stack,
+            v9_layer_cache=v9_layer_cache,
         )
+        _append_unique(layer_names, item.drawing_layer_name)
+        _append_unique(layer_names, item.guide_layer_name)
+        if item.start_legacy_id and item.end_legacy_id:
+            legacy_span = (
+                min(item.start_legacy_id, item.end_legacy_id),
+                max(item.start_legacy_id, item.end_legacy_id),
+            )
+            drill_pair_layer_names[legacy_span] = (
+                item.drawing_layer_name,
+                item.guide_layer_name,
+            )
+        drill_pair_items.append(item)
     return drill_pair_layer_names, drill_pair_items
+
+
+def _legacy_drill_pair_seeds(
+    drill_pairs: set[tuple[int, int]],
+    layer_id_map: dict[int, str],
+    v9_stack: list[object],
+) -> dict[
+    tuple[PcbLayerRef, PcbLayerRef, bool, tuple[str, ...]],
+    tuple[tuple[str, ...], bool],
+]:
+    result: dict[
+        tuple[PcbLayerRef, PcbLayerRef, bool, tuple[str, ...]],
+        tuple[tuple[str, ...], bool],
+    ] = {}
+    for start_id, end_id in sorted(drill_pairs):
+        start_ref = PcbLayerRef.from_legacy(start_id)
+        end_ref = PcbLayerRef.from_legacy(end_id)
+        start_ref, end_ref = _ordered_drill_endpoints(start_ref, end_ref)
+        _require_drill_endpoint(start_ref, layer_id_map, v9_stack)
+        _require_drill_endpoint(end_ref, layer_id_map, v9_stack)
+        result[(start_ref, end_ref, False, ())] = ((), False)
+    return result
+
+
+def _source_drill_pair_seeds(
+    layer_pairs: tuple[object, ...],
+    layer_id_map: dict[int, str],
+    v9_stack: list[object],
+) -> dict[
+    tuple[PcbLayerRef, PcbLayerRef, bool, tuple[str, ...]],
+    tuple[tuple[str, ...], bool],
+]:
+    result: dict[
+        tuple[PcbLayerRef, PcbLayerRef, bool, tuple[str, ...]],
+        tuple[tuple[str, ...], bool],
+    ] = {}
+    for pair in layer_pairs:
+        try:
+            start_ref = PcbLayerRef.parse(
+                str(getattr(pair, "low_layer_token", "") or "")
+            )
+            end_ref = PcbLayerRef.parse(
+                str(getattr(pair, "high_layer_token", "") or "")
+            )
+        except PcbLayerResolutionError as exc:
+            raise ValueError(
+                "layer pair contains an unresolved endpoint token"
+            ) from exc
+        start_ref, end_ref = _ordered_drill_endpoints(start_ref, end_ref)
+        _require_drill_endpoint(start_ref, layer_id_map, v9_stack)
+        _require_drill_endpoint(end_ref, layer_id_map, v9_stack)
+        substack_refs = tuple(getattr(pair, "source_substack_refs", ()) or ())
+        is_backdrill = bool(getattr(pair, "is_backdrill", None))
+        result[(start_ref, end_ref, is_backdrill, substack_refs)] = (
+            substack_refs,
+            is_backdrill,
+        )
+    return result
+
+
+def _resolved_drill_pair(
+    start_ref: PcbLayerRef,
+    end_ref: PcbLayerRef,
+    *,
+    substack_refs: tuple[str, ...],
+    is_backdrill: bool,
+    board: object,
+    layer_id_map: dict[int, str],
+    v9_stack: list[object],
+    v9_layer_cache: dict[int, str],
+) -> ResolvedDrillPair:
+    start_name = _drill_endpoint_display_name(
+        start_ref,
+        board=board,
+        layer_id_map=layer_id_map,
+        v9_stack=v9_stack,
+        v9_layer_cache=v9_layer_cache,
+    )
+    end_name = _drill_endpoint_display_name(
+        end_ref,
+        board=board,
+        layer_id_map=layer_id_map,
+        v9_stack=v9_stack,
+        v9_layer_cache=v9_layer_cache,
+    )
+    span = f"{'[BD] ' if is_backdrill else ''}{start_name} - {end_name}"
+    return ResolvedDrillPair(
+        start_legacy_id=start_ref.legacy_layer_id or 0,
+        end_legacy_id=end_ref.legacy_layer_id or 0,
+        start_layer_name=start_name,
+        end_layer_name=end_name,
+        drawing_layer_name=f"Drill Drawing ({span})",
+        guide_layer_name=f"Drill Guide ({span})",
+        is_backdrill=is_backdrill,
+        substack_refs=substack_refs,
+        start_layer_ref=start_ref,
+        end_layer_ref=end_ref,
+    )
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
+
+
+def _drill_pair_order(
+    item: tuple[
+        tuple[PcbLayerRef, PcbLayerRef, bool, tuple[str, ...]],
+        tuple[tuple[str, ...], bool],
+    ],
+) -> tuple[int, str, int, str, bool, tuple[str, ...]]:
+    start_ref, end_ref, is_backdrill, substack_refs = item[0]
+    return (
+        _drill_endpoint_order(start_ref),
+        start_ref.token,
+        _drill_endpoint_order(end_ref),
+        end_ref.token,
+        is_backdrill,
+        substack_refs,
+    )
+
+
+def _ordered_drill_endpoints(
+    start_ref: PcbLayerRef,
+    end_ref: PcbLayerRef,
+) -> tuple[PcbLayerRef, PcbLayerRef]:
+    if _drill_endpoint_order(end_ref) < _drill_endpoint_order(start_ref):
+        return end_ref, start_ref
+    return start_ref, end_ref
+
+
+def _drill_endpoint_order(layer_ref: PcbLayerRef) -> int:
+    if layer_ref.token == "TOP":
+        return 0
+    if layer_ref.token.startswith("MID") and layer_ref.number is not None:
+        return layer_ref.number
+    if layer_ref.token == "BOTTOM":
+        return 127
+    if layer_ref.legacy_layer_id is not None:
+        return 1_000 + layer_ref.legacy_layer_id
+    if layer_ref.v7_saved_layer_id is not None:
+        return 10_000 + layer_ref.v7_saved_layer_id
+    return 2**63 - 1
+
+
+def _require_drill_endpoint(
+    layer_ref: PcbLayerRef,
+    layer_id_map: dict[int, str],
+    v9_stack: list[object],
+) -> None:
+    if layer_ref.family not in {
+        PcbLayerFamily.SIGNAL,
+        PcbLayerFamily.INTERNAL_PLANE,
+    }:
+        raise ValueError(f"drill endpoint {layer_ref.token} is not a copper layer")
+    saved_id = layer_ref.v7_saved_layer_id
+    if v9_stack and saved_id is not None:
+        if any(int(getattr(row, "layer_id", 0) or 0) == saved_id for row in v9_stack):
+            return
+        raise ValueError(
+            f"drill endpoint {layer_ref.token} is absent from the V9 stack"
+        )
+    legacy_id = layer_ref.legacy_layer_id
+    if legacy_id is not None and legacy_id in layer_id_map:
+        return
+    raise ValueError(f"drill endpoint {layer_ref.token} is absent from the layer stack")
+
+
+def _drill_endpoint_display_name(
+    layer_ref: PcbLayerRef,
+    *,
+    board: object,
+    layer_id_map: dict[int, str],
+    v9_stack: list[object],
+    v9_layer_cache: dict[int, str],
+) -> str:
+    legacy_id = layer_ref.legacy_layer_id
+    if legacy_id is not None:
+        return layer_id_map.get(legacy_id, _layer_display_name(legacy_id, board))
+    saved_id = layer_ref.v7_saved_layer_id
+    for row in v9_stack:
+        if saved_id is not None and int(getattr(row, "layer_id", 0) or 0) == saved_id:
+            display_name = str(getattr(row, "name", "") or "")
+            if display_name:
+                return display_name
+    if saved_id is not None and saved_id in v9_layer_cache:
+        return v9_layer_cache[saved_id]
+    return layer_ref.token
 
 
 def _dedupe_layer_names(layer_names: list[str]) -> list[str]:
@@ -1852,6 +2064,8 @@ def resolved_layer_stack_from_board(
         layer_pairs=layer_pairs,
         layer_names=seed.layer_names,
         layer_id_map=seed.layer_id_map,
+        v9_stack=v9_stack,
+        v9_layer_cache=v9_layer_cache,
     )
     seed.layer_names = _dedupe_layer_names(seed.layer_names)
 
@@ -1910,12 +2124,109 @@ def _resolved_layer_stack_from_layer_stack_document(
         return _empty_resolved_layer_stack()
     board_record = source.board_record_mapping()
     board = AltiumBoard.from_record(board_record)
-    return resolved_layer_stack_from_board(
+    resolved = resolved_layer_stack_from_board(
         board,
         primitive_layer_ids=primitive_layer_ids,
         drill_pairs=drill_pairs,
         board_regions=getattr(document, "board_regions", None),
     )
+    return _enrich_resolved_layers_from_document(resolved, document)
+
+
+def _enrich_resolved_layers_from_document(
+    resolved: ResolvedLayerStack,
+    document: object,
+) -> ResolvedLayerStack:
+    """Retain source-aware registry identity in the resolved projection."""
+
+    registry = getattr(document, "layer_registry", None)
+    entries = tuple(getattr(registry, "entries", ()) or ())
+    entries_by_v7 = {
+        int(entry.v7_layer_id): entry
+        for entry in entries
+        if getattr(entry, "v7_layer_id", None) is not None
+    }
+    entries_by_legacy = {
+        int(entry.legacy_layer_id): entry
+        for entry in entries
+        if getattr(entry, "legacy_layer_id", None) is not None
+    }
+    physical_by_stack_index: dict[int, object] = {}
+    for stack in tuple(getattr(document, "physical_stacks", ()) or ()):
+        for row in tuple(getattr(stack, "layers", ()) or ()):
+            stack_index = getattr(row, "stack_index", None)
+            if stack_index is not None:
+                physical_by_stack_index[int(stack_index)] = row
+
+    enriched: list[ResolvedLayer] = []
+    for layer in resolved.layers:
+        entry = entries_by_v7.get(layer.v7_id) if layer.v7_id is not None else None
+        if entry is None and layer.legacy_id is not None:
+            entry = entries_by_legacy.get(layer.legacy_id)
+        physical_row = (
+            physical_by_stack_index.get(layer.stack_index)
+            if layer.stack_index is not None
+            else None
+        )
+        registry_ref = str(
+            getattr(physical_row, "registry_ref", "")
+            or getattr(entry, "model_id", "")
+            or ""
+        )
+        family = str(
+            getattr(physical_row, "family", "") or getattr(entry, "family", "") or ""
+        )
+        enriched.append(
+            replace(
+                layer,
+                layer_ref=_exact_layer_ref(layer),
+                family=family,
+                side=getattr(entry, "side", None),
+                registry_ref=registry_ref,
+                source_record_id=str(
+                    getattr(physical_row, "source_record_id", "")
+                    or getattr(entry, "source_record_id", "")
+                    or ""
+                ),
+                physical_row=physical_row is not None,
+            )
+        )
+
+    by_stack_index = {
+        layer.stack_index: layer for layer in enriched if layer.stack_index is not None
+    }
+    by_key = {layer.layer_key: layer for layer in enriched}
+    substacks = tuple(
+        replace(
+            substack,
+            layers=tuple(
+                _enriched_substack_layer(layer, by_stack_index, by_key)
+                for layer in substack.layers
+            ),
+        )
+        for substack in resolved.substacks
+    )
+    return replace(resolved, layers=tuple(enriched), substacks=substacks)
+
+
+def _enriched_substack_layer(
+    layer: ResolvedLayer,
+    by_stack_index: dict[int, ResolvedLayer],
+    by_key: dict[str, ResolvedLayer],
+) -> ResolvedLayer:
+    if layer.stack_index is not None:
+        matched = by_stack_index.get(layer.stack_index)
+        if matched is not None:
+            return matched
+    return by_key.get(layer.layer_key, layer)
+
+
+def _exact_layer_ref(layer: ResolvedLayer) -> PcbLayerRef | None:
+    if layer.v7_id is not None:
+        return PcbLayerRef.from_v7_saved_layer_id(layer.v7_id)
+    if layer.legacy_id is not None:
+        return PcbLayerRef.from_legacy(layer.legacy_id)
+    return None
 
 
 def resolved_layer_stack_from_pcbdoc(pcbdoc: object) -> ResolvedLayerStack:

@@ -21,7 +21,12 @@ from .altium_record_types import (
     SchRecordType,
     TextOrientation,
 )
-from .altium_serializer import AltiumSerializer, CaseMode, Fields
+from .altium_serializer import (
+    AltiumSerializer,
+    CaseMode,
+    Fields,
+    read_dynamic_string_field,
+)
 from .altium_sch_record_helpers import bound_schematic_owner
 
 
@@ -174,11 +179,20 @@ class AltiumSchComponent(SchGraphicalObject):
         self.source_library_name, self._has_source_library_name = s.read_str(
             record, Fields.SOURCE_LIBRARY_NAME, default="*"
         )
-        self.component_description, self._has_component_description = s.read_str(
-            record, Fields.COMPONENT_DESCRIPTION, default=""
+        (
+            self.component_description,
+            self._has_component_description,
+            used_utf8_component_description,
+        ) = read_dynamic_string_field(
+            s,
+            record,
+            self._record,
+            Fields.COMPONENT_DESCRIPTION,
+            default="",
         )
-        # UTF8 variant is accessed directly (special prefix)
-        self.utf8_component_description = record.get("%UTF8%ComponentDescription", "")
+        self.utf8_component_description = (
+            self.component_description if used_utf8_component_description else ""
+        )
 
         # Multi-part
         self.part_count, self._has_part_count = s.read_int(
@@ -1723,89 +1737,162 @@ class AltiumSchComponent(SchGraphicalObject):
 
         return []
 
-    def to_geometry(
+    def _geometry_child_is_eligible(
+        self,
+        child_kind: str,
+        child: object,
+        resolved_display_mode: int | None,
+    ) -> bool:
+        if _is_parent_bound_geometry_child(child):
+            return False
+        owner_part = getattr(child, "owner_part_id", None)
+        if (
+            owner_part is not None
+            and owner_part > 0
+            and owner_part != self.current_part_id
+        ):
+            return False
+        if not self._display_mode_matches(child, resolved_display_mode):
+            return False
+        return not (
+            child_kind == "pin"
+            and getattr(child, "is_hidden", False)
+            and not self.show_hidden_pins
+        )
+
+    @staticmethod
+    def _geometry_child_kind(
+        child: object,
+        pin_ids: set[int],
+        parameter_ids: set[int],
+    ) -> str:
+        if id(child) in pin_ids:
+            return "pin"
+        if id(child) in parameter_ids:
+            return "param"
+        return "graphic"
+
+    def _geometry_graphics(self) -> list[object]:
+        graphics = list(self.graphics)
+        graphic_ids = {id(child) for child in graphics}
+        graphics.extend(
+            child
+            for child in self.children
+            if type(child).__name__ == "AltiumSchIeeeSymbol"
+            and id(child) not in graphic_ids
+        )
+        return graphics
+
+    def _geometry_source_children(self) -> tuple[list[object], dict[int, str]]:
+        """Return spatial/field children and their renderer categories."""
+        graphics = self._geometry_graphics()
+        pins = list(self.pins)
+        parameters = [
+            child
+            for child in self.parameters
+            if type(child).__name__ in ("AltiumSchDesignator", "AltiumSchParameter")
+        ]
+        paint_child_ids = {id(child) for child in [*graphics, *pins, *parameters]}
+        source_children = [
+            child for child in self.children if id(child) in paint_child_ids
+        ]
+        if not source_children:
+            # Compatibility for manually assembled legacy components that filled
+            # category lists before the structural children collection existed.
+            source_children = [*graphics, *pins, *parameters]
+        pin_ids = {id(child) for child in pins}
+        parameter_ids = {id(child) for child in parameters}
+        child_kinds = {
+            id(child): self._geometry_child_kind(child, pin_ids, parameter_ids)
+            for child in source_children
+        }
+        return source_children, child_kinds
+
+    def _ordered_geometry_children(self) -> list[tuple[str, object]]:
+        from .altium_sch_paint_order import order_component_children_by_source
+
+        source_children, child_kinds = self._geometry_source_children()
+        resolved_display_mode = self._resolved_display_mode()
+        eligible_children = [
+            child
+            for child in source_children
+            if self._geometry_child_is_eligible(
+                child_kinds[id(child)], child, resolved_display_mode
+            )
+        ]
+        ordered_children = order_component_children_by_source(
+            self,
+            eligible_children,
+        )
+        return [(child_kinds[id(child)], child) for child in ordered_children]
+
+    @staticmethod
+    def _child_geometry_operations(
+        child_kind: str,
+        child: object,
+        ctx: "SchSvgRenderContext",
+        *,
+        document_id: str,
+        units_per_px: int,
+    ) -> list["SchGeometryOp"]:
+        from .altium_sch_geometry_oracle import (
+            SchGeometryOp,
+            SchGeometryRecord,
+            unwrap_record_operations,
+        )
+
+        to_geometry = getattr(child, "to_geometry", None)
+        if not callable(to_geometry):
+            return []
+        if child_kind == "graphic":
+            graphic_record = to_geometry(
+                ctx,
+                document_id=document_id,
+                units_per_px=units_per_px,
+            )
+            if not isinstance(graphic_record, SchGeometryRecord):
+                return []
+            return unwrap_record_operations(
+                graphic_record,
+                unique_id=getattr(child, "unique_id", ""),
+            )
+
+        raw_child_geometry = to_geometry(
+            ctx,
+            document_id=document_id,
+            units_per_px=units_per_px,
+            wrap_record=False,
+        )
+        if not isinstance(raw_child_geometry, list):
+            return []
+        return [op for op in raw_child_geometry if isinstance(op, SchGeometryOp)]
+
+    def _render_child_geometry_operations(
         self,
         ctx: "SchSvgRenderContext",
         *,
         document_id: str,
-        units_per_px: int = 64,
-    ) -> "SchGeometryRecord":
-        from .altium_sch_geometry_oracle import (
-            SchGeometryBounds,
-            SchGeometryOp,
-            SchGeometryRecord,
-            unwrap_record_operations,
-            wrap_record_operations,
-        )
+        units_per_px: int,
+    ) -> tuple[list["SchGeometryOp"], list["SchGeometryOp"]]:
+        from .altium_sch_geometry_oracle import SchGeometryOp
 
         child_operations: list[SchGeometryOp] = []
-        component_level_operations: list[SchGeometryOp] = []
+        component_operations: list[SchGeometryOp] = []
         native_multipart_junction_wrappers = self.part_count > 1 and getattr(
             ctx, "native_svg_export", False
         )
-        resolved_display_mode = self._resolved_display_mode()
-        component_children = sorted(
-            [("graphic", child) for child in self.graphics]
-            + [("pin", child) for child in self.pins]
-            + [("param", child) for child in self.parameters],
-            key=lambda item: (
-                int(getattr(item[1], "_record_index", 10**9)),
-                str(getattr(item[1], "unique_id", "")),
-            ),
-        )
-
-        for child_kind, child in component_children:
-            if _is_parent_bound_geometry_child(child):
-                continue
-            owner_part = getattr(child, "owner_part_id", None)
-            if (
-                owner_part is not None
-                and owner_part > 0
-                and owner_part != self.current_part_id
-            ):
-                continue
-            if not self._display_mode_matches(child, resolved_display_mode):
-                continue
-            if (
-                child_kind == "pin"
-                and getattr(child, "is_hidden", False)
-                and not self.show_hidden_pins
-            ):
-                continue
-
-            to_geometry = getattr(child, "to_geometry", None)
-            if not callable(to_geometry):
-                continue
-
-            if child_kind == "graphic":
-                graphic_record = to_geometry(
-                    ctx,
-                    document_id=document_id,
-                    units_per_px=units_per_px,
-                )
-                if not isinstance(graphic_record, SchGeometryRecord):
-                    continue
-                child_geometry = unwrap_record_operations(
-                    graphic_record,
-                    unique_id=getattr(child, "unique_id", ""),
-                )
-            else:
-                raw_child_geometry = to_geometry(
-                    ctx,
-                    document_id=document_id,
-                    units_per_px=units_per_px,
-                    wrap_record=False,
-                )
-                if not isinstance(raw_child_geometry, list):
-                    continue
-                child_geometry = [
-                    op for op in raw_child_geometry if isinstance(op, SchGeometryOp)
-                ]
-
+        for child_kind, child in self._ordered_geometry_children():
+            child_geometry = self._child_geometry_operations(
+                child_kind,
+                child,
+                ctx,
+                document_id=document_id,
+                units_per_px=units_per_px,
+            )
             if not child_geometry:
                 continue
             if child_kind == "pin" and native_multipart_junction_wrappers:
-                component_level_operations.extend(
+                component_operations.extend(
                     self._native_export_component_junction_ops(
                         child,
                         child_geometry,
@@ -1818,6 +1905,28 @@ class AltiumSchComponent(SchGraphicalObject):
             )
             child_operations.extend(child_geometry)
             child_operations.append(SchGeometryOp.end_group())
+        return component_operations, child_operations
+
+    def to_geometry(
+        self,
+        ctx: "SchSvgRenderContext",
+        *,
+        document_id: str,
+        units_per_px: int = 64,
+    ) -> "SchGeometryRecord":
+        from .altium_sch_geometry_oracle import (
+            SchGeometryBounds,
+            SchGeometryRecord,
+            wrap_record_operations,
+        )
+
+        component_level_operations, child_operations = (
+            self._render_child_geometry_operations(
+                ctx,
+                document_id=document_id,
+                units_per_px=units_per_px,
+            )
+        )
 
         return SchGeometryRecord(
             handle=f"{document_id}\\{self.unique_id}",

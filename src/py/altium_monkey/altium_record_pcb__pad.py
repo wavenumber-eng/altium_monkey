@@ -237,7 +237,7 @@ class AltiumPcbPad(PcbGraphicalObject):
         self.user_routed: bool = True  # flags1 bit3 (0x08)
         self._flags1_bit0: int = 0  # flags1 bit0 (preserved raw)
 
-        # Cache validity/state bytes (offsets 94-100, 103-104)
+        # Cache validity/state bytes (offsets 94-104).
         self._cache_byte_94: int = (
             0  # Offset 94: semantic uncertain (99.3% zero, also 249/207/255)
         )
@@ -247,8 +247,10 @@ class AltiumPcbPad(PcbGraphicalObject):
         self.cache_relief_entries_valid: int = 0  # Offset 98
         self.cache_relief_air_gap_valid: int = 0  # Offset 99
         self.cache_power_plane_relief_expansion_valid: int = 0  # Offset 100
-        self.cache_paste_mask_expansion_valid: int = 0  # Offset 103
-        self.cache_solder_mask_expansion_valid: int = 0  # Offset 104
+        self.cache_power_plane_clearance_valid: int = 0  # Offset 103
+        self.cache_planes_valid: int = 0  # Offset 104
+        self._has_power_plane_clearance_cache_state: bool = False
+        self._has_planes_cache_state: bool = False
         self.layer_v7_save_id: int | None = (
             None  # Offset 114 in extended SubRecord 5 tail
         )
@@ -641,7 +643,7 @@ class AltiumPcbPad(PcbGraphicalObject):
             )[0]  # offset 90-93
             pos += 4
 
-            # --- Cache validity bytes (offsets 94-100) ---
+            # --- Cache payload handle + validity bytes (offsets 94-100) ---
             self._cache_byte_94 = content[pos]  # offset 94
             pos += 1
             self._cache_padding_95 = content[pos]  # offset 95
@@ -657,18 +659,21 @@ class AltiumPcbPad(PcbGraphicalObject):
             self.cache_power_plane_relief_expansion_valid = content[pos]  # offset 100
             pos += 1
 
-            # --- Mask modes (offsets 101-102) ---
+            # Paste/solder cache state is also the saved pad mask mode.
             self.pastemask_expansion_mode = content[pos]  # offset 101
             pos += 1
             self.soldermask_expansion_mode = content[pos]  # offset 102
             pos += 1
             self._has_mask_expansion = True
 
-            # --- Post-mode cache validity (offsets 103-104) ---
-            if pos + 2 <= len(content):
-                self.cache_paste_mask_expansion_valid = content[pos]  # offset 103
+            # --- Remaining cache validity (offsets 103-104) ---
+            if pos < len(content):
+                self.cache_power_plane_clearance_valid = content[pos]  # offset 103
+                self._has_power_plane_clearance_cache_state = True
                 pos += 1
-                self.cache_solder_mask_expansion_valid = content[pos]  # offset 104
+            if pos < len(content):
+                self.cache_planes_valid = content[pos]  # offset 104
+                self._has_planes_cache_state = True
                 pos += 1
 
         if len(content) >= 110:
@@ -937,8 +942,10 @@ class AltiumPcbPad(PcbGraphicalObject):
             int(self.cache_power_plane_relief_expansion_valid or 0),
             int(self.pastemask_expansion_mode or 0),
             int(self.soldermask_expansion_mode or 0),
-            int(self.cache_paste_mask_expansion_valid or 0),
-            int(self.cache_solder_mask_expansion_valid or 0),
+            int(self.cache_power_plane_clearance_valid or 0),
+            int(self.cache_planes_valid or 0),
+            bool(self._has_power_plane_clearance_cache_state),
+            bool(self._has_planes_cache_state),
             int(self.pad_user_union_index or 0),
             0 if self.layer_v7_save_id is None else int(self.layer_v7_save_id),
             bool(self.is_assy_test_point_top),
@@ -988,6 +995,12 @@ class AltiumPcbPad(PcbGraphicalObject):
         ):
             return self._subrecord5_extended_data
 
+        self._has_pad_cache = True
+        self._has_mask_expansion = True
+        self._has_power_plane_clearance_cache_state = True
+        self._has_planes_cache_state = True
+        current_sig = self._subrecord5_extended_state_signature()
+
         if self._subrecord5_extended_data:
             ext_data = bytearray(self._subrecord5_extended_data)
         else:
@@ -1033,8 +1046,8 @@ class AltiumPcbPad(PcbGraphicalObject):
         ext_data[39] = int(self.cache_power_plane_relief_expansion_valid) & 0xFF
         ext_data[40] = int(self.pastemask_expansion_mode) & 0xFF
         ext_data[41] = int(self.soldermask_expansion_mode) & 0xFF
-        ext_data[42] = int(self.cache_paste_mask_expansion_valid) & 0xFF
-        ext_data[43] = int(self.cache_solder_mask_expansion_valid) & 0xFF
+        ext_data[42] = int(self.cache_power_plane_clearance_valid) & 0xFF
+        ext_data[43] = int(self.cache_planes_valid) & 0xFF
         struct.pack_into(
             "<I", ext_data, 45, int(self.pad_user_union_index or 0) & 0xFFFFFFFF
         )

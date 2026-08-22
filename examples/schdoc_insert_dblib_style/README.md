@@ -67,4 +67,4 @@ Number`, and references the `R0603_0.55MM_MD` footprint implementation.
 
 Pin hotspots remain on the 100 mil schematic grid. Designators use Arial 12
 bold, and the visible comment field is `=Value`, so Altium displays the resolved
-values such as `10kÎ©`.
+values such as `10kΩ`.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from typing import cast
 
 from altium_monkey import (
     AltiumLayerStackDocument,
@@ -19,6 +20,8 @@ from altium_monkey import (
     StackupXSpan,
     StackupXStack,
 )
+from altium_monkey.altium_layer_stack_document import AltiumStackLayer
+from altium_monkey.altium_resolved_layer_stack import ResolvedLayerStack
 
 SAMPLE_DIR = Path(__file__).resolve().parent
 EXAMPLES_ROOT = SAMPLE_DIR.parent
@@ -189,6 +192,14 @@ def _build_stackupx() -> AltiumStackupXDocument:
                 stop_layer_id=core_layers[-1].id,
                 raw_attributes=(),
             ),
+            StackupXSpan(
+                id=_sample_guid("span-mid31-mid126"),
+                auto_name="Mid31-Mid126",
+                span_type="Layer",
+                start_layer_id=core_layers[2 * 31].id,
+                stop_layer_id=core_layers[2 * 126].id,
+                raw_attributes=(),
+            ),
         ),
         drill_spans=(),
         raw_attributes=(),
@@ -252,14 +263,16 @@ def _add_label_row(builder: PcbDocBuilder) -> None:
         )
 
 
-def _stack_layer_id(layer: object) -> int:
+def _stack_layer_id(layer: AltiumStackLayer) -> int:
     layer_id = getattr(layer, "layer_id", None)
     if layer_id is None:
         raise RuntimeError(f"{getattr(layer, 'display_name', '<unnamed>')} has no id")
     return int(layer_id)
 
 
-def _copper_stack_layers(stack: AltiumLayerStackDocument) -> tuple[object, ...]:
+def _copper_stack_layers(
+    stack: AltiumLayerStackDocument,
+) -> tuple[AltiumStackLayer, ...]:
     return tuple(
         layer for layer in stack.physical_stacks[0].layers if layer.family == "copper"
     )
@@ -319,7 +332,7 @@ def _readback_tracks(
 
 def _stack_summary(stack: AltiumLayerStackDocument) -> dict[str, object]:
     copper_layers = _copper_stack_layers(stack)
-    resolved = stack.to_resolved_layer_stack()
+    resolved = cast(ResolvedLayerStack, stack.to_resolved_layer_stack())
     return {
         "physical_copper_layer_count": len(copper_layers),
         "inner_signal_layer_count": len(resolved.inner_signal_layers),

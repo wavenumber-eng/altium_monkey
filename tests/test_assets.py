@@ -34,8 +34,10 @@ MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\((?P<target>[^)]+)\)")
 EXPECTED_REQUIRES_PYTHON = ">=3.12,<3.15"
 EXPECTED_RUNTIME_DEPENDENCIES = {
     "freetype-py",
+    "jsonschema-rs",
     "lxml",
     "lz4",
+    "msgspec",
     "pillow",
     "uharfbuzz",
     "wn-geometer",

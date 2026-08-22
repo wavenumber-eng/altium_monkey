@@ -615,6 +615,11 @@ class SchGeometryRecord:
     bounds: SchGeometryBounds | None = None
     operations: list[SchGeometryOp] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
+    source_object_index: int | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SchGeometryRecord:
@@ -622,6 +627,7 @@ class SchGeometryRecord:
         operations_data = extras.pop("operations", []) or []
         bounds = SchGeometryBounds.from_dict(extras.pop("bounds", None))
         extras.pop("operation_count", None)
+        extras.pop("source_object_index", None)
         return cls(
             handle=str(extras.pop("handle", "")),
             unique_id=str(extras.pop("unique_id", "")),
@@ -650,6 +656,7 @@ class SchGeometryRecord:
             op.to_dict(index=index) for index, op in enumerate(self.operations)
         ]
         data.update(copy.deepcopy(self.extras))
+        data.pop("source_object_index", None)
         return data
 
 

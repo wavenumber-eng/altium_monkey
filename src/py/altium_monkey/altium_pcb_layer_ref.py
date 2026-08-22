@@ -883,27 +883,54 @@ def _legacy_fallback_for_v7_only_authoring_ref(
     *,
     registry: PcbLayerRegistry | None = None,
 ) -> int:
-    if (
-        ref.family == PcbLayerFamily.MECHANICAL
-        and ref.number is not None
-        and ref.number <= _MAX_USER_AUTHORING_MECHANICAL_LAYER
-    ):
-        return PcbLayer.MECHANICAL_16.value
+    placeholder_id = _v7_only_legacy_placeholder_id(ref)
+    if ref.family == PcbLayerFamily.MECHANICAL and placeholder_id is not None:
+        return placeholder_id
     if ref.family == PcbLayerFamily.MECHANICAL:
         raise PcbLayerResolutionError(
             "Mechanical user-layer authoring supports Mechanical1 through "
             f"Mechanical{_MAX_USER_AUTHORING_MECHANICAL_LAYER}"
         )
+    if placeholder_id is not None and _registry_supports_v7_only_signal_authoring(
+        registry, ref
+    ):
+        return placeholder_id
+    raise PcbLayerResolutionError(
+        f"Layer {ref.token} requires registry-backed V7 authoring support"
+    )
+
+
+def _v7_only_legacy_placeholder_id(ref: PcbLayerRef) -> int | None:
+    if ref.legacy_layer is not None:
+        return None
+    if (
+        ref.family == PcbLayerFamily.MECHANICAL
+        and ref.number is not None
+        and 17 <= ref.number <= _MAX_USER_AUTHORING_MECHANICAL_LAYER
+    ):
+        return PcbLayer.MECHANICAL_16.value
     if (
         ref.family == PcbLayerFamily.SIGNAL
         and ref.signal_kind == PcbSignalLayerKind.MID
         and ref.number is not None
-        and ref.number > 30
-        and _registry_supports_v7_only_signal_authoring(registry, ref)
+        and 31 <= ref.number <= _MAX_AD26_MID_SIGNAL_LAYER
     ):
         return PcbLayer.MID30.value
-    raise PcbLayerResolutionError(
-        f"Layer {ref.token} requires registry-backed V7 authoring support"
+    return None
+
+
+def _same_pcb_layer_ref_representation(
+    first: PcbLayerRef,
+    second: PcbLayerRef,
+) -> bool:
+    return (
+        first.family == second.family
+        and first.token == second.token
+        and first.signal_kind == second.signal_kind
+        and first.number == second.number
+        and first.legacy_layer == second.legacy_layer
+        and first.v7_saved_layer_id == second.v7_saved_layer_id
+        and first.runtime_v7_layer_id == second.runtime_v7_layer_id
     )
 
 

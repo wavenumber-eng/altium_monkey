@@ -3,6 +3,7 @@ Parse and round-trip Altium PcbDoc board documents.
 """
 
 import copy
+from dataclasses import replace
 import logging
 import math
 import struct
@@ -48,6 +49,11 @@ from .altium_extractable_assets import (
     source_instance_id_for,
 )
 from .altium_pcb_component import AltiumPcbComponent
+from .altium_pcb_embedded_board import (
+    AltiumPcbEmbeddedBoard,
+    EmbeddedBoardStreamError,
+    parse_embedded_boards6_stream,
+)
 from .altium_pcbdoc_builder_components import build_component_stream
 from .altium_pcb_dimension import AltiumPcbDimension, parse_dimensions6_stream
 from .altium_pcb_corner_radius_chamfer import (
@@ -73,7 +79,10 @@ from .altium_pcb_custom_shapes import (
     resolve_pcbdoc_custom_pad_shapes,
     serialize_custom_shapes_stream,
 )
-from .altium_pcb_property_helpers import decode_dxp_parameter_value
+from .altium_pcb_property_helpers import (
+    decode_dxp_parameter_value,
+    resolve_pcb_unicode_field,
+)
 from .altium_pcb_rule import AltiumPcbRule
 from .altium_pcb_via_structure import (
     AltiumPcbViaStructure,
@@ -1070,6 +1079,8 @@ class AltiumPcbDoc:
             AltiumPcbNet
         ] = []  # Changed from list[str] to list[AltiumPcbNet]
         self.net_classes: list[AltiumPcbNetClass] = []
+        self.embedded_boards: tuple[AltiumPcbEmbeddedBoard, ...] = ()
+        self._embedded_board_parse_error: str | None = None
         self.differential_pairs: list[AltiumPcbDifferentialPair] = []
         self.polygons: list[AltiumPcbPolygon] = []
         self.rules: list[AltiumPcbRule] = []
@@ -1119,6 +1130,7 @@ class AltiumPcbDoc:
             self._layer_kind_mapping_data.mapping
         )
         self._authoring_builder: Any | None = None
+        self._source_revision_snapshot: object | None = None
 
     def _profile_for_authoring_builder(self) -> "PcbDocBuildProfile":
         from .altium_pcbdoc_builder import PcbDocBuildProfile
@@ -2771,9 +2783,18 @@ class AltiumPcbDoc:
         if verbose:
             log.info(f"Parsing PcbDoc: {filepath.name}")
 
-        pcbdoc = cls()
+        source_bytes = filepath.read_bytes()
+        pcbdoc = cls.from_bytes(source_bytes, filename=filepath, verbose=verbose)
         pcbdoc.filepath = filepath
-        pcbdoc._parse(verbose=verbose)
+        from .altium_pcb_source_snapshot import PcbDocSourceRevisionSnapshot
+
+        snapshot = pcbdoc._source_revision_snapshot
+        if not isinstance(snapshot, PcbDocSourceRevisionSnapshot):
+            raise RuntimeError("PcbDoc byte parser did not capture source provenance")
+        pcbdoc._source_revision_snapshot = replace(
+            snapshot,
+            source_path=filepath,
+        )
 
         if verbose:
             log.info(
@@ -2807,6 +2828,13 @@ class AltiumPcbDoc:
         pcbdoc = cls(filename)
         with AltiumOleFile(bytes(data)) as ole:
             pcbdoc._parse_open_ole(ole, verbose=verbose)
+        from .altium_pcb_source_snapshot import capture_pcbdoc_source_revision
+
+        pcbdoc._source_revision_snapshot = capture_pcbdoc_source_revision(
+            pcbdoc,
+            source_bytes=bytes(data),
+            source_path=None,
+        )
         return pcbdoc
 
     def _parse(self, verbose: bool = False) -> None:
@@ -2925,8 +2953,21 @@ class AltiumPcbDoc:
                     value = record["VALUE"]
                     if name is None or value is None:
                         continue
-                    parameter_map.setdefault(current_uid, {})[str(name)] = (
-                        decode_dxp_parameter_value(value)
+                    # UNICODE__ sidebands carry the authoritative Unicode text
+                    # as UTF-16 code-unit lists; the plain field encoding
+                    # depends on the writing machine's ANSI code page.
+                    unicode_name = resolve_pcb_unicode_field(record, "NAME")
+                    unicode_value = resolve_pcb_unicode_field(record, "VALUE")
+                    resolved_name = (
+                        unicode_name if unicode_name is not None else str(name)
+                    )
+                    resolved_value = (
+                        unicode_value
+                        if unicode_value is not None
+                        else decode_dxp_parameter_value(value)
+                    )
+                    parameter_map.setdefault(current_uid, {})[resolved_name] = (
+                        resolved_value
                     )
             if verbose:
                 log.info(f"    Found parameters for {len(parameter_map)} components")
@@ -3190,10 +3231,51 @@ class AltiumPcbDoc:
         Parse additional metadata/configuration streams that are not primitive binaries.
         """
         self._parse_rules_stream(ole, verbose=verbose)
+        self._parse_embedded_boards_stream(ole, verbose=verbose)
         self._parse_dimensions_stream(ole, verbose=verbose)
         self._parse_extended_primitive_information_stream(ole, verbose=verbose)
         self._parse_corner_radius_chamfer_stream(ole, verbose=verbose)
         self._parse_custom_shapes_streams(ole, verbose=verbose)
+
+    def _parse_embedded_boards_stream(
+        self,
+        ole: AltiumOleFile,
+        *,
+        verbose: bool,
+    ) -> None:
+        """Parse immutable child-board source references without loading children."""
+
+        has_data = ole.exists(["EmbeddedBoards6", "Data"])
+        has_header = ole.exists(["EmbeddedBoards6", "Header"])
+        if not has_data and not has_header:
+            return
+        if not has_header:
+            self._embedded_board_parse_error = "EmbeddedBoards6/Header is missing"
+            return
+        if not has_data:
+            self._embedded_board_parse_error = "EmbeddedBoards6/Data is missing"
+            return
+        header = ole.openstream(["EmbeddedBoards6", "Header"])
+        if len(header) != 4:
+            self._embedded_board_parse_error = (
+                "EmbeddedBoards6/Header is not a four-byte record count"
+            )
+            return
+        expected_count = struct.unpack("<I", header)[0]
+        try:
+            self.embedded_boards = parse_embedded_boards6_stream(
+                ole.openstream(["EmbeddedBoards6", "Data"]),
+                expected_count=expected_count,
+            )
+        except EmbeddedBoardStreamError as exc:
+            self._embedded_board_parse_error = exc.detail
+            if verbose:
+                log.warning("    Error parsing EmbeddedBoards6/Data: %s", exc.detail)
+            return
+        if verbose:
+            log.info(
+                "    Found %d embedded-board references", len(self.embedded_boards)
+            )
 
     def _parse_binary_primitive_streams(
         self,

@@ -155,12 +155,18 @@ def get_records_in_section(
     return records
 
 
-def create_stream_from_records(records: list[dict[str, Any]]) -> bytes:
+def create_stream_from_records(
+    records: list[dict[str, Any]], *, utf8_sidecars: bool = True
+) -> bytes:
     """
     Serialize parsed record dictionaries back into Altium stream bytes.
 
     Args:
         records: Parsed text or binary record dictionaries.
+        utf8_sidecars: When True (schematic convention), non-ASCII values
+            receive an auto-synthesized "%UTF8%<KEY>" sidecar pair. PCB
+            streams use "UNICODE__<FIELD>" sidebands instead and must pass
+            False so no schematic-style sidecars leak into PCB records.
 
     Returns:
         Length-prefixed Altium stream data.
@@ -220,7 +226,11 @@ def create_stream_from_records(records: list[dict[str, Any]]) -> bytes:
             # Handle text record. Altium emits a UTF-8 sidecar followed by an
             # ACP-safe fallback whenever a value contains non-ASCII text.
             record_bytes = b"".join(
-                _encode_altium_text_pairs(record, skip_private_keys=False)
+                _encode_altium_text_pairs(
+                    record,
+                    skip_private_keys=False,
+                    utf8_sidecars=utf8_sidecars,
+                )
             )
 
             # Encode to UTF-8
@@ -725,7 +735,11 @@ def _skip_altium_text_key(key: str, *, skip_private_keys: bool) -> bool:
 
 
 def _encode_altium_field_pairs(
-    key: str, raw_value: object, explicit_keys: set[str]
+    key: str,
+    raw_value: object,
+    explicit_keys: set[str],
+    *,
+    utf8_sidecars: bool = True,
 ) -> list[bytes]:
     if "UNHANDLED" in key:
         return [b"|"]
@@ -734,7 +748,12 @@ def _encode_altium_field_pairs(
     is_utf8 = key.startswith(_UTF8_FIELD_PREFIX)
     pairs: list[bytes] = []
     sibling_key = f"{_UTF8_FIELD_PREFIX}{key}".casefold()
-    if not is_utf8 and _needs_utf8_sidecar(value) and sibling_key not in explicit_keys:
+    if (
+        utf8_sidecars
+        and not is_utf8
+        and _needs_utf8_sidecar(value)
+        and sibling_key not in explicit_keys
+    ):
         pairs.append(
             _encode_altium_pair(f"{_UTF8_FIELD_PREFIX}{key}", value, utf8=True)
         )
@@ -743,7 +762,10 @@ def _encode_altium_field_pairs(
 
 
 def _encode_altium_text_pairs(
-    record: Mapping[str, object], *, skip_private_keys: bool
+    record: Mapping[str, object],
+    *,
+    skip_private_keys: bool,
+    utf8_sidecars: bool = True,
 ) -> list[bytes]:
     """Encode Altium parameter pairs with UTF-8 sidecars and safe fallbacks."""
 
@@ -756,11 +778,15 @@ def _encode_altium_text_pairs(
     for key, raw_value in record.items():
         if _skip_altium_text_key(key, skip_private_keys=skip_private_keys):
             continue
-        pairs.extend(_encode_altium_field_pairs(key, raw_value, explicit_keys))
+        pairs.extend(
+            _encode_altium_field_pairs(
+                key, raw_value, explicit_keys, utf8_sidecars=utf8_sidecars
+            )
+        )
     return pairs
 
 
-def encode_altium_record(record: dict) -> bytes:
+def encode_altium_record(record: dict, *, utf8_sidecars: bool = True) -> bytes:
     """
     Encode a record dictionary back to Altium format (round-trip support).
 
@@ -771,6 +797,10 @@ def encode_altium_record(record: dict) -> bytes:
 
     Args:
         record: Dictionary of key-value pairs, or binary record with special keys
+        utf8_sidecars: When True (schematic convention), non-ASCII values
+            receive an auto-synthesized "%UTF8%<KEY>" sidecar pair. PCB
+            property records use "UNICODE__<FIELD>" sidebands instead and
+            must pass False.
 
     Returns:
         Bytes for length-prefixed record (text or binary)
@@ -798,7 +828,9 @@ def encode_altium_record(record: dict) -> bytes:
             )
         return length_bytes + binary_data
 
-    encoded_pairs = _encode_altium_text_pairs(record, skip_private_keys=True)
+    encoded_pairs = _encode_altium_text_pairs(
+        record, skip_private_keys=True, utf8_sidecars=utf8_sidecars
+    )
 
     # Join all encoded pairs
     record_bytes = b"".join(encoded_pairs)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from .altium_utilities import decode_byte_array, encode_altium_record, parse_byte_record
 
@@ -22,6 +22,66 @@ def encode_dxp_parameter_value(value: object) -> str:
     """Encode DXP parameter-list separators used inside parameter values."""
     text = "" if value is None else str(value)
     return text.replace("=", "{}").replace("|", "[]")
+
+
+def decode_pcb_unicode_sideband(value: object) -> str | None:
+    """
+    Decode a PCB ``UNICODE__<FIELD>`` sideband code-point list to text.
+
+    Altium PCB property records store the authoritative Unicode text for a
+    field as a comma-separated list of decimal UTF-16 code units (for example
+    ``UNICODE__VALUE=177,56,86`` decodes to a plus-minus sign followed by
+    ``8V``), alongside a
+    plain-field fallback whose byte encoding depends on the writing machine's
+    ANSI code page. Returns ``None`` when the token is missing or malformed so
+    callers can fall back to the plain field.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    units: list[int] = []
+    for token in value.split(","):
+        # Reject anything int() would tolerate beyond plain decimal digits
+        # (signs, whitespace, underscores, non-ASCII digits).
+        if not (token.isascii() and token.isdigit()):
+            return None
+        unit = int(token)
+        if unit > 0xFFFF:
+            return None
+        units.append(unit)
+    encoded = b"".join(unit.to_bytes(2, "little") for unit in units)
+    try:
+        return encoded.decode("utf-16-le")
+    except UnicodeDecodeError:
+        return None
+
+
+def encode_pcb_unicode_sideband(text: str) -> str:
+    """
+    Encode text as a PCB ``UNICODE__<FIELD>`` sideband code-point list.
+
+    Raises ``ValueError`` for text that is not encodable UTF-16, such as lone
+    surrogates.
+    """
+    try:
+        encoded = text.encode("utf-16-le")
+    except UnicodeEncodeError as error:
+        raise ValueError(
+            f"Text is not encodable as a UNICODE__ sideband: {error}"
+        ) from error
+    units = (
+        int.from_bytes(encoded[index : index + 2], "little")
+        for index in range(0, len(encoded), 2)
+    )
+    return ",".join(str(unit) for unit in units)
+
+
+def resolve_pcb_unicode_field(fields: Mapping[str, object], key: str) -> str | None:
+    """
+    Read the decoded ``UNICODE__<key>`` sideband from a record mapping.
+
+    Returns ``None`` when no valid sideband is present.
+    """
+    return decode_pcb_unicode_sideband(fields.get(f"UNICODE__{key}"))
 
 
 def parse_pcb_int_token(value: object) -> int | None:

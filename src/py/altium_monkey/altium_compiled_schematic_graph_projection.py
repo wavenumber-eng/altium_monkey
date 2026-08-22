@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,6 +176,7 @@ def _visit_page_occurrence(
     active_templates: set[str],
     parent: _PageOccurrenceEvidence | None = None,
     symbol: AltiumCompiledPhysicalSheetSymbol | None = None,
+    root_discriminator: str = "",
 ) -> None:
     if physical_id in active_templates:
         raise ValueError(f"compiled physical hierarchy contains a cycle: {physical_id}")
@@ -184,6 +185,8 @@ def _visit_page_occurrence(
         raise ValueError("child page occurrence requires a physical sheet placement")
     if parent is None:
         source_path, instance_path = _root_page_occurrence_paths(physical)
+        if root_discriminator:
+            source_path = f"{source_path}/{root_discriminator}"
     else:
         assert symbol is not None
         source_path, instance_path = _child_page_occurrence_paths(
@@ -241,14 +244,21 @@ def _expand_occurrence_roots(
 ) -> list[_PageOccurrenceEvidence]:
     occurrences: list[_PageOccurrenceEvidence] = []
     active_templates: set[str] = set()
+    root_path_uses: Counter[str] = Counter()
 
     def visit(physical_id: str) -> None:
+        source_path, _instance_path = _root_page_occurrence_paths(
+            physical_by_id[physical_id]
+        )
+        root_discriminator = physical_id if root_path_uses[source_path] else ""
+        root_path_uses[source_path] += 1
         _visit_page_occurrence(
             physical_id=physical_id,
             physical_by_id=physical_by_id,
             symbols_by_owner=symbols_by_owner,
             occurrences=occurrences,
             active_templates=active_templates,
+            root_discriminator=root_discriminator,
         )
 
     ordered = sorted(compiled.physical_documents, key=lambda item: item.ordinal)
@@ -369,13 +379,14 @@ def _pin_matches_terminal(
     pin_source_uid: str,
 ) -> bool:
     source_uid = str(getattr(pin, "unique_id", "") or "")
+    owner_part_value = getattr(pin, "owner_part_id", None)
+    owner_part = int(owner_part_value) if owner_part_value is not None else 0
     selector_matches = (
         str(getattr(pin, "designator", "") or "") == pin_designator
         and str(getattr(pin, "name", "") or "") == pin_name
     )
     return (source_uid == pin_source_uid if pin_source_uid else selector_matches) and (
-        (owner_part := int(getattr(pin, "owner_part_id", None) or 1)) <= 0
-        or owner_part == max(1, body.current_part_id)
+        owner_part <= 0 or owner_part == max(1, body.current_part_id)
     )
 
 
@@ -608,14 +619,15 @@ def _build_definition_and_occurrence_rows(
 ) -> _ProjectionState:
     unit_definition_by_logical: dict[str, str] = {}
     page_definition_by_logical: dict[str, str] = {}
+    definition_refs_by_source_path: dict[str, tuple[str, str]] = {}
     for logical in compiled.logical_documents:
-        source = _source_identity(
-            **{
-                SOURCE_PATH_KEY: str(logical.source_path or logical.file_name).replace(
-                    "\\", "/"
-                )
-            }
-        )
+        source_path = str(logical.source_path or logical.file_name).replace("\\", "/")
+        existing_refs = definition_refs_by_source_path.get(source_path)
+        if existing_refs is not None:
+            unit_definition_by_logical[logical.id] = existing_refs[0]
+            page_definition_by_logical[logical.id] = existing_refs[1]
+            continue
+        source = _source_identity(**{SOURCE_PATH_KEY: source_path})
         unit = _source_row(
             allocator,
             "sch.unit_definition",
@@ -638,6 +650,10 @@ def _build_definition_and_occurrence_rows(
         graph.page_definitions.append(page)
         unit_definition_by_logical[logical.id] = str(unit["id"])
         page_definition_by_logical[logical.id] = str(page["id"])
+        definition_refs_by_source_path[source_path] = (
+            str(unit["id"]),
+            str(page["id"]),
+        )
 
     logical_by_id = {row.id: row for row in compiled.logical_documents}
     physical_by_id = {row.id: row for row in compiled.physical_documents}

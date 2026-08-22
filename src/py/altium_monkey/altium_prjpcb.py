@@ -111,6 +111,23 @@ class NetIdentifierScope(IntEnum):
     STRICT_HIERARCHICAL = 4  # eFlatten_Hierarchical_Strict: Strict hierarchical
 
 
+class ChannelRoomNamingStyle(IntEnum):
+    """
+    Multichannel room naming style for Altium projects.
+
+    Mirrors Altium's channel room naming style options. Stored as
+    ChannelRoomNamingStyle in the [Design] section of .PrjPcb files and
+    controls how compiled physical-document room names are suffixed
+    (flat rank suffix vs hierarchical name path, numeric vs alpha rank).
+    """
+
+    FLAT_NUMERIC_WITH_NAMES = 0  # eChannelRoomNamingStyle_FlatNumericWithNames
+    FLAT_ALPHA_WITH_NAMES = 1  # eChannelRoomNamingStyle_FlatAlphaWithNames
+    NUMERIC_NAME_PATH = 2  # eChannelRoomNamingStyle_NumericNamePath
+    ALPHA_NAME_PATH = 3  # eChannelRoomNamingStyle_AlphaNamePath
+    MIXED_NAME_PATH = 4  # eChannelRoomNamingStyle_MixedNamePath
+
+
 def _parse_altium_bool(value: object, *, default: bool = False) -> bool:
     """
     Parse an Altium boolean value from INI text.

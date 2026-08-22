@@ -143,6 +143,36 @@ def _optional_float(value: object) -> float | None:
         return None
 
 
+def _with_template_render_identity(
+    record: "SchGeometryRecord",
+    *,
+    document_id: str,
+    template_index: int,
+    source_index: int,
+    units_per_px: int,
+) -> "SchGeometryRecord":
+    """Give a UID-less template child a deterministic render-local identity."""
+    if record.unique_id:
+        return record
+
+    from .altium_sch_geometry_oracle import (
+        unwrap_record_operations,
+        wrap_record_operations,
+    )
+
+    unique_id = f"TPL{template_index:05d}C{source_index:05d}"
+    return replace(
+        record,
+        handle=f"{document_id}\\{unique_id}",
+        unique_id=unique_id,
+        operations=wrap_record_operations(
+            unique_id,
+            unwrap_record_operations(record),
+            units_per_px=units_per_px,
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class _SchGeometryOwnershipState:
     template_obj: AltiumSchTemplate | None
@@ -209,45 +239,6 @@ class _SchSheetGeometrySetup:
     @property
     def working_margin(self) -> int:
         return self.margin if (self.reference_zones_on or self.title_block_on) else 0
-
-
-GEOMETRY_KIND_ORDER = {
-    "line": 10,
-    "bezier": 20,
-    "arc": 30,
-    "ellipse": 40,
-    "ellipticalarc": 50,
-    "bus": 60,
-    "busentry": 70,
-    "label": 80,
-    "netlabel": 90,
-    "parameter": 100,
-    "parameterset": 105,
-    "noerc": 107,
-    "blanket": 108,
-    "compilemask": 109,
-    "polygon": 110,
-    "polyline": 120,
-    "rectangle": 130,
-    "roundrectangle": 140,
-    "textframe": 142,
-    "note": 143,
-    "image": 145,
-    "port": 150,
-    "power": 160,
-    "harnessconnector": 165,
-    "harnessentry": 166,
-    "harnessconnectortype": 167,
-    "pie": 170,
-    "sheet": 180,
-    "template": 181,
-    "sheetentry": 182,
-    "sheetfilename": 183,
-    "sheetname": 184,
-    "sheetsymbol": 185,
-    "signalharness": 186,
-    "wire": 190,
-}
 
 
 COMPONENT_GRAPHIC_CHILD_TYPES = (
@@ -3337,7 +3328,40 @@ class AltiumSchDoc(JsonApplyMixin):
                 units_per_px=units_per_px,
             )
             if geometry_record is not None:
-                records.append(geometry_record)
+                records.append(
+                    self._tag_source_geometry_record(
+                        cast("SchGeometryRecord", geometry_record),
+                        obj,
+                    )
+                )
+
+    def _source_object_index(self, source_object: object) -> int | None:
+        record_index = _optional_int(getattr(source_object, "_record_index", None))
+        if (
+            record_index is not None
+            and 0 <= record_index < len(self.all_objects)
+            and self.all_objects[record_index] is source_object
+        ):
+            return record_index
+        return next(
+            (
+                position
+                for position, candidate in enumerate(self.all_objects)
+                if candidate is source_object
+            ),
+            None,
+        )
+
+    def _tag_source_geometry_record(
+        self,
+        record: "SchGeometryRecord",
+        source_object: object,
+    ) -> "SchGeometryRecord":
+        """Attach render-local source correspondence without changing public IR."""
+        return replace(
+            record,
+            source_object_index=self._source_object_index(source_object),
+        )
 
     def _append_callable_geometry_records(
         self,
@@ -3368,7 +3392,12 @@ class AltiumSchDoc(JsonApplyMixin):
                 units_per_px=units_per_px,
             )
             if geometry_record is not None:
-                records.append(geometry_record)
+                records.append(
+                    self._tag_source_geometry_record(
+                        cast("SchGeometryRecord", geometry_record),
+                        obj,
+                    )
+                )
 
     def _append_image_geometry_records(
         self,
@@ -3408,7 +3437,7 @@ class AltiumSchDoc(JsonApplyMixin):
                 units_per_px=units_per_px,
             )
             if geometry_record is not None:
-                records.append(geometry_record)
+                records.append(self._tag_source_geometry_record(geometry_record, image))
 
     def _append_special_graphic_geometry_records(
         self,
@@ -3630,33 +3659,23 @@ class AltiumSchDoc(JsonApplyMixin):
             )
 
         template_child_records = []
-        for obj in self.all_objects:
+        for source_position, obj in enumerate(self.all_objects):
             if getattr(obj, "owner_index", None) != ownership.template_idx:
                 continue
-            if (
-                isinstance(obj, AltiumSchLabel)
-                and str(getattr(obj, "text", "") or "").startswith("=PCB_")
-                and not requested_render_options.fallback_project_parameters_for_star
-            ):
-                continue
-            # Parent-bound primitives like harness entries and sheet entries are
-            # positioned relative to a parent connector/symbol and require
-            # parent_* kwargs that the generic template-child dispatch cannot
-            # supply. They should not appear as direct template children, so
-            # skip them defensively when their owner_index lands on the
-            # template index (observed on real-world projects such as mrx).
-            if isinstance(obj, (AltiumSchHarnessEntry, AltiumSchSheetEntry)):
-                continue
-            to_geometry = getattr(obj, "to_geometry", None)
-            if not callable(to_geometry):
-                continue
-            geometry_record = to_geometry(
+            geometry_record = self._template_child_geometry_record(
+                obj,
                 template_geometry_ctx,
                 document_id=document_id,
                 units_per_px=units_per_px,
+                template_index=ownership.template_idx,
+                source_position=source_position,
+                fallback_project_parameters_for_star=(
+                    requested_render_options.fallback_project_parameters_for_star
+                ),
             )
             if geometry_record is None:
                 continue
+            geometry_record = self._tag_source_geometry_record(geometry_record, obj)
             records.append(geometry_record)
             template_child_records.append(geometry_record)
 
@@ -3668,7 +3687,52 @@ class AltiumSchDoc(JsonApplyMixin):
             units_per_px=units_per_px,
         )
         if template_record is not None:
-            records.append(template_record)
+            records.append(
+                self._tag_source_geometry_record(
+                    template_record,
+                    ownership.template_obj,
+                )
+            )
+
+    def _template_child_geometry_record(
+        self,
+        obj: object,
+        geometry_ctx: object,
+        *,
+        document_id: str,
+        units_per_px: int,
+        template_index: int,
+        source_position: int,
+        fallback_project_parameters_for_star: bool,
+    ) -> "SchGeometryRecord | None":
+        """Build one renderable template child with a render-local identity."""
+        if (
+            isinstance(obj, AltiumSchLabel)
+            and str(getattr(obj, "text", "") or "").startswith("=PCB_")
+            and not fallback_project_parameters_for_star
+        ):
+            return None
+        # These children need parent-relative arguments unavailable here and
+        # should never be direct template primitives.
+        if isinstance(obj, (AltiumSchHarnessEntry, AltiumSchSheetEntry)):
+            return None
+        to_geometry = getattr(obj, "to_geometry", None)
+        if not callable(to_geometry):
+            return None
+        geometry_record = to_geometry(
+            geometry_ctx,
+            document_id=document_id,
+            units_per_px=units_per_px,
+        )
+        if geometry_record is None:
+            return None
+        return _with_template_render_identity(
+            cast("SchGeometryRecord", geometry_record),
+            document_id=document_id,
+            template_index=template_index,
+            source_index=int(getattr(obj, "_record_index", None) or source_position),
+            units_per_px=units_per_px,
+        )
 
     def _append_component_geometry_records(
         self,
@@ -3794,7 +3858,7 @@ class AltiumSchDoc(JsonApplyMixin):
             units_per_px=units_per_px,
         )
         if geometry_record is not None:
-            records.append(geometry_record)
+            records.append(self._tag_source_geometry_record(geometry_record, comp))
 
         for impl_list in sorted(
             (
@@ -3814,7 +3878,12 @@ class AltiumSchDoc(JsonApplyMixin):
                     units_per_px=units_per_px,
                 )
                 if geometry_record is not None:
-                    records.append(geometry_record)
+                    records.append(
+                        self._tag_source_geometry_record(
+                            geometry_record,
+                            implementation,
+                        )
+                    )
 
                 for child in sorted(
                     getattr(implementation, "children", []),
@@ -3828,7 +3897,12 @@ class AltiumSchDoc(JsonApplyMixin):
                         units_per_px=units_per_px,
                     )
                     if geometry_record is not None:
-                        records.append(geometry_record)
+                        records.append(
+                            self._tag_source_geometry_record(
+                                cast("SchGeometryRecord", geometry_record),
+                                child,
+                            )
+                        )
 
         self._append_component_graphics_parameters_and_pins(
             records,
@@ -3883,7 +3957,9 @@ class AltiumSchDoc(JsonApplyMixin):
                             "skip_svg": True,
                         },
                     )
-                records.append(geometry_record)
+                records.append(
+                    self._tag_source_geometry_record(geometry_record, graphic)
+                )
 
         for param in sorted(
             getattr(comp, "parameters", []),
@@ -3900,7 +3976,12 @@ class AltiumSchDoc(JsonApplyMixin):
                 units_per_px=units_per_px,
             )
             if geometry_record is not None:
-                records.append(geometry_record)
+                records.append(
+                    self._tag_source_geometry_record(
+                        cast("SchGeometryRecord", geometry_record),
+                        param,
+                    )
+                )
 
         for pin in sorted(
             getattr(comp, "pins", []),
@@ -3932,7 +4013,7 @@ class AltiumSchDoc(JsonApplyMixin):
                             "skip_svg": True,
                         },
                     )
-                records.append(geometry_record)
+                records.append(self._tag_source_geometry_record(geometry_record, pin))
 
     def _append_parameter_and_connector_geometry_records(
         self,
@@ -3956,13 +4037,13 @@ class AltiumSchDoc(JsonApplyMixin):
                 or ownership.is_pin_owned(param)
             ):
                 continue
-            records.append(
-                param.to_geometry(
-                    geometry_ctx,
-                    document_id=document_id,
-                    units_per_px=units_per_px,
-                )
+            geometry_record = param.to_geometry(
+                geometry_ctx,
+                document_id=document_id,
+                units_per_px=units_per_px,
             )
+            if geometry_record is not None:
+                records.append(self._tag_source_geometry_record(geometry_record, param))
             emitted_parameter_ids.add(str(getattr(param, "unique_id", "") or ""))
 
         for parameter_set in sorted(
@@ -3983,13 +4064,18 @@ class AltiumSchDoc(JsonApplyMixin):
                 if child_unique_id in emitted_parameter_ids:
                     continue
                 emitted_parameter_ids.add(child_unique_id)
-                records.append(
-                    child_param.to_geometry(
-                        geometry_ctx,
-                        document_id=document_id,
-                        units_per_px=units_per_px,
-                    )
+                geometry_record = child_param.to_geometry(
+                    geometry_ctx,
+                    document_id=document_id,
+                    units_per_px=units_per_px,
                 )
+                if geometry_record is not None:
+                    records.append(
+                        self._tag_source_geometry_record(
+                            geometry_record,
+                            child_param,
+                        )
+                    )
 
         self._append_top_level_geometry_records(
             records,
@@ -4045,7 +4131,12 @@ class AltiumSchDoc(JsonApplyMixin):
                 units_per_px=units_per_px,
             )
             if geometry_record is not None:
-                records.append(geometry_record)
+                records.append(
+                    self._tag_source_geometry_record(
+                        geometry_record,
+                        harness_connector,
+                    )
+                )
 
             parent_x, parent_y = geometry_ctx.transform_point(
                 harness_connector.location.x,
@@ -4075,7 +4166,9 @@ class AltiumSchDoc(JsonApplyMixin):
                     units_per_px=units_per_px,
                 )
                 if entry_record is not None:
-                    records.append(entry_record)
+                    records.append(
+                        self._tag_source_geometry_record(entry_record, entry)
+                    )
 
             type_labels = []
             type_label = getattr(harness_connector, "type_label", None)
@@ -4098,7 +4191,12 @@ class AltiumSchDoc(JsonApplyMixin):
                     units_per_px=units_per_px,
                 )
                 if geometry_record is not None:
-                    records.append(geometry_record)
+                    records.append(
+                        self._tag_source_geometry_record(
+                            geometry_record,
+                            harness_type,
+                        )
+                    )
 
         for sheet_symbol in sorted(
             self.sheet_symbols,
@@ -4110,7 +4208,9 @@ class AltiumSchDoc(JsonApplyMixin):
                 units_per_px=units_per_px,
             )
             if geometry_record is not None:
-                records.append(geometry_record)
+                records.append(
+                    self._tag_source_geometry_record(geometry_record, sheet_symbol)
+                )
 
             parent_x, parent_y = geometry_ctx.transform_point(
                 sheet_symbol.location.x,
@@ -4133,7 +4233,9 @@ class AltiumSchDoc(JsonApplyMixin):
                     units_per_px=units_per_px,
                 )
                 if entry_record is not None:
-                    records.append(entry_record)
+                    records.append(
+                        self._tag_source_geometry_record(entry_record, entry)
+                    )
 
             for child in sorted(
                 [
@@ -4151,7 +4253,9 @@ class AltiumSchDoc(JsonApplyMixin):
                     units_per_px=units_per_px,
                 )
                 if child_record is not None:
-                    records.append(child_record)
+                    records.append(
+                        self._tag_source_geometry_record(child_record, child)
+                    )
 
     def _append_signal_and_wire_geometry_records(
         self,
@@ -4179,7 +4283,9 @@ class AltiumSchDoc(JsonApplyMixin):
                 units_per_px=units_per_px,
             )
             if geometry_record is not None:
-                records.append(geometry_record)
+                records.append(
+                    self._tag_source_geometry_record(geometry_record, signal_harness)
+                )
 
         for wire in sorted(
             self.wires, key=lambda obj: str(getattr(obj, "unique_id", ""))
@@ -4190,7 +4296,7 @@ class AltiumSchDoc(JsonApplyMixin):
                 units_per_px=units_per_px,
             )
             if geometry_record is not None:
-                records.append(geometry_record)
+                records.append(self._tag_source_geometry_record(geometry_record, wire))
 
     def _build_sheet_geometry_setup(
         self,
@@ -4803,12 +4909,9 @@ class AltiumSchDoc(JsonApplyMixin):
         """
         from .altium_sch_geometry_oracle import SchGeometryDocument
 
-        records.sort(
-            key=lambda record: (
-                GEOMETRY_KIND_ORDER.get(str(record.kind or ""), 999),
-                str(record.unique_id or ""),
-            )
-        )
+        from .altium_sch_paint_order import order_geometry_records_by_source
+
+        records = order_geometry_records_by_source(records, self.all_objects)
         render_hints = self._build_geometry_render_hints(
             resolved_ir_profile=resolved_ir_profile,
             geometry_render_options=geometry_render_options,
@@ -4977,13 +5080,14 @@ class AltiumSchDoc(JsonApplyMixin):
             units_per_px=units_per_px,
             ownership=ownership,
         )
-        records.append(
-            self._build_sheet_geometry_record(
-                setup=setup,
-                doc_unique_id=doc_unique_id,
-                sheet_operations=sheet_operations,
-            )
+        sheet_record = self._build_sheet_geometry_record(
+            setup=setup,
+            doc_unique_id=doc_unique_id,
+            sheet_operations=sheet_operations,
         )
+        if self.sheet is not None:
+            sheet_record = self._tag_source_geometry_record(sheet_record, self.sheet)
+        records.append(sheet_record)
         self._append_signal_and_wire_geometry_records(
             records,
             geometry_ctx,

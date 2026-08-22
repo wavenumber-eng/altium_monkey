@@ -92,8 +92,10 @@ from .altium_pcb_mask_expansion import (
 from .altium_pcb_property_helpers import (
     decode_dxp_parameter_value,
     encode_dxp_parameter_value,
+    encode_pcb_unicode_sideband,
     parse_pcb_count_prefixed_property_records,
     parse_pcb_int_token,
+    resolve_pcb_unicode_field,
     serialize_pcb_count_prefixed_property_records,
 )
 from .altium_pcb_pad_bounds import pad_projection_bounds_mils
@@ -251,13 +253,20 @@ class AltiumPcbLibPrimitiveParameterGroup:
             props.pop("APPURTENANCE", None)
         props["VARIANTGUID"] = self.variant_guid
         props["COUNT"] = str(len(self.parameters))
-        payloads = [encode_altium_record(props)[4:]]
+        # PCB streams use UNICODE__ sidebands instead of schematic %UTF8%
+        # sidecars, so sidecar synthesis is suppressed here.
+        payloads = [encode_altium_record(props, utf8_sidecars=False)[4:]]
         for name, value in self.parameters.items():
-            payloads.append(
-                encode_altium_record(
-                    {"NAME": name, "VALUE": encode_dxp_parameter_value(value)}
-                )[4:]
-            )
+            record: dict[str, str] = {}
+            if any(ord(ch) > 0x7F for ch in f"{name}{value}"):
+                record["UNICODE"] = "EXISTS"
+            record["NAME"] = name
+            record["VALUE"] = encode_dxp_parameter_value(value)
+            if any(ord(ch) > 0x7F for ch in name):
+                record["UNICODE__NAME"] = encode_pcb_unicode_sideband(name)
+            if any(ord(ch) > 0x7F for ch in value):
+                record["UNICODE__VALUE"] = encode_pcb_unicode_sideband(value)
+            payloads.append(encode_altium_record(record, utf8_sidecars=False)[4:])
         return tuple(payloads)
 
 
@@ -1930,10 +1939,20 @@ def _parse_pcblib_primitive_parameter_groups(
             param_payload, param_props = records[index]
             index += 1
             parameter_payloads.append(param_payload)
-            name = param_props.get("NAME")
-            if name:
-                parameters[name] = decode_dxp_parameter_value(
-                    param_props.get("VALUE", "")
+            # Prefer the authoritative UNICODE__ code-unit sidebands over
+            # the code-page-dependent plain fields.
+            unicode_name = resolve_pcb_unicode_field(param_props, "NAME")
+            resolved_name = (
+                unicode_name
+                if unicode_name is not None
+                else param_props.get("NAME", "")
+            )
+            if resolved_name:
+                unicode_value = resolve_pcb_unicode_field(param_props, "VALUE")
+                parameters[resolved_name] = (
+                    unicode_value
+                    if unicode_value is not None
+                    else decode_dxp_parameter_value(param_props.get("VALUE", ""))
                 )
 
         groups.append(

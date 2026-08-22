@@ -14,10 +14,12 @@ authors = [
     { name = "Eli Hughes", email = "ehughes@wavenumber.net" },
 ]
 dependencies = [
+    "jsonschema-rs>=0.48.1,<0.49",
+    "msgspec==0.21.1",
     "pillow==12.3.0",
     "freetype-py",
     "uharfbuzz",
-    "wn-geometer==2026.8.18",
+    "wn-geometer==2026.8.21",
     "lxml==6.0.2",
     "lz4>=4.4.5",
 ]
