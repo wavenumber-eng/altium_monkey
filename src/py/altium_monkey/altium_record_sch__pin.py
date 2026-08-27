@@ -1401,6 +1401,8 @@ class AltiumSchPin(SchPrimitive):
     def _serialize_text_header_fields(self, record: dict[str, Any]) -> None:
         if self.owner_part_id is not None:
             record["OwnerPartId"] = str(self.owner_part_id)
+        if self.owner_part_display_mode is not None:
+            record["OwnerPartDisplayMode"] = str(self.owner_part_display_mode)
         if self.formal_type is not None and self.formal_type.value != 0:
             record["FormalType"] = str(self.formal_type.value)
         record["PinConglomerate"] = str(self._text_pin_conglomerate())
