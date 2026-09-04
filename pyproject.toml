@@ -19,7 +19,7 @@ dependencies = [
     "pillow==12.3.0",
     "freetype-py",
     "uharfbuzz",
-    "wn-geometer==2026.8.21",
+    "wn-geometer==2026.9.4",
     "lxml==6.0.2",
     "lz4>=4.4.5",
 ]
