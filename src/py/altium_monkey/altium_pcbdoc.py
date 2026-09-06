@@ -1596,6 +1596,13 @@ class AltiumPcbDoc:
         body.standoff_height = _pcbdoc_mils_to_internal(standoff_height_mils)
         body.overall_height = _pcbdoc_mils_to_internal(overall_height_mils)
         body.cavity_height = _pcbdoc_mils_to_internal(cavity_height_mils)
+        # Altium's "Extruded" 3D model type reads MODEL.EXTRUDED.MINZ/MAXZ for
+        # actual render height, not OVERALLHEIGHT (that field is legacy/BOM
+        # metadata only). Leaving these at the class default of 0 omits the
+        # properties entirely on serialize, and Altium then falls back to an
+        # undocumented ~1000mil extrusion height regardless of overall_height.
+        body.model_extruded_min_z = _pcbdoc_mils_to_internal(standoff_height_mils)
+        body.model_extruded_max_z = _pcbdoc_mils_to_internal(overall_height_mils)
         body.body_projection = body_projection
         body.body_color_3d = int(body_color_3d)
         body.body_opacity_3d = float(body_opacity_3d)

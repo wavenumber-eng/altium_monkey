@@ -3881,6 +3881,13 @@ class PcbLibBuilder:
         body.standoff_height = self._mil_to_internal_units(standoff_height_mil)
         body.overall_height = self._mil_to_internal_units(overall_height_mil)
         body.cavity_height = self._mil_to_internal_units(cavity_height_mil)
+        # Altium's "Extruded" 3D model type reads MODEL.EXTRUDED.MINZ/MAXZ for
+        # actual render height, not OVERALLHEIGHT (that field is legacy/BOM
+        # metadata only). Leaving these at the class default of 0 omits the
+        # properties entirely on serialize, and Altium then falls back to an
+        # undocumented ~1000mil extrusion height regardless of overall_height.
+        body.model_extruded_min_z = self._mil_to_internal_units(standoff_height_mil)
+        body.model_extruded_max_z = self._mil_to_internal_units(overall_height_mil)
         body.body_projection = body_projection
         body.body_color_3d = int(body_color_3d)
         body.body_opacity_3d = float(body_opacity_3d)
