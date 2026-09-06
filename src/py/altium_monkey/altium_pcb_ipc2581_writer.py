@@ -4323,7 +4323,8 @@ def _build_component_pad_order(
             continue
         comp_ref = dedup_map.get(comp_idx) or comp.designator
         for pin_num, pad_idx in enumerate(pad_indices, 1):
-            comp_pad_map[pad_idx] = (comp_ref, str(pin_num))
+            pad = pcbdoc.pads[pad_idx]
+            comp_pad_map[pad_idx] = (comp_ref, pad.designator or str(pin_num))
             ordered_pad_items.append((pad_idx, pcbdoc.pads[pad_idx]))
             ordered_pad_indices.add(pad_idx)
 
