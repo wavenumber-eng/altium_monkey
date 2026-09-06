@@ -1,3 +1,10 @@
+# altium-monkey 2026.09.07 Release Notes
+
+Package version: `2026.9.7`
+
+This release only updates the `wn-geometer` dependency from `2026.9.4` to
+`2026.9.7`.
+
 # altium-monkey 2026.09.04 Release Notes
 
 Package version: `2026.9.4`
