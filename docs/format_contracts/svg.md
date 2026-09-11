@@ -103,8 +103,34 @@ Installed system fonts are preferred, and callers can add search roots through
 bundled open-source fonts when unavailable: Arimo for Arial and Microsoft Sans
 Serif-style families, Tinos for Times New Roman-style families, and Cousine for
 Courier New or monospace families. When bundled fallback fonts are used,
-schematic SVG embeds those font faces so browser layout follows the same
-metrics used by the renderer.
+schematic SVG embeds those font faces by default so browser layout follows
+the same metrics used by the renderer.
+
+`SchSvgRenderOptions.font_output` controls how those bundled faces are
+attached:
+
+- `embed` (default): inline each used face as a base64 `@font-face` `src`.
+- `omit`: emit no `@font-face` rules. Text still uses the resolved family
+  name (`Arimo`, `Tinos`, `Cousine`). The host page can supply fonts.
+- `files`: copy each used face into `font_output_dir` and reference it with
+  a relative URL. `font_output_dir` is required and must be a non-empty
+  path; empty or whitespace-only values are rejected. `font_url_prefix` is
+  the relative URL from the SVG to that directory (`""` when the files sit
+  next to the SVG, or `"fonts/"` when they live in a subdirectory).
+  Absolute filesystem paths are rejected. Copied faces keep their source
+  filenames; an existing `.ttf` with the same name is overwritten.
+
+`font_output_dir` is independent of where the SVG string is written.
+`AltiumSchDoc.to_svg()` returns a string, so the caller chooses the SVG
+path. `AltiumSchLib.to_svg(output_dir=...)` writes SVG files to
+`output_dir` but still uses `options.font_output_dir` for font copies.
+Callers must keep those directories aligned with `font_url_prefix`.
+
+System-resolved faces are never inlined. `font_output` only affects faces
+whose resolver source is `bundled_font`. Browsers resolve relative font
+URLs against the SVG document URL when the SVG is opened directly, or
+against the host page when the SVG is inlined. `<img src="sheet.svg">`
+does not load external fonts; use inline SVG or `<object>` / `<iframe>`.
 
 ## PCB SVG
 

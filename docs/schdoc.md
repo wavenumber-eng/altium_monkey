@@ -172,7 +172,11 @@ When a requested Altium/Windows family is unavailable, common families fall
 back to bundled open-source fonts: Arimo for Arial and Microsoft Sans
 Serif-style fonts, Tinos for Times New Roman-style fonts, and Cousine for
 Courier New or monospace fonts. Bundled fallback faces are embedded into SVG
-output when used so browser text rendering matches the measured metrics.
+output by default when used so browser text rendering matches the measured
+metrics. Set `SchSvgRenderOptions(font_output="omit")` to skip `@font-face`
+rules, or `font_output="files"` with a non-empty `font_output_dir` to copy
+the used faces into that directory and reference them with a relative URL.
+`font_output_dir` is independent of wherever the caller writes the SVG.
 
 `AltiumSchDoc.to_ir(profile="onscreen")` includes font-resolution diagnostics
 for substitutions and fallbacks. Exact system matches are intentionally quiet.

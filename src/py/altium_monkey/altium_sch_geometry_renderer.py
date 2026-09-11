@@ -4,6 +4,7 @@ import base64
 import html
 import json
 import math
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,9 +17,11 @@ from .altium_sch_geometry_oracle import (
 from .altium_font_resolver import resolve_font_with_style
 from .altium_sch_svg_renderer import (
     SchCompileMaskRenderMode,
+    SchSvgFontOutput,
     SchSvgRenderContext,
     SchSvgRenderOptions,
     build_compile_mask_visual_overlay_svg,
+    normalize_sch_svg_font_output,
     svg_arc,
     svg_ellipse,
     svg_text_or_poly,
@@ -83,6 +86,35 @@ def _pen_width_to_svg(pen: dict[str, Any], *, units_per_px: float) -> float:
     return max(width / units_per_px, 0.5 if min_width > 0.0 else 0.0)
 
 
+def _normalize_font_url_prefix(prefix: str) -> str:
+    normalized = str(prefix or "").strip().replace("\\", "/")
+    if not normalized:
+        return ""
+    if (
+        normalized.startswith("/")
+        or normalized.startswith("file:")
+        or "://" in normalized
+        or ".." in Path(normalized).parts
+        or Path(normalized).is_absolute()
+    ):
+        raise ValueError(
+            "font_url_prefix must be a relative URL path without '..' "
+            f"(got {prefix!r})"
+        )
+    if not normalized.endswith("/"):
+        normalized += "/"
+    return normalized
+
+
+def _require_font_output_dir(value: Path | str | None) -> Path:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(
+            'font_output="files" requires font_output_dir so bundled '
+            "faces can be copied next to the SVG"
+        )
+    return Path(value)
+
+
 @dataclass(frozen=True)
 class SchGeometrySvgRenderOptions:
     """Rendering options for SVG generated from schematic geometry IR."""
@@ -95,6 +127,9 @@ class SchGeometrySvgRenderOptions:
     text_as_polygons: bool = False
     polygon_text_tolerance: float = 0.5
     include_view_box: bool = True
+    font_output: SchSvgFontOutput | str = SchSvgFontOutput.EMBED
+    font_output_dir: Path | str | None = None
+    font_url_prefix: str = ""
 
 
 class SchGeometrySvgRenderer:
@@ -332,15 +367,14 @@ class SchGeometrySvgRenderer:
                 diagnostics.append(resolution.to_dict())
         return diagnostics
 
-    def _render_font_face_style(self, document: SchGeometryDocument) -> list[str]:
+    def _iter_bundled_font_faces(
+        self, document: SchGeometryDocument
+    ) -> list[tuple[str, bool, bool, Path]]:
         diagnostics = [
             *self._font_resolution_diagnostics_from_hints(document),
             *self._font_resolution_diagnostics_from_text_ops(document),
         ]
-        if not diagnostics:
-            return []
-
-        rules: list[str] = []
+        faces: list[tuple[str, bool, bool, Path]] = []
         seen: set[tuple[str, bool, bool, str]] = set()
         for diagnostic in diagnostics:
             if str(diagnostic.get("source", "")) != "bundled_font":
@@ -358,7 +392,36 @@ class SchGeometrySvgRenderer:
             if key in seen:
                 continue
             seen.add(key)
+            faces.append((resolved_family, bold, italic, font_path))
+        return faces
+
+    def _font_face_src(self, font_path: Path) -> str:
+        font_output = normalize_sch_svg_font_output(self.options.font_output)
+        if font_output is SchSvgFontOutput.EMBED:
             encoded_font = base64.b64encode(font_path.read_bytes()).decode("ascii")
+            return f"url('data:font/ttf;base64,{encoded_font}') format('truetype')"
+
+        if font_output is not SchSvgFontOutput.FILES:
+            raise ValueError(f"Unexpected font_output: {font_output!r}")
+
+        output_dir = _require_font_output_dir(self.options.font_output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        destination = output_dir / font_path.name
+        if destination.resolve() != font_path.resolve():
+            shutil.copy2(font_path, destination)
+        url_prefix = _normalize_font_url_prefix(self.options.font_url_prefix)
+        quoted_url = json.dumps(f"{url_prefix}{font_path.name}")
+        return f"url({quoted_url}) format('truetype')"
+
+    def _render_font_face_style(self, document: SchGeometryDocument) -> list[str]:
+        font_output = normalize_sch_svg_font_output(self.options.font_output)
+        if font_output is SchSvgFontOutput.OMIT:
+            return []
+
+        rules: list[str] = []
+        for resolved_family, bold, italic, font_path in self._iter_bundled_font_faces(
+            document
+        ):
             font_style = "italic" if italic else "normal"
             font_weight = "700" if bold else "400"
             rules.append(
@@ -367,7 +430,7 @@ class SchGeometrySvgRenderer:
                 f"font-style: {font_style}; "
                 f"font-weight: {font_weight}; "
                 "font-display: block; "
-                f"src: url('data:font/ttf;base64,{encoded_font}') format('truetype'); "
+                f"src: {self._font_face_src(font_path)}; "
                 "}"
             )
         if not rules:

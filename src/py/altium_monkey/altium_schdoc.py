@@ -5326,7 +5326,11 @@ class AltiumSchDoc(JsonApplyMixin):
         Args:
             include_border: Include sheet border, reference zones, and title block
             scale: Scale factor (1.0 = default)
-            options: SchSvgRenderOptions for customizing rendering (junction colors, z-order, etc.)
+            options: SchSvgRenderOptions for customizing rendering (junction
+                colors, z-order, bundled-font attachment, etc.).
+                ``font_output="files"`` copies bundled faces into
+                ``options.font_output_dir``; that directory is independent of
+                wherever the caller writes the returned SVG string.
             project_parameters: Project-level parameters (from PrjPcb) for substitution.
                                These are used when schematic-level parameters don't have a match.
             wrap_components: If True, wrap each component in a `<g>` element
@@ -5399,6 +5403,9 @@ class AltiumSchDoc(JsonApplyMixin):
                 text_as_polygons=render_options.text_as_polygons,
                 polygon_text_tolerance=render_options.polygon_text_tolerance,
                 include_view_box=render_options.include_view_box,
+                font_output=render_options.font_output,
+                font_output_dir=render_options.font_output_dir,
+                font_url_prefix=render_options.font_url_prefix,
             )
         ).render(document)
 

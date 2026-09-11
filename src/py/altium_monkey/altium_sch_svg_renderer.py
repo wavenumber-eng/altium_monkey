@@ -5,6 +5,7 @@ import math
 from decimal import Decimal, ROUND_HALF_EVEN
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .altium_font_resolver import resolve_font_with_style
@@ -86,6 +87,39 @@ class SchCompileMaskRenderMode(Enum):
     COMPILED_VISUAL = auto()
 
 
+class SchSvgFontOutput(str, Enum):
+    """
+    How bundled fallback fonts are attached to schematic SVG output.
+
+    EMBED: inline each used bundled face as a base64 ``@font-face`` src
+    (default). OMIT: emit no ``@font-face`` rules. FILES: copy used bundled
+    faces next to the SVG and reference them with a relative URL.
+    """
+
+    EMBED = "embed"
+    OMIT = "omit"
+    FILES = "files"
+
+
+def normalize_sch_svg_font_output(
+    value: SchSvgFontOutput | str | None,
+) -> SchSvgFontOutput:
+    """
+    Normalize a public font-output label to ``SchSvgFontOutput``.
+    """
+    if value is None:
+        return SchSvgFontOutput.EMBED
+    if isinstance(value, SchSvgFontOutput):
+        return value
+    normalized = str(value).strip().lower().replace("-", "_")
+    try:
+        return SchSvgFontOutput(normalized)
+    except ValueError:
+        raise ValueError(
+            "font_output must be one of: embed, omit, files"
+        ) from None
+
+
 @dataclass
 class SchSvgRenderOptions:
     """
@@ -161,6 +195,26 @@ class SchSvgRenderOptions:
 
     # Include a root SVG viewBox in schematic pixel-canvas coordinates.
     include_view_box: bool = True
+
+    # How bundled fallback fonts are attached to schematic SVG output.
+    # System-resolved faces are never inlined; this only affects faces whose
+    # resolver source is ``bundled_font`` (Arimo / Tinos / Cousine).
+    font_output: SchSvgFontOutput | str = SchSvgFontOutput.EMBED
+
+    # Destination directory for ``font_output="files"``. Copied faces keep
+    # their source filenames (for example ``Arimo-Regular.ttf``). Required
+    # when ``font_output`` is ``files``; empty or whitespace-only values are
+    # rejected so faces are not written to the process CWD. Same-name files
+    # already in this directory are overwritten.
+    font_output_dir: Path | str | None = None
+
+    # Relative URL prefix used in ``@font-face`` ``src`` for ``files`` mode.
+    # Empty means the font file sits next to the SVG (``url("Arimo-Regular.ttf")``).
+    # Use ``fonts/`` when files are written to a subdirectory. This prefix is
+    # independent of where the SVG itself is written; callers must keep it
+    # aligned with ``font_output_dir`` relative to each SVG URL. Absolute
+    # filesystem paths are rejected.
+    font_url_prefix: str = ""
 
     @classmethod
     def native_altium(cls) -> "SchSvgRenderOptions":

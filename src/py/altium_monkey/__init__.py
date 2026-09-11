@@ -324,6 +324,7 @@ from .altium_sch_object_factory import (
 from .altium_sch_svg_renderer import (
     SchCompileMaskRenderMode,
     SchJunctionZOrder,
+    SchSvgFontOutput,
     SchSvgRenderContext,
     SchSvgRenderOptions,
 )
@@ -707,6 +708,7 @@ __all__ = [
     # SVG rendering
     "SchSvgRenderContext",
     "SchSvgRenderOptions",
+    "SchSvgFontOutput",
     "SchJunctionZOrder",
     "SchCompileMaskRenderMode",
     "PcbSvgRenderContext",

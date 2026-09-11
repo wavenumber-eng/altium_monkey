@@ -159,8 +159,11 @@ When a common Altium/Windows family is unavailable, schematic rendering can use
 bundled open-source fallback fonts. Arial and Microsoft Sans Serif-style
 families substitute Arimo, Times New Roman-style families substitute Tinos, and
 Courier New or monospace families substitute Cousine. SVG output embeds bundled
-fallback faces when they are used so browser rendering follows the same metrics
-used to place text.
+fallback faces by default when they are used so browser rendering follows the
+same metrics used to place text. `SchSvgRenderOptions(font_output="omit")`
+skips those `@font-face` rules. `font_output="files"` copies the used faces
+into `font_output_dir` and references them with a relative `font_url_prefix`
+(`""` when the files sit next to the SVG, or `"fonts/"` for a subdirectory).
 
 gotIR carries font-resolution diagnostics for substitutions and fallbacks so
 downstream tools can surface a warning instead of silently using a hard

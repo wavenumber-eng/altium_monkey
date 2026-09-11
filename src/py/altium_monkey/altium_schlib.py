@@ -3207,7 +3207,11 @@ class AltiumSchLib(JsonApplyMixin):
             display_mode: For symbols with alternate display modes, render only
                           graphics/pins for this display mode. If None, renders
                           all display modes.
-            options: SchSvgRenderOptions for SVG compatibility/rendering controls.
+            options: SchSvgRenderOptions for SVG compatibility/rendering
+                controls. For ``font_output="files"``, set
+                ``font_output_dir`` independently of wherever the caller
+                writes the returned SVG string, and keep ``font_url_prefix``
+                aligned with that SVG URL.
 
         Returns:
             Complete SVG document as string
@@ -3255,6 +3259,9 @@ class AltiumSchLib(JsonApplyMixin):
                 text_as_polygons=render_options.text_as_polygons,
                 polygon_text_tolerance=render_options.polygon_text_tolerance,
                 include_view_box=render_options.include_view_box,
+                font_output=render_options.font_output,
+                font_output_dir=render_options.font_output_dir,
+                font_url_prefix=render_options.font_url_prefix,
             )
         ).render(ir_document)
 
@@ -3282,7 +3289,14 @@ class AltiumSchLib(JsonApplyMixin):
             height: SVG height in pixels
             padding: Padding around symbol in pixels
             background: Background color
-            options: SchSvgRenderOptions for SVG compatibility/rendering controls.
+            options: SchSvgRenderOptions for SVG compatibility/rendering
+                controls. For ``font_output="files"``, set
+                ``font_output_dir`` to the directory that should receive the
+                ``.ttf`` files and ``font_url_prefix`` relative to each SVG
+                URL. ``output_dir`` only controls where SVG files are written;
+                it is not used as the font destination. When both are set,
+                keep them aligned (for example ``output_dir / "fonts"`` with
+                ``font_url_prefix="fonts/"``).
 
         Returns:
             Nested dict: {symbol_name: {part_id: svg_content}}

@@ -632,6 +632,9 @@ class AltiumDesign:
                 text_as_polygons=render_options.text_as_polygons,
                 polygon_text_tolerance=render_options.polygon_text_tolerance,
                 include_view_box=render_options.include_view_box,
+                font_output=render_options.font_output,
+                font_output_dir=render_options.font_output_dir,
+                font_url_prefix=render_options.font_url_prefix,
             )
         ).render(document)
 
