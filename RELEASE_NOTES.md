@@ -1,3 +1,21 @@
+# altium-monkey 2026.09.12-2 Release Notes
+
+Package version: `2026.9.12.post1`
+
+This second 2026.09.12 release is a focused SchLib JSON compatibility hotfix.
+
+## Changes
+
+- Fixed SchLib JSON export so textual identifiers remain strings instead of
+  being coerced to numbers or rejected when they resemble floating-point
+  exponents. Numeric fields retain their existing validation. This resolves
+  public issue #58.
+
+No public API, compiler, netlist, or compiled-schematic contract changes are
+included in this hotfix.
+
+---
+
 # altium-monkey 2026.09.12 Release Notes
 
 Package version: `2026.9.12`

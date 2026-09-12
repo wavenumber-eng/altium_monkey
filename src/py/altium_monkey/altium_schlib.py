@@ -201,6 +201,69 @@ _SCHLIB_MANAGED_ADDITIONAL_RECORD_IDS = frozenset(
         225,  # Blanket
     }
 )
+_SCHLIB_JSON_TEXT_FIELDS = frozenset(
+    field.upper
+    for field in (
+        Fields.ARROW_KIND,
+        Fields.ASSIGNED_INTERFACE,
+        Fields.ASSIGNED_INTERFACE_SIGNAL,
+        Fields.AUTHOR,
+        Fields.COMPONENT_DESCRIPTION,
+        Fields.CROSS_REFERENCE,
+        Fields.DATABASE_TABLE_NAME,
+        Fields.DESCRIPTION,
+        Fields.DESIGN_ITEM_ID,
+        Fields.DOCUMENT_NAME,
+        Fields.FILENAME,
+        Fields.FOOTPRINT,
+        Fields.HARNESS_TYPE,
+        Fields.ITEM_GUID,
+        Fields.LIBRARY_PATH,
+        Fields.LIB_REFERENCE,
+        Fields.MODEL_NAME,
+        Fields.MODEL_TYPE,
+        Fields.NAME,
+        Fields.OBJECT_DEFINITION_ID,
+        Fields.REVISION_GUID,
+        Fields.REVISION_NAME,
+        Fields.SHEET_PART_FILENAME,
+        Fields.SOURCE_LIBRARY_NAME,
+        Fields.SYMBOL_ITEM_GUID,
+        Fields.SYMBOL_REVISION_GUID,
+        Fields.SYMBOL_TYPE,
+        Fields.SYMBOL_VAULT_GUID,
+        Fields.SYMBOL,
+        Fields.TARGET_FILENAME,
+        Fields.TEXT,
+        Fields.TEXT_STYLE,
+        Fields.URL,
+        Fields.VAULT_GUID,
+    )
+) | frozenset(
+    {
+        "ALIASLIST",
+        "CONNECTIONPAIRSTOSUPPRESS",
+        "DEFAULTVALUE",
+        "DESIGNATOR",
+        "DESINTF",
+        "ERRORKINDSETTOSUPPRESS",
+        "FILEVERSIONINFO",
+        "HEADER",
+        "MODELFILEID",
+        "MODELLOCATION",
+        "OBJECTDEFINITIONHASH",
+        "SWAPIDPART",
+    }
+)
+_SCHLIB_JSON_INDEXED_TEXT_PREFIXES = (
+    "COVEREDITEMFIRSTPIN",
+    "COVEREDITEMLASTPIN",
+    "COVEREDITEMID",
+    "MODELDATAFILEENTITY",
+    "MODELDATAFILEKIND",
+    "MODELDATAFILE",
+    "DESIMP",
+)
 
 
 class _ManagedComponentRoot:
@@ -432,13 +495,36 @@ def _copy_symbol_storage_dialect(
     target._header_display_name = source._header_display_name
 
 
-def _schlib_json_scalar(value: object) -> object:
+def _schlib_json_text_field(field_name: str) -> bool:
+    normalized = field_name.upper().removeprefix("%UTF8%")
+    return (
+        normalized in _SCHLIB_JSON_TEXT_FIELDS
+        or "UNIQUEID" in normalized
+        or normalized.endswith("GUID")
+        or _schlib_json_indexed_text_field(normalized)
+    )
+
+
+def _schlib_json_indexed_text_field(field_name: str) -> bool:
+    return any(
+        field_name.startswith(prefix) and field_name.removeprefix(prefix).isdigit()
+        for prefix in _SCHLIB_JSON_INDEXED_TEXT_PREFIXES
+    )
+
+
+def _schlib_json_scalar(value: object, *, field_name: str | None = None) -> object:
+    if not isinstance(value, str):
+        return value
+    if field_name is not None and _schlib_json_text_field(field_name):
+        return value
     if value == "T":
         return True
     if value == "F":
         return False
-    if not isinstance(value, str):
-        return value
+    return _schlib_json_number_or_text(value)
+
+
+def _schlib_json_number_or_text(value: str) -> object:
     digits = value.removeprefix("-")
     if digits.isdigit():
         parsed = int(value)
@@ -502,7 +588,7 @@ def _schlib_text_json_object(
         "ObjectIndex": object_index,
     }
     result.update(
-        (key, _schlib_json_scalar(value))
+        (key, _schlib_json_scalar(value, field_name=key))
         for key, value in record.items()
         if key != "RECORD"
     )

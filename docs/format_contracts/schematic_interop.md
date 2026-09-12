@@ -44,6 +44,11 @@ JSON byte, recursion-depth, aggregate-item, and embedded-blob budgets.
 `apply_json()` is transactional: validation or reconstruction failure leaves
 the target unchanged.
 
+SchLib object fields retain their declared scalar kind. Text and identifier
+fields remain JSON strings even when their contents resemble integers,
+floating-point exponents, or `T`/`F` boolean tokens. Numeric fields retain
+their existing finite-value and signed-range validation.
+
 ## JSON Schemas
 
 The handwritten Draft 2020-12 schemas describe both accepted ingress forms:

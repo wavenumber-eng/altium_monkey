@@ -543,6 +543,38 @@ def test_public_lockfile_matches_release_dependency_shape() -> None:
     assert "mkdocs" not in optional_dependency_names
 
 
+@pytest.mark.parametrize("identifier", ("582E3334", "123E0045", "00012345"))
+def test_schlib_json_preserves_textual_identifiers(identifier: str) -> None:
+    from altium_monkey import AltiumSchLib
+
+    payload = {
+        "Header": {
+            "Filename": "identifier.SchLib",
+            "SymbolCount": 1,
+            "FontCount": 0,
+        },
+        "Symbols": [
+            {
+                "Name": "IDENTIFIER",
+                "Description": "",
+                "PartCount": 1,
+                "Objects": [
+                    {
+                        "ObjectType": "Component",
+                        "ObjectIndex": 0,
+                        "LibReference": "IDENTIFIER",
+                        "UniqueID": identifier,
+                    }
+                ],
+            }
+        ],
+    }
+
+    exported = AltiumSchLib.from_json(payload).to_json()
+
+    assert exported["Symbols"][0]["Objects"][0]["UniqueID"] == identifier
+
+
 def test_domain_docs_list_public_workflow_examples() -> None:
     docs_text = "\n".join(
         (PUBLIC_ROOT / "docs" / filename).read_text(encoding="utf-8")
