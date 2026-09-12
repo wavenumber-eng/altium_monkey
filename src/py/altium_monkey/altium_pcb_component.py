@@ -92,9 +92,7 @@ class AltiumPcbComponent:
         except ValueError:
             return None
 
-    def _enum_field(
-        self, key: str, enum_type: type[_EnumT]
-    ) -> _EnumT | None:
+    def _enum_field(self, key: str, enum_type: type[_EnumT]) -> _EnumT | None:
         value = self._int_field(key)
         if value is None:
             return None
@@ -196,9 +194,7 @@ class AltiumPcbComponent:
     def source_component_library_identifier_kind(
         self,
     ) -> PcbLibIdentifierKind | None:
-        return self._enum_field(
-            "SOURCECOMPLIBIDENTIFIERKIND", PcbLibIdentifierKind
-        )
+        return self._enum_field("SOURCECOMPLIBIDENTIFIERKIND", PcbLibIdentifierKind)
 
     @property
     def source_component_library_identifier(self) -> str:

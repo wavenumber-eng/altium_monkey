@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from ._sch_managed_defaults import DIRECTIVE_COLOR
 from .altium_record_sch__power_port import AltiumSchPowerPort
 from .altium_sch_enums import OffSheetConnectorStyle
 
@@ -18,8 +19,13 @@ class AltiumSchCrossSheetConnector(AltiumSchPowerPort):
 
     def __init__(self) -> None:
         super().__init__()
+        self.color = DIRECTIVE_COLOR
         self.is_cross_sheet_connector = True
         self.style = cast(Any, OffSheetConnectorStyle.LEFT)
+        self.text = "OffSheet"
+        self._capture_graphical_source_state()
+        self._capture_power_source_state()
+        self._source_is_cross_sheet_connector = False
 
     def parse_from_record(
         self,

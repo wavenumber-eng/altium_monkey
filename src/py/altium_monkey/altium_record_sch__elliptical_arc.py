@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     from .altium_font_manager import FontIDManager
     from .altium_sch_geometry_oracle import SchGeometryRecord
 
-from .altium_record_sch__arc import AltiumSchArc
+from .altium_record_sch__arc import AltiumSchArc, _normalize_native_arc_angle
 from .altium_record_types import LineWidth, SchRecordType
 from .altium_serializer import AltiumSerializer, Fields
 from .altium_sch_record_helpers import (
@@ -49,19 +49,16 @@ class AltiumSchEllipticalArc(SecondaryRadiusMilsMixin, AltiumSchArc):
 
         # Use serializer for field reading
         s = AltiumSerializer()
-        secondary_radius_frac_val, has_secondary_radius_frac = s.read_int(
-            record,
-            Fields.SECONDARY_RADIUS_FRAC,
-            default=0,
-        )
         # Imported files leave a missing SecondaryRadius field at 0. Do not
         # inherit the new-object default secondary radius during parse.
-        self.secondary_radius, self._has_secondary_radius_base = s.read_int(
-            record,
-            Fields.SECONDARY_RADIUS,
-            default=0,
+        (
+            self.secondary_radius,
+            self.secondary_radius_frac,
+            self._has_secondary_radius_base,
+        ) = s.read_coord(record, Fields.SECONDARY_RADIUS.canonical)
+        _, has_secondary_radius_frac = s.read_int(
+            record, Fields.SECONDARY_RADIUS_FRAC, default=0
         )
-        self.secondary_radius_frac = secondary_radius_frac_val
         self._has_secondary_radius = (
             self._has_secondary_radius_base or has_secondary_radius_frac
         )
@@ -72,30 +69,34 @@ class AltiumSchEllipticalArc(SecondaryRadiusMilsMixin, AltiumSchArc):
         # Determine case mode from raw record
         mode = self._detect_case_mode()
         s = AltiumSerializer(mode)
-        raw = self._raw_record
+        self._serialize_managed_family_coord(
+            record,
+            s,
+            Fields.SECONDARY_RADIUS.canonical,
+            "",
+            self.secondary_radius,
+            self.secondary_radius_frac,
+        )
 
-        # Mirror the arc primary-radius guard: native serialization omits
-        # only zero whole radii, so any nonzero whole (including the
-        # new-object default of 10) must be written or authored values such
-        # as 100.0 mils would reparse as 0.
-        wrote_secondary = self.secondary_radius != 0 or self._has_secondary_radius_base
-        if wrote_secondary:
-            s.write_int(record, Fields.SECONDARY_RADIUS, self.secondary_radius, raw)
-        else:
-            s.remove_field(record, Fields.SECONDARY_RADIUS)
-
-        # Nonzero fractional radii always serialize; see the arc record notes.
-        if self.secondary_radius_frac:
-            s.write_int(
-                record,
-                Fields.SECONDARY_RADIUS_FRAC,
-                self.secondary_radius_frac,
-                raw,
-            )
-        else:
-            s.remove_field(record, Fields.SECONDARY_RADIUS_FRAC)
-
-        return record
+        self._move_geometry_identity_to_end_if_needed(record)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Radius",
+                "Radius_Frac",
+                "SecondaryRadius",
+                "SecondaryRadius_Frac",
+                "LineWidth",
+                "StartAngle",
+                "EndAngle",
+                "Color",
+                "UniqueID",
+            ),
+        )
 
     _detect_case_mode = detect_case_mode_method_from_uppercase_fields
 
@@ -113,22 +114,26 @@ class AltiumSchEllipticalArc(SecondaryRadiusMilsMixin, AltiumSchArc):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_arc_angles,
+            _geometry_item_length,
             make_pen,
             svg_coord_to_geometry,
             wrap_record_operations,
         )
 
         cx, cy = ctx.transform_coord_precise(self.location)
-        cx, cy = round(cx, 3), round(cy, 3)
         radius_units = _coord_scalar_to_native_units(self.radius, self.radius_frac)
         secondary_radius_units = _coord_scalar_to_native_units(
             self.secondary_radius,
             self.secondary_radius_frac,
         )
-        rx = round(radius_units * ctx.scale, 3)
-        ry = round(secondary_radius_units * ctx.scale, 3)
+        rx = radius_units * ctx.scale
+        ry = secondary_radius_units * ctx.scale
         renderable = radius_units > 0.0 and secondary_radius_units > 0.0
-        geometry_end_angle = 0.0 if not self._has_end_angle else float(self.end_angle)
+        source_start_angle = _normalize_native_arc_angle(float(self.start_angle))
+        source_end_angle = _normalize_native_arc_angle(
+            0.0 if not self._has_end_angle else float(self.end_angle)
+        )
         missing_end_angle_quarter = not self._has_end_angle and math.isclose(
             float(self.start_angle), 270.0
         )
@@ -141,22 +146,34 @@ class AltiumSchEllipticalArc(SecondaryRadiusMilsMixin, AltiumSchArc):
                 sheet_height_px=float(ctx.sheet_height or 0.0),
                 units_per_px=units_per_px,
             )
+            geometry_start_angle, geometry_end_angle = _geometry_item_arc_angles(
+                source_start_angle,
+                source_end_angle,
+                rotation=ctx.rotation,
+                mirror_x=ctx.mirror,
+            )
             operations.append(
                 SchGeometryOp.arc(
                     center_x=center_x,
                     center_y=center_y,
-                    width=rx * 2.0 * units_per_px,
-                    height=ry * 2.0 * units_per_px,
-                    start_angle=-float(self.start_angle),
-                    end_angle=-geometry_end_angle,
+                    width=_geometry_item_length(
+                        rx * 2.0,
+                        units_per_px=units_per_px,
+                    ),
+                    height=_geometry_item_length(
+                        ry * 2.0,
+                        units_per_px=units_per_px,
+                    ),
+                    start_angle=geometry_start_angle,
+                    end_angle=geometry_end_angle,
                     pen=make_pen(
                         int(self.color) if self.color is not None else 0,
                         width=0
                         if self.line_width == LineWidth.SMALLEST
-                        else int(
-                            round(
-                                LINE_WIDTH_MILS.get(self.line_width, 1.0) * units_per_px
-                            )
+                        else _geometry_item_length(
+                            LINE_WIDTH_MILS.get(self.line_width, 1.0)
+                            * ctx.get_stroke_scale(),
+                            units_per_px=units_per_px,
                         ),
                         line_join="pljRound",
                     ),
@@ -184,14 +201,15 @@ class AltiumSchEllipticalArc(SecondaryRadiusMilsMixin, AltiumSchArc):
                 bottom=int(round(center_y_mils * 100000)),
             )
 
+        unique_id = str(self.unique_id or "")
         return SchGeometryRecord(
-            handle=f"{document_id}\\{self.unique_id}",
-            unique_id=self.unique_id,
+            handle=f"{document_id}\\{unique_id}",
+            unique_id=unique_id,
             kind="ellipticalarc",
             object_id="eEllipticalArc",
             bounds=bounds,
             operations=wrap_record_operations(
-                self.unique_id,
+                unique_id,
                 operations,
                 units_per_px=units_per_px,
             ),

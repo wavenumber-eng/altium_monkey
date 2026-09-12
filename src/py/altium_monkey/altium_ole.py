@@ -1081,6 +1081,10 @@ class AltiumOleWriter:
             # If doesn't exist yet, add it
             self.add_stream(path, data or b"")
 
+    def _remove_stream(self, path: str) -> None:
+        """Remove one copied stream while rebuilding an OLE container."""
+        self._streams.pop(path.replace("\\", "/"), None)
+
     def fromOleFile(self, ole: Any) -> None:
         """
         Copy all streams and storages from an existing OLE file.

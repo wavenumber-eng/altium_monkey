@@ -8,6 +8,10 @@ if TYPE_CHECKING:
     from .altium_sch_svg_renderer import SchSvgRenderContext
 
 from .altium_record_sch__rectangle import AltiumSchRectangle
+from ._sch_managed_defaults import (
+    COMPILE_MASK_BORDER_COLOR,
+    COMPILE_MASK_FILL_COLOR,
+)
 from .altium_record_types import (
     LineWidth,
     SchRecordType,
@@ -34,10 +38,16 @@ class AltiumSchCompileMask(AltiumSchRectangle):
 
     def __init__(self) -> None:
         super().__init__()
+        self.color = COMPILE_MASK_BORDER_COLOR
+        self.area_color = COMPILE_MASK_FILL_COLOR
+        self._init_family_dynamic_unique_id()
+        self.is_solid = True
         self.transparent = True  # Default for compile masks
         self.is_collapsed: bool = False
         # Track field presence
         self._has_collapsed: bool = False
+        self._source_collapsed: bool = self.is_collapsed
+        self._capture_graphical_source_state()
 
     @property
     def record_type(self) -> SchRecordType:
@@ -55,11 +65,13 @@ class AltiumSchCompileMask(AltiumSchRectangle):
 
         # Use serializer for field reading
         s = AltiumSerializer()
+        self._parse_family_dynamic_unique_id(s, record)
 
         # Parse collapsed state (field is 'Collapsed')
         self.is_collapsed, self._has_collapsed = s.read_bool(
             record, Fields.COLLAPSED, default=False
         )
+        self._source_collapsed = self.is_collapsed
 
     def serialize_to_record(self) -> dict[str, Any]:
         """
@@ -68,15 +80,41 @@ class AltiumSchCompileMask(AltiumSchRectangle):
         record = super().serialize_to_record()
 
         # Determine case mode from raw record
-        mode = detect_case_mode_from_uppercase_fields(self._raw_record)
+        mode = detect_case_mode_from_uppercase_fields(
+            self._raw_record,
+            ignore_record=True,
+        )
         s = AltiumSerializer(mode)
-        raw = self._raw_record
 
-        # Collapsed state
-        if self._has_collapsed or self.is_collapsed:
-            s.write_bool(record, Fields.COLLAPSED, self.is_collapsed, raw)
+        self._serialize_managed_family_color(
+            record, s, Fields.COLOR.canonical, int(self.color or 0)
+        )
+        self._serialize_managed_family_color(
+            record, s, Fields.AREA_COLOR.canonical, int(self.area_color or 0)
+        )
 
-        return record
+        self._serialize_managed_family_bool(
+            record, s, Fields.COLLAPSED.canonical, self.is_collapsed
+        )
+        self._serialize_family_dynamic_unique_id(record, s)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "UniqueID",
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Corner.X",
+                "Corner.X_Frac",
+                "Corner.Y",
+                "Corner.Y_Frac",
+                "Color",
+                "AreaColor",
+                "Collapsed",
+                "LineWidth",
+            ),
+        )
 
     def _render_dashed_border(
         self,
@@ -237,6 +275,7 @@ class AltiumSchCompileMask(AltiumSchRectangle):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
             make_pen,
             make_solid_brush,
             wrap_record_operations,
@@ -283,7 +322,10 @@ class AltiumSchCompileMask(AltiumSchRectangle):
         pen_width = (
             0
             if self.line_width == LineWidth.SMALLEST
-            else int(round(LINE_WIDTH_MILS.get(self.line_width, 1.0) * units_per_px))
+            else _geometry_item_length(
+                LINE_WIDTH_MILS.get(self.line_width, 1.0),
+                units_per_px=units_per_px,
+            )
         )
         border_pen = make_pen(stroke_raw, width=pen_width)
         fill_raw = int(self.area_color) if self.area_color is not None else 0xFFFFFF

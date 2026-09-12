@@ -6,11 +6,29 @@ from collections.abc import Callable, Hashable
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
+
+if TYPE_CHECKING:
+    from .altium_schematic_contract import SchematicContractLimits
 
 
-NETLIST_JSON_SCHEMA = "altium_monkey.netlist.a0"
+NETLIST_JSON_SCHEMA = "altium_monkey.netlist.b0"
 JSON_GENERATOR = "altium_monkey"
+
+
+@dataclass(frozen=True, slots=True)
+class NetlistSourcePage:
+    """Correlated physical-page and logical-source identity."""
+
+    physical_document_id: str | None
+    source_sheet_file: str | None
+
+    def __post_init__(self) -> None:
+        if self.physical_document_id == "" or self.source_sheet_file == "":
+            raise ValueError("source-page identities must be non-empty when present")
+        if self.physical_document_id is None and self.source_sheet_file is None:
+            raise ValueError("source page must carry at least one identity")
+
 
 # =============================================================================
 # Hierarchy Path (immutable value type for sheet hierarchy tracking)
@@ -223,7 +241,9 @@ class Terminal:
     pin_type: PinType = PinType.PASSIVE
     _source_component_uid: str = field(default="", repr=False)
     _source_pin_uid: str = field(default="", repr=False)
+    _source_pin_object_id: int = field(default=0, repr=False)
     _source_owner_part_id: int = field(default=1, repr=False)
+    component_id: str = ""
 
     @property
     def full_name(self) -> str:
@@ -242,6 +262,7 @@ class GraphicalPinRef:
     designator: str  # Component designator (e.g., "R1")
     pin: str  # Pin designator (e.g., "1")
     svg_id: str  # Actual pin unique_id (SVG element ID)
+    component_id: str = ""
 
 
 @dataclass
@@ -267,6 +288,18 @@ class NetEndpoint:
     sheet_index: int | None = None
     compiled_sheet_index: int | None = None
     connection_point: tuple[int, int] | None = None
+    _source_occurrence_id: str = field(default="", repr=False, compare=False)
+    _source_pin_object_id: int = field(default=0, repr=False, compare=False)
+    _bus_signal_index: int | None = field(default=None, repr=False, compare=False)
+    _harness_entries_path: tuple[str, ...] = field(
+        default=(), repr=False, compare=False
+    )
+    _repeat_value: int | None = field(default=None, repr=False, compare=False)
+    _harness_type_name: str = field(default="", repr=False, compare=False)
+    _harness_interface_name: str = field(default="", repr=False, compare=False)
+    _harness_type_inferred: bool = field(default=False, repr=False, compare=False)
+    component_id: str = ""
+    source_page: NetlistSourcePage | None = None
 
     def to_json(self) -> dict:
         """
@@ -583,6 +616,30 @@ def _generate_uid() -> str:
     return uuid.uuid4().hex[:12]
 
 
+@dataclass(frozen=True, slots=True)
+class _SignalHarnessNameCandidate:
+    """Internal naming evidence produced by a real signal-harness traversal."""
+
+    value: str
+    value_from_source_object: str
+    source_kind: str
+    source_priority: int
+    source_element_id: str = ""
+    source_connection_link_id: str = ""
+    harness_entries_path: tuple[str, ...] = ()
+    bus_signal_index: int | None = None
+    bus_signal_width: int = 0
+    bus_signal_offset: int = 0
+    bus_signal_prefix: str = ""
+    bus_signal_suffix: str = ""
+    bus_prefix_full_name: str | None = None
+    source_schematic_id: str = ""
+    hierarchy_path: tuple[str, ...] = ()
+    source_is_multipath: bool = False
+    relative_multichannel_depth: int = 0
+    full_name: str = ""
+
+
 @dataclass
 class Net:
     """
@@ -606,6 +663,33 @@ class Net:
     endpoints: list[NetEndpoint] = field(
         default_factory=list
     )  # Source-owned semantic endpoints for trace/layout tools
+    _name_source_kind: str = field(default="", repr=False, compare=False)
+    _name_source_priority: int = field(default=0, repr=False, compare=False)
+    _name_source_raw_name: str = field(default="", repr=False, compare=False)
+    _name_source_bus_prefix: str = field(default="", repr=False, compare=False)
+    _name_source_bus_suffix: str = field(default="", repr=False, compare=False)
+    _name_source_is_bus: bool = field(default=False, repr=False, compare=False)
+    _bus_signal_width: int = field(default=0, repr=False, compare=False)
+    _bus_signal_offset: int = field(default=0, repr=False, compare=False)
+    _source_connection_link_id: str = field(default="", repr=False, compare=False)
+    _contains_bus: bool = field(default=False, repr=False, compare=False)
+    _port_bus_member_names: tuple[str, ...] = field(
+        default=(), repr=False, compare=False
+    )
+    _scalar_merge_name_sources: tuple[tuple[str, str], ...] = field(
+        default=(), repr=False, compare=False
+    )
+    _signal_harness_name_candidates: tuple[_SignalHarnessNameCandidate, ...] = field(
+        default=(), repr=False, compare=False
+    )
+    _managed_item_count: int = field(default=0, repr=False, compare=False)
+    _managed_removed_item_count: int = field(default=0, repr=False, compare=False)
+    _managed_first_item_owner: str = field(default="", repr=False, compare=False)
+    _managed_first_item_location: tuple[int, int] | None = field(
+        default=None, repr=False, compare=False
+    )
+    _single_pin_retention_only: bool = field(default=False, repr=False, compare=False)
+    source_pages: list[NetlistSourcePage] = field(default_factory=list)
 
     @property
     def designators(self) -> list[str]:
@@ -654,6 +738,10 @@ class NetlistComponent:
     component_kind: int = 0  # Raw Altium ComponentKind value
     exclude_from_bom: bool = False  # BOM filtering flag derived from component_kind
     _source_component_uid: str = field(default="", repr=False)
+    component_id: str = ""
+    logical_designator: str | None = None
+    physical_designator: str | None = None
+    source_page: NetlistSourcePage | None = None
 
     @property
     def prefix(self) -> str:
@@ -944,131 +1032,20 @@ class Netlist:
             return []
         return net.graphical.all_svg_ids()
 
-    def to_json(self) -> dict:
-        """
-        Serialize netlist to JSON-compatible dict.
+    def to_json(self) -> dict[str, object]:
+        """Serialize the canonical current netlist b0 mapping."""
+        from .altium_netlist_contract import netlist_to_mapping
 
-        The resulting payload is the package-owned raw netlist contract. It
-        preserves grouped graphical connectivity metadata directly, with no
-        legacy wire-list serialization.
-        """
-        return {
-            "schema": NETLIST_JSON_SCHEMA,
-            "generator": JSON_GENERATOR,
-            "components": [
-                {
-                    "designator": c.designator,
-                    "value": c.value,
-                    "footprint": c.footprint,
-                    "library_ref": c.library_ref,
-                    "description": c.description,
-                    "parameters": c.parameters,
-                }
-                for c in self.components
-            ],
-            "nets": [
-                {
-                    "uid": n.uid,
-                    "name": n.name,
-                    "auto_named": n.auto_named,
-                    "source_sheets": _unique_sorted_strings(n.source_sheets),
-                    "terminals": sorted(
-                        [
-                            {
-                                "designator": t.designator,
-                                "pin": t.pin,
-                                "pin_name": t.pin_name,
-                                "pin_type": t.pin_type.name,
-                            }
-                            for t in n.terminals
-                        ],
-                        key=_terminal_sort_key,
-                    ),
-                    "graphical": n.graphical.to_json(),
-                    "aliases": _unique_sorted_strings(n.aliases),
-                    "endpoints": _unique_sorted_dicts(
-                        [endpoint.to_json() for endpoint in n.endpoints],
-                        _endpoint_sort_key,
-                    ),
-                    **(
-                        {
-                            "hierarchy_paths": _unique_sorted_json_values(
-                                [
-                                    _hierarchy_path_to_json(hp)
-                                    for hp in n.hierarchy_paths
-                                ]
-                            )
-                        }
-                        if n.hierarchy_paths
-                        else {}
-                    ),
-                }
-                for n in self.nets
-            ],
-        }
+        return netlist_to_mapping(self)
 
-    @staticmethod
-    def _parse_source_sheets(n: dict) -> list[str]:
-        """
-        Parse source_sheets from JSON, accepting the older source_sheet key.
-        """
-        if "source_sheets" in n:
-            return list(n["source_sheets"])
-        old = n.get("source_sheet")
-        return [old] if old else []
+    def to_json_text(self, *, limits: "SchematicContractLimits | None" = None) -> str:
+        """Serialize canonical compact netlist b0 JSON text."""
+        return self.to_json_bytes(limits=limits).decode("utf-8")
 
-    @classmethod
-    def from_json(cls, data: dict) -> "Netlist":
-        """
-        Deserialize a netlist from a JSON-compatible dict.
-        """
-        components = [
-            NetlistComponent(
-                designator=c["designator"],
-                value=c.get("value", ""),
-                footprint=c.get("footprint", ""),
-                library_ref=c.get("library_ref", ""),
-                description=c.get("description", ""),
-                parameters=c.get("parameters", {}),
-            )
-            for c in data.get("components", [])
-        ]
-        nets = []
-        for n in data.get("nets", []):
-            # Parse structured graphical data if present
-            graphical_data = n.get("graphical")
-            graphical = (
-                NetGraphical.from_json(graphical_data)
-                if graphical_data
-                else NetGraphical()
-            )
+    def to_json_bytes(
+        self, *, limits: "SchematicContractLimits | None" = None
+    ) -> bytes:
+        """Serialize canonical compact netlist b0 UTF-8 bytes."""
+        from .altium_netlist_contract import netlist_to_bytes
 
-            hierarchy_paths = [
-                _hierarchy_path_from_json(hp) for hp in n.get("hierarchy_paths", [])
-            ]
-
-            nets.append(
-                Net(
-                    name=n["name"],
-                    uid=n.get("uid", _generate_uid()),
-                    auto_named=n.get("auto_named", False),
-                    source_sheets=cls._parse_source_sheets(n),
-                    terminals=[
-                        Terminal(
-                            designator=t["designator"],
-                            pin=t["pin"],
-                            pin_name=t.get("pin_name", ""),
-                            pin_type=PinType[t.get("pin_type", "PASSIVE")],
-                        )
-                        for t in n.get("terminals", [])
-                    ],
-                    graphical=graphical,
-                    aliases=n.get("aliases", []),
-                    hierarchy_paths=hierarchy_paths,
-                    endpoints=[
-                        NetEndpoint.from_json(endpoint)
-                        for endpoint in n.get("endpoints", [])
-                    ],
-                )
-            )
-        return cls(nets=nets, components=components)
+        return netlist_to_bytes(self, limits=limits)

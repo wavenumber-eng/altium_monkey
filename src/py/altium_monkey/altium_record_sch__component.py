@@ -2,13 +2,18 @@
 
 import copy
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .altium_font_manager import FontIDManager
     from .altium_sch_geometry_oracle import SchGeometryOp, SchGeometryRecord
     from .altium_schdoc import AltiumSchDoc
+
     from .altium_sch_svg_renderer import SchSvgRenderContext
+
+from ._sch_managed_defaults import RECT_BORDER_COLOR, RECT_FILL_COLOR
+from ._sch_source_admission import _SourceAdmission
 
 from .altium_common_enums import ComponentKind
 from .altium_component_kind import parse_component_kind
@@ -24,10 +29,49 @@ from .altium_record_types import (
 from .altium_serializer import (
     AltiumSerializer,
     CaseMode,
+    FieldDef,
     Fields,
     read_dynamic_string_field,
+    write_dynamic_string_field,
 )
 from .altium_sch_record_helpers import bound_schematic_owner
+
+
+def _validate_display_mode_count(value: int) -> None:
+    if not 0 <= value <= 0xFF:
+        raise ValueError("DisplayModeCount must fit an unsigned byte")
+
+
+def _validate_unsigned_byte(value: int, field: str) -> None:
+    if not 0 <= value <= 0xFF:
+        raise ValueError(f"{field} must fit an unsigned byte")
+
+
+def _validate_signed_short(value: int, field: str) -> None:
+    if not -(2**15) <= value < 2**15:
+        raise ValueError(f"{field} must fit a signed short")
+
+
+def _ascii_upper(value: str) -> str:
+    return "".join(
+        chr(ord(character) - 32) if "a" <= character <= "z" else character
+        for character in value
+    )
+
+
+def _split_legacy_dblib_name(value: str) -> tuple[str, str] | None:
+    marker = ".DBLIB/"
+    marker_index = _ascii_upper(value).find(marker)
+    if marker_index < 0:
+        return None
+    library_end = marker_index + len(".DBLIB")
+    return value[:library_end], value[marker_index + len(marker) :]
+
+
+def _normalize_alias_list(value: str) -> str:
+    return (
+        ",".join(sorted({item for item in value.split(",") if item})) if value else ""
+    )
 
 
 def _is_parent_bound_geometry_child(obj: object) -> bool:
@@ -53,11 +97,12 @@ class AltiumSchComponent(SchGraphicalObject):
         super().__init__()
 
         # Library reference
-        self.lib_reference: str = "*"
+        self._lib_reference: str = "*"
         self.library_path: str = "*"
         self.source_library_name: str = "*"
         self.component_description: str = ""
         self.utf8_component_description: str = ""  # UTF-8 encoded description variant
+        self._dynamic_utf8_fields: set[str] = set()
 
         # Multi-part symbol support
         self.part_count: int = 1
@@ -77,24 +122,26 @@ class AltiumSchComponent(SchGraphicalObject):
         # Locking
         self.designator_locked: bool = False
         self.part_id_locked: bool = True
+        self._source_part_id_locked: bool = True
         self.pins_moveable: bool = False
 
         # Colors - Local Colors override (when override_colors=True)
         # Fills = area_color, Lines = color, Pins = pin_color
         self.override_colors: bool = False
-        self.color = 0x000000  # Lines color (Win32 BGR)
-        self.area_color = 0xFFFFFF  # Fills color (Win32 BGR)
+        self.color = RECT_BORDER_COLOR  # Lines color (Win32 BGR)
+        self.area_color = RECT_FILL_COLOR  # Fills color (Win32 BGR)
         self.pin_color: int = 0x000000  # Pins color (Win32 BGR)
 
         # Component classification
         self.component_kind: ComponentKind = ComponentKind.STANDARD
+        self._source_component_kind: ComponentKind = ComponentKind.STANDARD
         self.component_kind_version2: int | None = None
 
         # Database and design item references
         self.database_table_name: str = ""
         self.use_db_table_name: bool = True
         self.use_library_name: bool = True
-        self.design_item_id: str = ""
+        self._design_item_id: str = ""
 
         # File references
         self.sheet_part_filename: str = "*"
@@ -107,6 +154,12 @@ class AltiumSchComponent(SchGraphicalObject):
         self.symbol_vault_guid: str = ""
         self.symbol_item_guid: str = ""
         self.symbol_revision_guid: str = ""
+        self.generic_component_template_guid: str = ""
+        self._alias_list: str = ""
+        self.has_only_current_part_info: bool = False
+        self.key_component_unique_id: str = ""
+        self.custom_display_mode_names: list[str] = []
+        self._has_custom_display_mode_names: list[bool] = []
 
         # Pin count
         self.all_pin_count: int = 0
@@ -154,12 +207,103 @@ class AltiumSchComponent(SchGraphicalObject):
         self._has_symbol_vault_guid: bool = False
         self._has_symbol_item_guid: bool = False
         self._has_symbol_revision_guid: bool = False
+        self._has_generic_component_template_guid: bool = False
+        self._has_alias_list: bool = False
+        self._has_has_only_current_part_info: bool = False
+        self._has_key_component_unique_id: bool = False
         self._has_all_pin_count: bool = False
         self._has_footprint: bool = False
+        self._footprint_at_parse: str = self.footprint
+        self._legacy_dblib_source: bool = False
+        self._lib_reference_at_parse: str = self.lib_reference
+        self._library_path_at_parse: str = self.library_path
+        self._source_library_name_at_parse: str = self.source_library_name
+        self._database_table_name_at_parse: str = self.database_table_name
+        self._sheet_part_filename_at_parse: str = self.sheet_part_filename
+        self._target_filename_at_parse: str = self.target_filename
+        self._part_count_at_parse: int = self.part_count
+        self._current_part_id_at_parse: int = self.current_part_id
+        self._display_mode_count_at_parse: int = self.display_mode_count
+        self._alias_list_at_parse: str = self.alias_list
+        self._capture_component_source_state()
+
+    def _capture_component_source_state(self) -> None:
+        self._component_source_state: dict[str, object] = {
+            name: getattr(self, name)
+            for name in (
+                "lib_reference",
+                "library_path",
+                "source_library_name",
+                "component_description",
+                "part_count",
+                "current_part_id",
+                "display_mode",
+                "display_mode_count",
+                "orientation",
+                "is_mirrored",
+                "show_hidden_pins",
+                "show_hidden_fields",
+                "display_field_names",
+                "designator_locked",
+                "part_id_locked",
+                "pins_moveable",
+                "override_colors",
+                "color",
+                "area_color",
+                "pin_color",
+                "component_kind",
+                "database_table_name",
+                "use_db_table_name",
+                "use_library_name",
+                "design_item_id",
+                "sheet_part_filename",
+                "target_filename",
+                "vault_guid",
+                "item_guid",
+                "revision_guid",
+                "symbol_vault_guid",
+                "symbol_item_guid",
+                "symbol_revision_guid",
+                "generic_component_template_guid",
+                "alias_list",
+                "has_only_current_part_info",
+                "key_component_unique_id",
+                "all_pin_count",
+                "unique_id",
+            )
+        }
+        self._source_custom_display_mode_names = list(self.custom_display_mode_names)
+
+    def _component_changed(self, attribute: str) -> bool:
+        return getattr(self, attribute) != self._component_source_state[attribute]
 
     @property
     def record_type(self) -> SchRecordType:
         return SchRecordType.COMPONENT
+
+    @property
+    def lib_reference(self) -> str:
+        return self._lib_reference
+
+    @lib_reference.setter
+    def lib_reference(self, value: str) -> None:
+        self._lib_reference = str(value).strip()
+
+    @property
+    def design_item_id(self) -> str:
+        return self._design_item_id
+
+    @design_item_id.setter
+    def design_item_id(self, value: str) -> None:
+        self._design_item_id = str(value).strip()
+
+    @property
+    def alias_list(self) -> str:
+        return self._alias_list
+
+    @alias_list.setter
+    def alias_list(self, value: str) -> None:
+        self._alias_list = _normalize_alias_list(str(value))
 
     def parse_from_record(
         self,
@@ -170,51 +314,49 @@ class AltiumSchComponent(SchGraphicalObject):
         s = AltiumSerializer()
 
         # Library reference
-        self.lib_reference, self._has_lib_reference = s.read_str(
-            record, Fields.LIB_REFERENCE, default="*"
+        self.lib_reference, self._has_lib_reference = self._read_dynamic_field(
+            s, record, Fields.LIB_REFERENCE, ""
         )
-        self.library_path, self._has_library_path = s.read_str(
-            record, Fields.LIBRARY_PATH, default="*"
+        self.library_path, self._has_library_path = self._read_dynamic_field(
+            s, record, Fields.LIBRARY_PATH, ""
         )
-        self.source_library_name, self._has_source_library_name = s.read_str(
-            record, Fields.SOURCE_LIBRARY_NAME, default="*"
+        self.source_library_name, self._has_source_library_name = (
+            self._read_dynamic_field(s, record, Fields.SOURCE_LIBRARY_NAME, "")
         )
-        (
-            self.component_description,
-            self._has_component_description,
-            used_utf8_component_description,
-        ) = read_dynamic_string_field(
-            s,
-            record,
-            self._record,
-            Fields.COMPONENT_DESCRIPTION,
-            default="",
+        self.component_description, self._has_component_description = s.read_str(
+            record, Fields.COMPONENT_DESCRIPTION, default=""
         )
-        self.utf8_component_description = (
-            self.component_description if used_utf8_component_description else ""
-        )
+        self._library_path_at_parse = self.library_path
+        self.utf8_component_description = ""
 
         # Multi-part
         self.part_count, self._has_part_count = s.read_int(
-            record, Fields.PART_COUNT, default=1
+            record, Fields.PART_COUNT, default=0
         )
+        _validate_signed_short(self.part_count, "PartCount")
         self.current_part_id, self._has_current_part_id = s.read_int(
             record,
             Fields.CURRENT_PART_ID,
-            default=1,
+            default=0,
         )
         if not self._has_current_part_id:
             self.current_part_id, self._has_current_part_id = s.read_int(
                 record,
                 "CurrentPartID",
-                default=1,
+                default=0,
             )
+        _validate_signed_short(self.current_part_id, "CurrentPartId")
         self.display_mode, self._has_display_mode = s.read_int(
             record, Fields.DISPLAY_MODE, default=0
         )
+        _validate_unsigned_byte(self.display_mode, "DisplayMode")
         self.display_mode_count, self._has_display_mode_count = s.read_int(
-            record, Fields.DISPLAY_MODE_COUNT, default=1
+            record, Fields.DISPLAY_MODE_COUNT, default=0
         )
+        _validate_display_mode_count(self.display_mode_count)
+        self._part_count_at_parse = self.part_count
+        self._current_part_id_at_parse = self.current_part_id
+        self._display_mode_count_at_parse = self.display_mode_count
 
         # Orientation
         orient_val, self._has_orientation = s.read_int(
@@ -241,8 +383,9 @@ class AltiumSchComponent(SchGraphicalObject):
             record, Fields.DESIGNATOR_LOCKED, default=False
         )
         self.part_id_locked, self._has_part_id_locked = s.read_bool(
-            record, Fields.PART_ID_LOCKED, default=True
+            record, Fields.PART_ID_LOCKED, default=self.designator_locked
         )
+        self._source_part_id_locked = self.part_id_locked
         self.pins_moveable, self._has_pins_moveable = s.read_bool(
             record, Fields.PINS_MOVEABLE, default=False
         )
@@ -251,13 +394,15 @@ class AltiumSchComponent(SchGraphicalObject):
         self.override_colors, self._has_override_colors = s.read_bool(
             record, Fields.OVERRIDE_COLORS, default=False
         )
-        self.color, self._has_color = s.read_int(record, Fields.COLOR, default=0)
-        self.area_color, self._has_area_color = s.read_int(
-            record, Fields.AREA_COLOR, default=0xFFFFFF
+        self.color, self._has_color = s.read_color(record, Fields.COLOR, default=0)
+        self.area_color, self._has_area_color = s.read_color(
+            record, Fields.AREA_COLOR, default=0
         )
-        self.pin_color, self._has_pin_color = s.read_int(
+        pin_color, self._has_pin_color = s.read_color(
             record, Fields.PIN_COLOR, default=0
         )
+        self.pin_color = int(pin_color or 0)
+        self._capture_graphical_source_state()
 
         # Component kind - use shared versioned-field parsing helper
         # Check if any version field is present (check both case variants)
@@ -270,15 +415,22 @@ class AltiumSchComponent(SchGraphicalObject):
             or "ComponentKindVersion3" in record
         )
         self.component_kind = parse_component_kind(record)
+        self._source_component_kind = self.component_kind
 
         # Preserve raw ComponentKindVersion2 value for round-trip
         ckv2 = record.get("ComponentKindVersion2", record.get("COMPONENTKINDVERSION2"))
         self.component_kind_version2 = int(ckv2) if ckv2 is not None else None
 
         # Database references
-        self.database_table_name, self._has_database_table_name = s.read_str(
-            record, Fields.DATABASE_TABLE_NAME, default=""
+        self.database_table_name, self._has_database_table_name = (
+            self._read_dynamic_field(s, record, Fields.DATABASE_TABLE_NAME, "")
         )
+        split_library = _split_legacy_dblib_name(self.source_library_name)
+        if split_library is not None:
+            self.source_library_name, self.database_table_name = split_library
+            self._legacy_dblib_source = True
+        self._source_library_name_at_parse = self.source_library_name
+        self._database_table_name_at_parse = self.database_table_name
         not_use_db_table_name, has_not_use_db_table_name = s.read_bool(
             record,
             "NotUseDBTableName",
@@ -307,64 +459,129 @@ class AltiumSchComponent(SchGraphicalObject):
                 Fields.USE_LIBRARY_NAME,
                 default=True,
             )
-        self.design_item_id, self._has_design_item_id = s.read_str(
-            record, Fields.DESIGN_ITEM_ID, default=""
+        self.design_item_id, self._has_design_item_id = self._read_dynamic_field(
+            s, record, Fields.DESIGN_ITEM_ID, ""
         )
+        self.lib_reference = self.lib_reference.strip()
+        self.design_item_id = self.design_item_id.strip()
+        self._lib_reference_at_parse = self.lib_reference
 
         # File references
-        self.sheet_part_filename, self._has_sheet_part_filename = s.read_str(
-            record,
-            Fields.SHEET_PART_FILENAME,
-            default="*",
+        self.sheet_part_filename, self._has_sheet_part_filename = (
+            self._read_dynamic_field(s, record, Fields.SHEET_PART_FILENAME, "")
         )
         if not self._has_sheet_part_filename:
-            self.sheet_part_filename, self._has_sheet_part_filename = s.read_str(
-                record,
-                "SheetPartFilename",
-                default="*",
+            self.sheet_part_filename, self._has_sheet_part_filename = (
+                self._read_dynamic_field(s, record, "SheetPartFilename", "")
             )
-        self.target_filename, self._has_target_filename = s.read_str(
-            record,
-            Fields.TARGET_FILENAME,
-            default="*",
+        self.target_filename, self._has_target_filename = self._read_dynamic_field(
+            s, record, Fields.TARGET_FILENAME, "*"
         )
         if not self._has_target_filename:
-            self.target_filename, self._has_target_filename = s.read_str(
-                record,
-                "TargetFilename",
-                default="*",
+            self.target_filename, self._has_target_filename = self._read_dynamic_field(
+                s, record, "TargetFilename", "*"
             )
         if self.target_filename == "":
             self.target_filename = "*"
+        self._sheet_part_filename_at_parse = self.sheet_part_filename
+        self._target_filename_at_parse = self.target_filename
 
         # GUIDs
-        self.vault_guid, self._has_vault_guid = s.read_str(
-            record, Fields.VAULT_GUID, default=""
+        self.vault_guid, self._has_vault_guid = self._read_dynamic_field(
+            s, record, Fields.VAULT_GUID, ""
         )
-        self.item_guid, self._has_item_guid = s.read_str(
-            record, Fields.ITEM_GUID, default=""
+        self.item_guid, self._has_item_guid = self._read_dynamic_field(
+            s, record, Fields.ITEM_GUID, ""
         )
-        self.revision_guid, self._has_revision_guid = s.read_str(
-            record, Fields.REVISION_GUID, default=""
+        self.revision_guid, self._has_revision_guid = self._read_dynamic_field(
+            s, record, Fields.REVISION_GUID, ""
         )
-        self.symbol_vault_guid, self._has_symbol_vault_guid = s.read_str(
-            record, Fields.SYMBOL_VAULT_GUID, default=""
+        self.symbol_vault_guid, self._has_symbol_vault_guid = self._read_dynamic_field(
+            s, record, Fields.SYMBOL_VAULT_GUID, ""
         )
-        self.symbol_item_guid, self._has_symbol_item_guid = s.read_str(
-            record, Fields.SYMBOL_ITEM_GUID, default=""
+        self.symbol_item_guid, self._has_symbol_item_guid = self._read_dynamic_field(
+            s, record, Fields.SYMBOL_ITEM_GUID, ""
         )
-        self.symbol_revision_guid, self._has_symbol_revision_guid = s.read_str(
-            record, Fields.SYMBOL_REVISION_GUID, default=""
+        self.symbol_revision_guid, self._has_symbol_revision_guid = (
+            self._read_dynamic_field(s, record, Fields.SYMBOL_REVISION_GUID, "")
         )
+        (
+            self.generic_component_template_guid,
+            self._has_generic_component_template_guid,
+        ) = self._read_dynamic_field(s, record, "GenericComponentTemplateGUID", "")
+        self.alias_list, self._has_alias_list = self._read_dynamic_field(
+            s, record, "AliasList", ""
+        )
+        self.alias_list = _normalize_alias_list(self.alias_list)
+        self._alias_list_at_parse = self.alias_list
+        (
+            self.has_only_current_part_info,
+            self._has_has_only_current_part_info,
+        ) = s.read_bool(record, "HasOnlyCurrentPartInfo", default=False)
+        self.key_component_unique_id, self._has_key_component_unique_id = (
+            self._read_dynamic_field(s, record, "KeyComponentUniqueId", "")
+        )
+        self.custom_display_mode_names = []
+        self._has_custom_display_mode_names: list[bool] = []
+        for index in range(self.display_mode_count):
+            value, present = self._read_dynamic_field(
+                s, record, f"CustomDisplayModeName{index}", ""
+            )
+            self.custom_display_mode_names.append(value)
+            self._has_custom_display_mode_names.append(present)
 
         # Pin count
         self.all_pin_count, self._has_all_pin_count = s.read_int(
             record, Fields.ALL_PIN_COUNT, default=0
         )
+        _validate_signed_short(self.all_pin_count, "AllPinCount")
 
         # Footprint
         self.footprint, self._has_footprint = s.read_str(
             record, Fields.FOOTPRINT, default=""
+        )
+        self._footprint_at_parse = self.footprint
+        self._capture_component_source_state()
+
+    def _read_dynamic_field(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        field: FieldDef | str,
+        default: str,
+    ) -> tuple[str, bool]:
+        value, present, used_utf8 = read_dynamic_string_field(
+            serializer,
+            record,
+            self._record,
+            field,
+            default=default,
+        )
+        field_name = serializer._get_field_def(field).pascal
+        if used_utf8:
+            self._dynamic_utf8_fields.add(field_name)
+        return value, present
+
+    def _write_dynamic_field(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        field: FieldDef | str,
+        value: str,
+        *,
+        was_present: bool,
+        force: bool = False,
+    ) -> None:
+        field_name = serializer._get_field_def(field).pascal
+        write_dynamic_string_field(
+            serializer,
+            record,
+            field,
+            value,
+            raw_record=self._raw_record,
+            used_utf8_sidecar=field_name in self._dynamic_utf8_fields,
+            was_present=was_present,
+            force=force,
         )
 
     @staticmethod
@@ -399,20 +616,60 @@ class AltiumSchComponent(SchGraphicalObject):
         """
         Serialize the library identity fields.
         """
-        if self._has_lib_reference or self.lib_reference != "*":
-            serializer.write_str(record, Fields.LIB_REFERENCE, self.lib_reference, raw)
-        if self._has_library_path or self.library_path != "*":
-            serializer.write_str(record, Fields.LIBRARY_PATH, self.library_path, raw)
-        if self._has_source_library_name or self.source_library_name != "*":
-            serializer.write_str(
-                record, Fields.SOURCE_LIBRARY_NAME, self.source_library_name, raw
+        if raw is None or self.lib_reference != self._lib_reference_at_parse:
+            self._write_dynamic_field(
+                serializer,
+                record,
+                Fields.LIB_REFERENCE,
+                self.lib_reference,
+                was_present=self._has_lib_reference,
+                force=self.lib_reference != self._lib_reference_at_parse,
             )
-        if self._has_component_description or self.component_description:
-            serializer.write_str(
-                record, Fields.COMPONENT_DESCRIPTION, self.component_description, raw
+        if (
+            raw is None
+            or self._has_library_path
+            or self.library_path != self._library_path_at_parse
+        ):
+            self._write_dynamic_field(
+                serializer,
+                record,
+                Fields.LIBRARY_PATH,
+                self.library_path,
+                was_present=self._has_library_path,
+                force=self.library_path != self._library_path_at_parse,
             )
-        if self.utf8_component_description:
-            record["%UTF8%ComponentDescription"] = self.utf8_component_description
+        source_library_unchanged = (
+            self._legacy_dblib_source
+            and self.source_library_name == self._source_library_name_at_parse
+            and self.database_table_name == self._database_table_name_at_parse
+        )
+        if not source_library_unchanged and (
+            raw is None
+            or self._has_source_library_name
+            or self.source_library_name != self._source_library_name_at_parse
+        ):
+            self._write_dynamic_field(
+                serializer,
+                record,
+                Fields.SOURCE_LIBRARY_NAME,
+                self.source_library_name,
+                was_present=self._has_source_library_name,
+                force=self.source_library_name != self._source_library_name_at_parse,
+            )
+        if (
+            self._has_component_description
+            or self.component_description
+            or self._component_changed("component_description")
+        ):
+            serializer.write_str(
+                record,
+                Fields.COMPONENT_DESCRIPTION,
+                self.component_description,
+                raw,
+                force=self._component_changed("component_description"),
+            )
+        record.pop("%UTF8%ComponentDescription", None)
+        record.pop("%UTF8%COMPONENTDESCRIPTION", None)
 
     def _serialize_multipart_fields(
         self,
@@ -424,17 +681,45 @@ class AltiumSchComponent(SchGraphicalObject):
         """
         Serialize multi-part component fields.
         """
-        if self._has_part_count or self.part_count != 1:
-            serializer.write_int(record, Fields.PART_COUNT, self.part_count, raw)
+        if (
+            raw is None
+            or self._has_part_count
+            or self.part_count != self._part_count_at_parse
+        ):
+            serializer.write_int(
+                record,
+                Fields.PART_COUNT,
+                self.part_count,
+                raw,
+                force=self._component_changed("part_count"),
+            )
         record.pop("CurrentPartID", None)
         record.pop("CURRENTPARTID", None)
-        if self._has_current_part_id or self.current_part_id != 1:
+        if (
+            raw is None
+            or self._has_current_part_id
+            or self.current_part_id != self._current_part_id_at_parse
+        ):
             record[keys["current_part_id"]] = str(self.current_part_id)
         if self._has_display_mode or self.display_mode != 0:
-            serializer.write_int(record, Fields.DISPLAY_MODE, self.display_mode, raw)
-        if self._has_display_mode_count or self.display_mode_count != 1:
             serializer.write_int(
-                record, Fields.DISPLAY_MODE_COUNT, self.display_mode_count, raw
+                record,
+                Fields.DISPLAY_MODE,
+                self.display_mode,
+                raw,
+                force=self._component_changed("display_mode"),
+            )
+        if (
+            raw is None
+            or self._has_display_mode_count
+            or self.display_mode_count != self._display_mode_count_at_parse
+        ):
+            serializer.write_int(
+                record,
+                Fields.DISPLAY_MODE_COUNT,
+                self.display_mode_count,
+                raw,
+                force=self._component_changed("display_mode_count"),
             )
 
     def _serialize_visibility_and_locking(
@@ -448,34 +733,81 @@ class AltiumSchComponent(SchGraphicalObject):
         """
         if self._has_orientation or self.orientation != Rotation90.DEG_0:
             serializer.write_int(
-                record, Fields.ORIENTATION, self.orientation.value, raw
+                record,
+                Fields.ORIENTATION,
+                self.orientation.value,
+                raw,
+                force=self._component_changed("orientation"),
             )
         if self._has_is_mirrored or self.is_mirrored:
-            serializer.write_bool(record, Fields.IS_MIRRORED, self.is_mirrored, raw)
+            serializer.write_bool(
+                record,
+                Fields.IS_MIRRORED,
+                self.is_mirrored,
+                raw,
+                force=self._component_changed("is_mirrored"),
+            )
 
         if self._has_show_hidden_pins or self.show_hidden_pins:
             serializer.write_bool(
-                record, Fields.SHOW_HIDDEN_PINS, self.show_hidden_pins, raw
+                record,
+                Fields.SHOW_HIDDEN_PINS,
+                self.show_hidden_pins,
+                raw,
+                force=self._component_changed("show_hidden_pins"),
             )
         if self._has_show_hidden_fields or self.show_hidden_fields:
             serializer.write_bool(
-                record, Fields.SHOW_HIDDEN_FIELDS, self.show_hidden_fields, raw
+                record,
+                Fields.SHOW_HIDDEN_FIELDS,
+                self.show_hidden_fields,
+                raw,
+                force=self._component_changed("show_hidden_fields"),
             )
         if self._has_display_field_names or self.display_field_names:
             serializer.write_bool(
-                record, Fields.DISPLAY_FIELD_NAMES, self.display_field_names, raw
+                record,
+                Fields.DISPLAY_FIELD_NAMES,
+                self.display_field_names,
+                raw,
+                force=self._component_changed("display_field_names"),
             )
 
         if self._has_designator_locked or self.designator_locked:
             serializer.write_bool(
-                record, Fields.DESIGNATOR_LOCKED, self.designator_locked, raw
+                record,
+                Fields.DESIGNATOR_LOCKED,
+                self.designator_locked,
+                raw,
+                force=self._component_changed("designator_locked"),
             )
-        if self._has_part_id_locked or not self.part_id_locked:
+        should_write_part_lock = any(
+            (
+                self._has_part_id_locked,
+                self.part_id_locked != self._source_part_id_locked,
+                self.part_id_locked != self.designator_locked,
+                self._raw_record is None,
+            )
+        )
+        if should_write_part_lock:
             serializer.write_bool(
-                record, Fields.PART_ID_LOCKED, self.part_id_locked, raw
+                record,
+                Fields.PART_ID_LOCKED,
+                self.part_id_locked,
+                raw,
+                force=(
+                    self.part_id_locked != self._source_part_id_locked
+                    or self.part_id_locked != self.designator_locked
+                ),
             )
         if self._has_pins_moveable or self.pins_moveable:
-            serializer.write_bool(record, Fields.PINS_MOVEABLE, self.pins_moveable, raw)
+            serializer.write_bool(
+                record,
+                Fields.PINS_MOVEABLE,
+                self.pins_moveable,
+                raw,
+                force=self._component_changed("pins_moveable"),
+            )
 
     def _serialize_color_fields(
         self,
@@ -486,44 +818,61 @@ class AltiumSchComponent(SchGraphicalObject):
         """
         Serialize local color override fields.
         """
-        if self._has_override_colors or self.override_colors:
+        if (
+            self._has_override_colors
+            or self.override_colors
+            or self._component_changed("override_colors")
+        ):
             serializer.write_bool(
                 record,
                 Fields.OVERRIDE_COLORS,
                 self.override_colors,
                 raw,
-                force=self.override_colors,
+                force=self._component_changed("override_colors"),
             )
-        if self._has_color or (self.override_colors and self.color != 0):
-            component_color = int(self.color if self.color is not None else 0)
-            serializer.write_int(
-                record,
-                Fields.COLOR,
-                component_color,
-                raw,
-                force=self.override_colors and component_color != 0,
-            )
-        if self._has_area_color or (
-            self.override_colors and self.area_color != 0xFFFFFF
+        self._serialize_component_color(
+            record, serializer, raw, Fields.COLOR, "color", self._has_color, 0
+        )
+        self._serialize_component_color(
+            record,
+            serializer,
+            raw,
+            Fields.AREA_COLOR,
+            "area_color",
+            self._has_area_color,
+            0xFFFFFF,
+        )
+        self._serialize_component_color(
+            record,
+            serializer,
+            raw,
+            Fields.PIN_COLOR,
+            "pin_color",
+            self._has_pin_color,
+            0,
+        )
+
+    def _serialize_component_color(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+        raw: dict[str, object] | None,
+        field: FieldDef,
+        attribute: str,
+        was_present: bool,
+        override_default: int,
+    ) -> None:
+        changed = self._component_changed(attribute)
+        if raw is not None and not changed:
+            return
+        raw_value = getattr(self, attribute)
+        value = override_default if raw_value is None else int(raw_value)
+        if (
+            was_present
+            or (self.override_colors and value != override_default)
+            or changed
         ):
-            component_area_color = int(
-                self.area_color if self.area_color is not None else 0xFFFFFF
-            )
-            serializer.write_int(
-                record,
-                Fields.AREA_COLOR,
-                component_area_color,
-                raw,
-                force=self.override_colors and component_area_color != 0xFFFFFF,
-            )
-        if self._has_pin_color or (self.override_colors and self.pin_color != 0):
-            serializer.write_int(
-                record,
-                Fields.PIN_COLOR,
-                self.pin_color,
-                raw,
-                force=self.override_colors and self.pin_color != 0,
-            )
+            serializer.write_color(record, field, value, raw, force=changed)
 
     def _serialize_component_kind_fields(
         self,
@@ -535,9 +884,12 @@ class AltiumSchComponent(SchGraphicalObject):
         """
         Serialize ComponentKind with versioned fallback fields.
         """
-        if not (
-            self._has_component_kind or self.component_kind != ComponentKind.STANDARD
+        if (
+            self._raw_record is not None
+            and self.component_kind == self._source_component_kind
         ):
+            return
+        if self.component_kind == ComponentKind.STANDARD:
             return
 
         record.pop("ComponentKindVersion2", None)
@@ -546,19 +898,31 @@ class AltiumSchComponent(SchGraphicalObject):
         record.pop("COMPONENTKINDVERSION3", None)
         if self.component_kind == ComponentKind.JUMPER:
             serializer.write_int(
-                record, Fields.COMPONENT_KIND, ComponentKind.STANDARD.value, raw
+                record,
+                Fields.COMPONENT_KIND,
+                ComponentKind.STANDARD.value,
+                raw,
+                force=True,
             )
             record[keys["component_kind_v2"]] = str(ComponentKind.STANDARD.value)
             record[keys["component_kind_v3"]] = str(ComponentKind.JUMPER.value)
             return
         if self.component_kind == ComponentKind.STANDARD_NO_BOM:
             serializer.write_int(
-                record, Fields.COMPONENT_KIND, ComponentKind.STANDARD.value, raw
+                record,
+                Fields.COMPONENT_KIND,
+                ComponentKind.STANDARD.value,
+                raw,
+                force=True,
             )
             record[keys["component_kind_v2"]] = str(ComponentKind.STANDARD_NO_BOM.value)
             return
         serializer.write_int(
-            record, Fields.COMPONENT_KIND, self.component_kind.value, raw
+            record,
+            Fields.COMPONENT_KIND,
+            self.component_kind.value,
+            raw,
+            force=True,
         )
 
     def _serialize_database_fields(
@@ -571,9 +935,23 @@ class AltiumSchComponent(SchGraphicalObject):
         """
         Serialize database and design-item references.
         """
-        if self._has_database_table_name or self.database_table_name:
-            serializer.write_str(
-                record, Fields.DATABASE_TABLE_NAME, self.database_table_name, raw
+        database_fields_unchanged = (
+            self._legacy_dblib_source
+            and self.source_library_name == self._source_library_name_at_parse
+            and self.database_table_name == self._database_table_name_at_parse
+        )
+        if not database_fields_unchanged and (
+            self._has_database_table_name
+            or self.database_table_name
+            or self._component_changed("database_table_name")
+        ):
+            self._write_dynamic_field(
+                serializer,
+                record,
+                Fields.DATABASE_TABLE_NAME,
+                self.database_table_name,
+                was_present=self._has_database_table_name,
+                force=self.database_table_name != self._database_table_name_at_parse,
             )
         if self._has_use_db_table_name or not self.use_db_table_name:
             record[keys["not_use_db_table_name"]] = (
@@ -589,26 +967,54 @@ class AltiumSchComponent(SchGraphicalObject):
         record.pop("UseLibraryName", None)
         record.pop("USELIBRARYNAME", None)
 
-        if self._has_design_item_id or self.design_item_id:
-            serializer.write_str(
-                record, Fields.DESIGN_ITEM_ID, self.design_item_id, raw
+        design_item_changed = (
+            self.design_item_id != self._component_source_state["design_item_id"]
+        )
+        if (self._raw_record is None and self.design_item_id) or design_item_changed:
+            self._write_dynamic_field(
+                serializer,
+                record,
+                Fields.DESIGN_ITEM_ID,
+                self.design_item_id,
+                was_present=self._has_design_item_id,
+                force=design_item_changed,
             )
 
     def _serialize_file_fields(
-        self, record: dict[str, Any], keys: dict[str, str]
+        self,
+        record: dict[str, Any],
+        serializer: AltiumSerializer,
     ) -> None:
         """
         Serialize case-sensitive file reference fields.
         """
-        record.pop("SheetPartFilename", None)
-        record.pop("SHEETPARTFILENAME", None)
-        if self._has_sheet_part_filename or self.sheet_part_filename != "*":
-            record[keys["sheet_part_filename"]] = self.sheet_part_filename
+        if (
+            self._raw_record is None
+            or self._has_sheet_part_filename
+            or self.sheet_part_filename != self._sheet_part_filename_at_parse
+        ):
+            self._write_dynamic_field(
+                serializer,
+                record,
+                Fields.SHEET_PART_FILENAME,
+                self.sheet_part_filename,
+                was_present=self._has_sheet_part_filename,
+                force=self.sheet_part_filename != self._sheet_part_filename_at_parse,
+            )
 
-        record.pop("TargetFilename", None)
-        record.pop("TARGETFILENAME", None)
-        if self._has_target_filename or self.target_filename != "*":
-            record[keys["target_filename"]] = self.target_filename
+        if (
+            self._raw_record is None
+            or self._has_target_filename
+            or self.target_filename != self._target_filename_at_parse
+        ):
+            self._write_dynamic_field(
+                serializer,
+                record,
+                Fields.TARGET_FILENAME,
+                self.target_filename,
+                was_present=self._has_target_filename,
+                force=self.target_filename != self._target_filename_at_parse,
+            )
 
     def _serialize_guid_fields(
         self,
@@ -639,10 +1045,173 @@ class AltiumSchComponent(SchGraphicalObject):
                 Fields.SYMBOL_REVISION_GUID,
             ),
         ):
-            if present or value:
-                serializer.write_str(record, field, value, raw)
+            attribute = {
+                Fields.VAULT_GUID.pascal: "vault_guid",
+                Fields.ITEM_GUID.pascal: "item_guid",
+                Fields.REVISION_GUID.pascal: "revision_guid",
+                Fields.SYMBOL_VAULT_GUID.pascal: "symbol_vault_guid",
+                Fields.SYMBOL_ITEM_GUID.pascal: "symbol_item_guid",
+                Fields.SYMBOL_REVISION_GUID.pascal: "symbol_revision_guid",
+            }[field.pascal]
+            changed = self._component_changed(attribute)
+            if present or value or changed:
+                self._write_dynamic_field(
+                    serializer,
+                    record,
+                    field,
+                    value,
+                    was_present=present,
+                    force=changed,
+                )
+
+    def _serialize_extended_fields(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+        raw: dict[str, object] | None,
+    ) -> None:
+        for attribute, present, value, field in (
+            (
+                "generic_component_template_guid",
+                self._has_generic_component_template_guid,
+                self.generic_component_template_guid,
+                "GenericComponentTemplateGUID",
+            ),
+            (
+                "key_component_unique_id",
+                self._has_key_component_unique_id,
+                self.key_component_unique_id,
+                "KeyComponentUniqueId",
+            ),
+        ):
+            changed = self._component_changed(attribute)
+            if present or value or changed:
+                self._write_dynamic_field(
+                    serializer,
+                    record,
+                    field,
+                    value,
+                    was_present=present,
+                    force=changed,
+                )
+        self._serialize_alias_and_current_part_info(record, serializer, raw)
+        self._serialize_custom_display_mode_names(record, serializer)
+
+    def _serialize_alias_and_current_part_info(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+        raw: dict[str, object] | None,
+    ) -> None:
+        normalized_aliases = _normalize_alias_list(self.alias_list)
+        if normalized_aliases != self._alias_list_at_parse:
+            self._write_dynamic_field(
+                serializer,
+                record,
+                "AliasList",
+                normalized_aliases,
+                was_present=self._has_alias_list,
+                force=True,
+            )
+        if (
+            self._has_has_only_current_part_info
+            or self.has_only_current_part_info
+            or self._component_changed("has_only_current_part_info")
+        ):
+            serializer.write_bool(
+                record,
+                "HasOnlyCurrentPartInfo",
+                self.has_only_current_part_info,
+                raw,
+                force=self._component_changed("has_only_current_part_info"),
+            )
+
+    def _serialize_custom_display_mode_names(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+    ) -> None:
+        custom_names_changed = (
+            self.custom_display_mode_names != self._source_custom_display_mode_names
+            or self.display_mode_count
+            != self._component_source_state["display_mode_count"]
+        )
+        if custom_names_changed:
+            self._remove_out_of_scope_custom_display_mode_fields(record)
+            for index in range(self.display_mode_count):
+                value = (
+                    self.custom_display_mode_names[index]
+                    if index < len(self.custom_display_mode_names)
+                    else ""
+                )
+                source = (
+                    self._source_custom_display_mode_names[index]
+                    if index < len(self._source_custom_display_mode_names)
+                    else ""
+                )
+                if value and value != source:
+                    present = (
+                        index < len(self._has_custom_display_mode_names)
+                        and self._has_custom_display_mode_names[index]
+                    )
+                    self._write_dynamic_field(
+                        serializer,
+                        record,
+                        f"CustomDisplayModeName{index}",
+                        value,
+                        was_present=present,
+                        force=True,
+                    )
+
+    def _serialize_component_unique_id(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+    ) -> None:
+        if self._raw_record is not None and not self._component_changed("unique_id"):
+            return
+        self._remove_component_field(record, serializer, "UniqueID")
+        if self.unique_id:
+            serializer.write_str(
+                record,
+                "UniqueID",
+                self.unique_id,
+                self._raw_record,
+                force=True,
+            )
+
+    def _remove_out_of_scope_custom_display_mode_fields(
+        self, record: dict[str, object]
+    ) -> None:
+        for key in tuple(record):
+            normalized = key.casefold().removeprefix("%utf8%")
+            prefix = "customdisplaymodename"
+            if not normalized.startswith(prefix):
+                continue
+            suffix = normalized.removeprefix(prefix)
+            if not suffix.isascii() or not suffix.isdigit():
+                continue
+            index = int(suffix)
+            value = (
+                self.custom_display_mode_names[index]
+                if index < len(self.custom_display_mode_names)
+                else ""
+            )
+            if index >= self.display_mode_count or not value:
+                record.pop(key)
 
     def serialize_to_record(self) -> dict[str, Any]:
+        self.lib_reference = self.lib_reference.strip()
+        self.design_item_id = self.design_item_id.strip()
+        _validate_signed_short(self.part_count, "PartCount")
+        _validate_signed_short(self.current_part_id, "CurrentPartId")
+        _validate_signed_short(self.all_pin_count, "AllPinCount")
+        _validate_unsigned_byte(self.display_mode, "DisplayMode")
+        _validate_display_mode_count(self.display_mode_count)
+        if self.component_kind_version2 is not None:
+            _validate_unsigned_byte(
+                self.component_kind_version2, "ComponentKindVersion2"
+            )
         record = super().serialize_to_record()
         mode = self._detect_case_mode()
         s = AltiumSerializer(mode)
@@ -655,18 +1224,218 @@ class AltiumSchComponent(SchGraphicalObject):
         self._serialize_color_fields(record, s, raw)
         self._serialize_component_kind_fields(record, s, raw, keys)
         self._serialize_database_fields(record, s, raw, keys)
-        self._serialize_file_fields(record, keys)
+        self._serialize_file_fields(record, s)
+        self._serialize_component_unique_id(record, s)
         self._serialize_guid_fields(record, s, raw)
+        self._serialize_extended_fields(record, s, raw)
 
         # Pin count
-        if self._has_all_pin_count or self.all_pin_count != 0:
-            s.write_int(record, Fields.ALL_PIN_COUNT, self.all_pin_count, raw)
+        if (
+            self._has_all_pin_count
+            or self.all_pin_count != 0
+            or self._component_changed("all_pin_count")
+        ):
+            s.write_int(
+                record,
+                Fields.ALL_PIN_COUNT,
+                self.all_pin_count,
+                raw,
+                force=self._component_changed("all_pin_count"),
+            )
 
-        # Footprint
-        if self._has_footprint or self.footprint:
-            s.write_str(record, Fields.FOOTPRINT, self.footprint, raw)
+        if raw is None or self.footprint != self._footprint_at_parse:
+            s.remove_field(record, Fields.FOOTPRINT)
 
+        if self._raw_record is None:
+            return self._order_fields_case_insensitively(
+                record, self._authored_component_order()
+            )
+        self._canonicalize_component_default_mutations(record, s)
         return record
+
+    def _canonicalize_component_default_mutations(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+    ) -> None:
+        self._remove_component_fields_reset_to_defaults(record, serializer)
+        self._remove_standard_component_kind_mutation(record, serializer)
+        self._remove_true_inverted_flag_mutations(record, serializer)
+        self._remove_empty_custom_display_mode_mutations(record)
+
+    def _remove_component_fields_reset_to_defaults(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+    ) -> None:
+        fields: tuple[tuple[str, FieldDef | str, object], ...] = (
+            ("lib_reference", Fields.LIB_REFERENCE, ""),
+            ("library_path", Fields.LIBRARY_PATH, ""),
+            ("source_library_name", Fields.SOURCE_LIBRARY_NAME, ""),
+            ("component_description", Fields.COMPONENT_DESCRIPTION, ""),
+            ("part_count", Fields.PART_COUNT, 0),
+            ("current_part_id", Fields.CURRENT_PART_ID, 0),
+            ("display_mode", Fields.DISPLAY_MODE, 0),
+            ("display_mode_count", Fields.DISPLAY_MODE_COUNT, 0),
+            ("orientation", Fields.ORIENTATION, Rotation90.DEG_0),
+            ("is_mirrored", Fields.IS_MIRRORED, False),
+            ("show_hidden_pins", Fields.SHOW_HIDDEN_PINS, False),
+            ("show_hidden_fields", Fields.SHOW_HIDDEN_FIELDS, False),
+            ("display_field_names", Fields.DISPLAY_FIELD_NAMES, False),
+            ("designator_locked", Fields.DESIGNATOR_LOCKED, False),
+            ("pins_moveable", Fields.PINS_MOVEABLE, False),
+            ("override_colors", Fields.OVERRIDE_COLORS, False),
+            ("color", Fields.COLOR, 0),
+            ("area_color", Fields.AREA_COLOR, 0),
+            ("pin_color", Fields.PIN_COLOR, 0),
+            ("database_table_name", Fields.DATABASE_TABLE_NAME, ""),
+            ("design_item_id", Fields.DESIGN_ITEM_ID, ""),
+            ("sheet_part_filename", Fields.SHEET_PART_FILENAME, ""),
+            ("vault_guid", Fields.VAULT_GUID, ""),
+            ("item_guid", Fields.ITEM_GUID, ""),
+            ("revision_guid", Fields.REVISION_GUID, ""),
+            ("symbol_vault_guid", Fields.SYMBOL_VAULT_GUID, ""),
+            ("symbol_item_guid", Fields.SYMBOL_ITEM_GUID, ""),
+            ("symbol_revision_guid", Fields.SYMBOL_REVISION_GUID, ""),
+            ("generic_component_template_guid", "GenericComponentTemplateGUID", ""),
+            ("alias_list", "AliasList", ""),
+            ("has_only_current_part_info", "HasOnlyCurrentPartInfo", False),
+            ("key_component_unique_id", "KeyComponentUniqueId", ""),
+            ("all_pin_count", Fields.ALL_PIN_COUNT, 0),
+            ("unique_id", "UniqueID", ""),
+        )
+        for attribute, field, default in fields:
+            value = getattr(self, attribute)
+            if value == default and value != self._component_source_state[attribute]:
+                self._remove_component_field(record, serializer, field)
+
+    def _remove_standard_component_kind_mutation(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+    ) -> None:
+        if (
+            self.component_kind == ComponentKind.STANDARD
+            and self.component_kind != self._component_source_state["component_kind"]
+        ):
+            for field in (
+                Fields.COMPONENT_KIND,
+                "ComponentKindVersion2",
+                "ComponentKindVersion3",
+            ):
+                self._remove_component_field(record, serializer, field)
+
+    def _remove_true_inverted_flag_mutations(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+    ) -> None:
+        for attribute, field in (
+            ("use_db_table_name", "NotUseDBTableName"),
+            ("use_library_name", "NotUseLibraryName"),
+        ):
+            if (
+                getattr(self, attribute) is True
+                and self._component_source_state[attribute] is not True
+            ):
+                self._remove_component_field(record, serializer, field)
+
+    def _remove_empty_custom_display_mode_mutations(
+        self,
+        record: dict[str, object],
+    ) -> None:
+        if self.custom_display_mode_names != self._source_custom_display_mode_names:
+            for key in list(record):
+                if key.casefold().startswith("customdisplaymodename"):
+                    suffix = key[len("CustomDisplayModeName") :]
+                    if not suffix.isascii() or not suffix.isdigit():
+                        continue
+                    index = int(suffix)
+                    if (
+                        index >= len(self.custom_display_mode_names)
+                        or not self.custom_display_mode_names[index]
+                    ):
+                        record.pop(key)
+
+    @staticmethod
+    def _remove_component_field(
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+        field: FieldDef | str,
+    ) -> None:
+        field_def = serializer._get_field_def(field)
+        ordinary = field_def.pascal.casefold()
+        sidecar = f"%UTF8%{field_def.pascal}".casefold()
+        for key in tuple(record):
+            if key.casefold() in {ordinary, sidecar}:
+                record.pop(key)
+
+    def _authored_component_order(self) -> tuple[str, ...]:
+        custom_names = tuple(
+            f"CustomDisplayModeName{index}" for index in range(self.display_mode_count)
+        )
+        return (
+            "RECORD",
+            "LibReference",
+            "ComponentDescription",
+            "PartCount",
+            "DisplayModeCount",
+            "OwnerIndex",
+            "IsNotAccesible",
+            "OwnerIndexAdditionalList",
+            "IndexInSheet",
+            "IgnoreOnLoad",
+            "WiringDiagramOriginUniqueId",
+            "IsSchematicBlockObject",
+            "UniqueIDInReuseBlock",
+            "OwnerPartId",
+            "OwnerPartDisplayMode",
+            "SelectionMemory",
+            "UnionIndex",
+            "GraphicallyLocked",
+            "Location.X",
+            "Location.X_Frac",
+            "Location.Y",
+            "Location.Y_Frac",
+            "DisplayMode",
+            "IsMirrored",
+            "Orientation",
+            "CurrentPartId",
+            "ShowHiddenFields",
+            "ShowHiddenPins",
+            "LibraryPath",
+            "SourceLibraryName",
+            "DatabaseTableName",
+            "SheetPartFileName",
+            "TargetFileName",
+            "UniqueID",
+            "AreaColor",
+            "Color",
+            "PinColor",
+            "OverideColors",
+            "DisplayFieldNames",
+            "DesignatorLocked",
+            "PartIDLocked",
+            "PinsMoveable",
+            "AliasList",
+            "NotUseLibraryName",
+            "NotUseDBTableName",
+            "DesignItemId",
+            "VaultGUID",
+            "ItemGUID",
+            "RevisionGUID",
+            "SymbolVaultGUID",
+            "SymbolItemGUID",
+            "SymbolRevisionGUID",
+            "GenericComponentTemplateGUID",
+            "HasOnlyCurrentPartInfo",
+            "AllPinCount",
+            "KeyComponentUniqueId",
+            "ComponentKind",
+            "ComponentKindVersion2",
+            "ComponentKindVersion3",
+            *custom_names,
+        )
 
     def _bound_schematic_owner(self) -> object | None:
         return bound_schematic_owner(self)
@@ -788,6 +1557,7 @@ class AltiumSchComponent(SchGraphicalObject):
         )
         pin.show_name = show_name
         pin.show_designator = show_designator
+        pin.is_not_accessible = not self.pins_moveable
         pin.color = 0x000000
         pin.name_settings.font_name = font
         pin.name_settings.font_size = font_size
@@ -1212,7 +1982,6 @@ class AltiumSchComponent(SchGraphicalObject):
             AltiumSchImplementation,
             AltiumSchImplementationList,
             AltiumSchImplParams,
-            AltiumSchMapDefinerList,
         )
         from .altium_symbol_transform import generate_unique_id
 
@@ -1230,7 +1999,6 @@ class AltiumSchComponent(SchGraphicalObject):
         )
         if implementation_list is None:
             implementation_list = AltiumSchImplementationList()
-            implementation_list.unique_id = generate_unique_id()
             schdoc.add_object(implementation_list, owner=self)
 
         if is_current:
@@ -1248,15 +2016,13 @@ class AltiumSchComponent(SchGraphicalObject):
         implementation._has_is_current = True
         if description:
             implementation._has_description = True
+        implementation.model_datafiles = [("", library_name, "PCBLib")]
         implementation.datafile_count = 1
         implementation.datafile_entity = library_name
         implementation.datafile_kind = "PCBLib"
         implementation._has_datafile_count = True
         implementation.unique_id = generate_unique_id()
         schdoc.add_object(implementation, owner=implementation_list)
-
-        map_def_list = AltiumSchMapDefinerList()
-        schdoc.add_object(map_def_list, owner=implementation)
 
         impl_params = AltiumSchImplParams()
         schdoc.add_object(impl_params, owner=implementation)
@@ -1328,15 +2094,15 @@ class AltiumSchComponent(SchGraphicalObject):
         )
         return comment
 
-    def get_pin_hotspot(self, pin_designator: str) -> tuple[int, int]:
+    def get_pin_hotspot(self, pin_designator: str) -> tuple[float, float]:
         """
         Return a placed pin hotspot in schematic mils.
         """
         for pin in self.pins:
             if getattr(pin, "designator", "") != pin_designator:
                 continue
-            connection_point = pin.connection_point
-            return (connection_point[0] * 10, connection_point[1] * 10)
+            connection_point = pin.get_hot_spot()
+            return (connection_point.x_mils, connection_point.y_mils)
         raise ValueError(
             f"Pin '{pin_designator}' not found. Available: "
             f"{[getattr(pin, 'designator', '') for pin in self.pins]}"
@@ -1519,16 +2285,18 @@ class AltiumSchComponent(SchGraphicalObject):
         self,
         *,
         part_id: int | None = None,
+        source_admission: _SourceAdmission = _SourceAdmission(),
     ) -> list[object]:
         resolved_part_id = self._resolved_part_id(part_id)
         resolved_display_mode = self._resolved_display_mode()
-        pin_ids = {id(pin) for pin in getattr(self, "pins", []) or []}
-        parameter_ids = {id(param) for param in getattr(self, "parameters", []) or []}
+        graphics, children, pin_ids, parameter_ids = self._display_body_source_groups(
+            source_admission
+        )
         body_records = self._unique_records(
-            list(getattr(self, "graphics", []) or [])
+            graphics
             + [
                 child
-                for child in (getattr(self, "children", []) or [])
+                for child in children
                 if getattr(child, "is_not_accessible", False)
                 and id(child) not in pin_ids
                 and id(child) not in parameter_ids
@@ -1536,10 +2304,29 @@ class AltiumSchComponent(SchGraphicalObject):
         )
         return [
             record
-            for record in body_records
+            for record in source_admission.admitted(body_records)
             if self._part_matches(record, resolved_part_id)
             and self._display_mode_matches(record, resolved_display_mode)
         ]
+
+    def _display_body_source_groups(
+        self, source_admission: _SourceAdmission
+    ) -> tuple[list[object], list[object], set[int], set[int]]:
+        children = list(source_admission.children(self, self.children))
+        if source_admission.parent_by_source_id is None:
+            return (
+                list(self.graphics),
+                children,
+                {id(child) for child in self.pins},
+                {id(child) for child in self.parameters},
+            )
+        projected, kinds = self._projected_geometry_source_children(source_admission)
+        return (
+            [child for child in projected if kinds[id(child)] == "graphic"],
+            children,
+            {id(child) for child in projected if kinds[id(child)] == "pin"},
+            {id(child) for child in projected if kinds[id(child)] == "param"},
+        )
 
     def display_body_element_ids(
         self,
@@ -1583,8 +2370,17 @@ class AltiumSchComponent(SchGraphicalObject):
         This intentionally excludes pins and visible parameter text. It is the
         preferred target for variant DNP graphics in downstream viewers.
         """
+        return self._source_display_body_bounds_mils(
+            _SourceAdmission(), part_id=part_id
+        )
+
+    def _source_display_body_bounds_mils(
+        self, source_admission: _SourceAdmission, *, part_id: int | None = None
+    ) -> SchRectMils | None:
         rects: list[SchRectMils] = []
-        for record in self._display_body_records(part_id=part_id):
+        for record in self._display_body_records(
+            part_id=part_id, source_admission=source_admission
+        ):
             bounds = self._record_bounds_mils(record)
             if bounds is not None:
                 rects.append(bounds)
@@ -1745,6 +2541,12 @@ class AltiumSchComponent(SchGraphicalObject):
     ) -> bool:
         if _is_parent_bound_geometry_child(child):
             return False
+        if child_kind == "param":
+            return self._parameter_child_is_visible(child)
+        if type(child).__name__ == "AltiumSchImageParameter":
+            # The managed ImageParameter iterator filter only checks visibility;
+            # its model is exported explicitly by the parameter painter.
+            return not getattr(child, "is_hidden", False)
         owner_part = getattr(child, "owner_part_id", None)
         if (
             owner_part is not None
@@ -1760,12 +2562,26 @@ class AltiumSchComponent(SchGraphicalObject):
             and not self.show_hidden_pins
         )
 
+    def _parameter_child_is_visible(self, child: object) -> bool:
+        hidden = getattr(child, "is_hidden", False)
+        if hasattr(child, "_to_component_comment_geometry"):
+            return not hidden
+        return self.show_hidden_fields or not hidden
+
     @staticmethod
     def _geometry_child_kind(
         child: object,
         pin_ids: set[int],
         parameter_ids: set[int],
     ) -> str:
+        if type(child).__name__ == "AltiumSchImageParameter":
+            from ._sch_source_projection import _component_bound_field_role
+
+            return (
+                "param"
+                if _component_bound_field_role(child) == "comment"
+                else "graphic"
+            )
         if id(child) in pin_ids:
             return "pin"
         if id(child) in parameter_ids:
@@ -1783,14 +2599,23 @@ class AltiumSchComponent(SchGraphicalObject):
         )
         return graphics
 
-    def _geometry_source_children(self) -> tuple[list[object], dict[int, str]]:
+    def _geometry_source_children(
+        self, source_admission: _SourceAdmission = _SourceAdmission()
+    ) -> tuple[list[object], dict[int, str]]:
         """Return spatial/field children and their renderer categories."""
+        if source_admission.parent_by_source_id is not None:
+            return self._projected_geometry_source_children(source_admission)
         graphics = self._geometry_graphics()
         pins = list(self.pins)
         parameters = [
             child
             for child in self.parameters
-            if type(child).__name__ in ("AltiumSchDesignator", "AltiumSchParameter")
+            if type(child).__name__
+            in (
+                "AltiumSchDesignator",
+                "AltiumSchParameter",
+                "AltiumSchImageParameter",
+            )
         ]
         paint_child_ids = {id(child) for child in [*graphics, *pins, *parameters]}
         source_children = [
@@ -1808,21 +2633,84 @@ class AltiumSchComponent(SchGraphicalObject):
         }
         return source_children, child_kinds
 
-    def _ordered_geometry_children(self) -> list[tuple[str, object]]:
-        from .altium_sch_paint_order import order_component_children_by_source
+    def _projected_geometry_source_children(
+        self, source_admission: _SourceAdmission
+    ) -> tuple[list[object], dict[int, str]]:
+        from ._sch_source_projection import _component_bound_field_role
+        from .altium_schdoc import COMPONENT_GRAPHIC_CHILD_TYPES
 
-        source_children, child_kinds = self._geometry_source_children()
+        children: list[object] = []
+        kinds: dict[int, str] = {}
+        for child in self._projected_and_legacy_geometry_children(source_admission):
+            name = type(child).__name__
+            if name == "AltiumSchPin":
+                kind = "pin"
+            elif name in ("AltiumSchDesignator", "AltiumSchParameter"):
+                kind = "param"
+            elif name == "AltiumSchImageParameter":
+                kind = (
+                    "param"
+                    if _component_bound_field_role(child) == "comment"
+                    else "graphic"
+                )
+            elif isinstance(child, COMPONENT_GRAPHIC_CHILD_TYPES) or name in (
+                "AltiumSchIeeeSymbol",
+                "_AltiumSchHarnessCavityComponent",
+            ):
+                kind = "graphic"
+            else:
+                continue
+            children.append(child)
+            kinds[id(child)] = kind
+        return children, kinds
+
+    def _projected_and_legacy_geometry_children(
+        self, source_admission: _SourceAdmission
+    ) -> list[object]:
+        legacy = self.children or [
+            *self._geometry_graphics(),
+            *self.pins,
+            *self.parameters,
+        ]
+        return source_admission.children_with_legacy(self, legacy)
+
+    def _ordered_geometry_children(
+        self,
+        *,
+        sort_transparency: bool = True,
+        record_filter: frozenset[SchRecordType] | None = None,
+        exclude_records: frozenset[SchRecordType] = frozenset(),
+        max_sort_work: int | None = None,
+        source_admission: _SourceAdmission = _SourceAdmission(),
+    ) -> list[tuple[str, object]]:
+        from .altium_sch_paint_order import (
+            _component_bound_children,
+            _sort_transparent_objects,
+        )
+
+        source_children, child_kinds = self._geometry_source_children(source_admission)
+        source_children = _component_bound_children(
+            self,
+            list(source_admission.children(self, self.children)) or source_children,
+        )
         resolved_display_mode = self._resolved_display_mode()
         eligible_children = [
             child
-            for child in source_children
-            if self._geometry_child_is_eligible(
+            for child in source_admission.admitted(source_children)
+            if id(child) in child_kinds
+            and self._geometry_child_is_eligible(
                 child_kinds[id(child)], child, resolved_display_mode
             )
+            and (
+                record_filter is None
+                or getattr(child, "record_type", None) in record_filter
+            )
+            and getattr(child, "record_type", None) not in exclude_records
         ]
-        ordered_children = order_component_children_by_source(
-            self,
-            eligible_children,
+        ordered_children = (
+            _sort_transparent_objects(eligible_children, max_work=max_sort_work)
+            if sort_transparency
+            else eligible_children
         )
         return [(child_kinds[id(child)], child) for child in ordered_children]
 
@@ -1842,6 +2730,8 @@ class AltiumSchComponent(SchGraphicalObject):
         )
 
         to_geometry = getattr(child, "to_geometry", None)
+        if child_kind == "param":
+            to_geometry = getattr(child, "_to_component_comment_geometry", to_geometry)
         if not callable(to_geometry):
             return []
         if child_kind == "graphic":
@@ -1867,12 +2757,25 @@ class AltiumSchComponent(SchGraphicalObject):
             return []
         return [op for op in raw_child_geometry if isinstance(op, SchGeometryOp)]
 
+    def _geometry_child_context(
+        self, ctx: "SchSvgRenderContext", children: list[tuple[str, object]]
+    ) -> "SchSvgRenderContext":
+        if not self.show_hidden_fields:
+            return ctx
+        copied = ctx.copy()
+        copied._visible_hidden_parameter_ids = frozenset(
+            id(child) for kind, child in children if kind == "param"
+        )
+        return copied
+
     def _render_child_geometry_operations(
         self,
         ctx: "SchSvgRenderContext",
         *,
         document_id: str,
         units_per_px: int,
+        children: list[tuple[str, object]] | None = None,
+        include_component_junctions: bool = True,
     ) -> tuple[list["SchGeometryOp"], list["SchGeometryOp"]]:
         from .altium_sch_geometry_oracle import SchGeometryOp
 
@@ -1881,7 +2784,17 @@ class AltiumSchComponent(SchGraphicalObject):
         native_multipart_junction_wrappers = self.part_count > 1 and getattr(
             ctx, "native_svg_export", False
         )
-        for child_kind, child in self._ordered_geometry_children():
+        if children is None:
+            children = self._ordered_geometry_children(
+                source_admission=ctx._source_admission
+            )
+        children = [
+            (kind, child)
+            for kind, child in children
+            if ctx._source_admission.admits(child)
+        ]
+        ctx = self._geometry_child_context(ctx, children)
+        for child_kind, child in children:
             child_geometry = self._child_geometry_operations(
                 child_kind,
                 child,
@@ -1891,7 +2804,11 @@ class AltiumSchComponent(SchGraphicalObject):
             )
             if not child_geometry:
                 continue
-            if child_kind == "pin" and native_multipart_junction_wrappers:
+            if (
+                include_component_junctions
+                and child_kind == "pin"
+                and native_multipart_junction_wrappers
+            ):
                 component_operations.extend(
                     self._native_export_component_junction_ops(
                         child,
@@ -1901,7 +2818,12 @@ class AltiumSchComponent(SchGraphicalObject):
                     )
                 )
             child_operations.append(
-                SchGeometryOp.begin_group(getattr(child, "unique_id", ""))
+                SchGeometryOp.begin_group(
+                    getattr(child, "unique_id", ""),
+                    render_group_id=ctx.render_group_id(child) or None,
+                    render_group_identity=ctx.render_group_identity(child),
+                    render_source_id=id(child),
+                )
             )
             child_operations.extend(child_geometry)
             child_operations.append(SchGeometryOp.end_group())
@@ -1914,19 +2836,57 @@ class AltiumSchComponent(SchGraphicalObject):
         document_id: str,
         units_per_px: int = 64,
     ) -> "SchGeometryRecord":
+        from ._altium_sch_component_overlay import (
+            _component_overlay_group_operations,
+            _component_paint_contexts,
+        )
+        from ._altium_sch_component_variant import (
+            _component_variant_geometry_operations,
+            _component_variant_junction_operations,
+        )
         from .altium_sch_geometry_oracle import (
             SchGeometryBounds,
             SchGeometryRecord,
             wrap_record_operations,
         )
 
-        component_level_operations, child_operations = (
-            self._render_child_geometry_operations(
-                ctx,
-                document_id=document_id,
-                units_per_px=units_per_px,
+        overlay = ctx._component_overlay_capture
+        variant = ctx._component_variant_capture
+        primitive_ctx, ctx = _component_paint_contexts(ctx, self)
+        if variant is not None:
+            component_level_operations, child_operations = (
+                _component_variant_geometry_operations(
+                    self,
+                    primitive_ctx,
+                    variant,
+                    document_id=document_id,
+                    units_per_px=units_per_px,
+                )
             )
-        )
+        else:
+            component_level_operations, child_operations = (
+                self._render_child_geometry_operations(
+                    primitive_ctx,
+                    document_id=document_id,
+                    units_per_px=units_per_px,
+                )
+            )
+        if overlay is not None:
+            child_operations.extend(
+                _component_overlay_group_operations(
+                    ctx, overlay, units_per_px=units_per_px
+                )
+            )
+        if variant is not None:
+            component_level_operations.extend(
+                _component_variant_junction_operations(
+                    self,
+                    ctx,
+                    variant,
+                    document_id=document_id,
+                    units_per_px=units_per_px,
+                )
+            )
 
         return SchGeometryRecord(
             handle=f"{document_id}\\{self.unique_id}",
@@ -1946,4 +2906,30 @@ class AltiumSchComponent(SchGraphicalObject):
             f"<AltiumSchComponent '{self.lib_reference}' "
             f"at=({self.location.x}, {self.location.y}) "
             f"parts={self.part_count}>"
+        )
+
+
+class AltiumSchHarnessComponent(AltiumSchComponent):
+    """V5 harness-layout component, serialized as managed RECORD 106."""
+
+    @property
+    def record_type(self) -> SchRecordType:
+        return SchRecordType.HARNESS_COMPONENT
+
+    def to_geometry(
+        self,
+        ctx: "SchSvgRenderContext",
+        *,
+        document_id: str,
+        units_per_px: int = 64,
+    ) -> "SchGeometryRecord":
+        geometry = super().to_geometry(
+            ctx,
+            document_id=document_id,
+            units_per_px=units_per_px,
+        )
+        return replace(
+            geometry,
+            kind="harness_component",
+            object_id="eHarnessComponent",
         )

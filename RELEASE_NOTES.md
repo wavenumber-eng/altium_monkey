@@ -1,3 +1,273 @@
+# altium-monkey 2026.09.11 Release Notes
+
+Package version: `2026.9.11`
+
+This release strengthens schematic compiler and netlist identity, adds explicit
+versioned netlist and BOM transports, fixes PcbDoc/PcbLib mutation paths, and
+makes bundled fallback-font embedding opt-in.
+
+## Breaking Changes And Migration
+
+- `Netlist.to_json()`, `to_json_text()`, and `to_json_bytes()` now emit only
+  `altium_monkey.netlist.b0`; there is no legacy-output switch. Consumers of
+  Netlist a0 must select the b0 schema, replace filename-only
+  `nets[].source_sheets` handling with structured `nets[].source_pages`, and
+  accept the required stable component/page identity fields on components,
+  terminals, endpoints, and graphical pin references. Design b0 is a separate
+  established contract: its embedded `nets` retain their Design-owned
+  `source_sheets` representation and are intentionally not standalone Netlist
+  b0 rows.
+
+- `AltiumSchDoc.objects`, `AltiumSchDoc.all_objects`, and the typed
+  `ObjectCollection`-backed accessors are read-only live query views. Code that
+  appended to a view or assigned `all_objects` must use the explicit structural
+  mutation APIs such as `add_object()`, `insert_object()`, `remove_object()`, or
+  the appropriate `add_*()` helper. This keeps ownership and save-time indexes
+  synchronized. The same rule now applies to `AltiumSchLib.symbols` and
+  `AltiumSymbol.objects`: use `AltiumSchLib.add_symbol()` / `remove_symbol()`
+  and `AltiumSymbol.add_object()` / `remove_object()` instead of mutating the
+  returned views.
+
+- The unfinished `altium_monkey.pcb_manufacturing` package and
+  `altium_monkey.altium_pcb_source_snapshot` module were physically included
+  in 2026.9.7 despite never being declared or supported public APIs. They are
+  removed from public source and distributions in this release, with no
+  supported replacement. Ordinary PcbDoc loading no longer pays the associated
+  whole-document snapshot, normalization, serialization, and hashing cost.
+
+## Contract Source Of Truth
+
+Design b0, compiled-graph a0, hierarchy a1, Netlist b0, and schematic-BOM a0
+are governed by the TypeSpec sources published in the public source repository
+under `docs/schemas/altium_monkey/typespec/`. They provide the reviewable wire
+shape for generated JSON Schemas and internal Python `msgspec` boundary DTOs.
+The handwritten Python adapters remain the supported API because they provide
+semantic validation, resource limits, and the rich `Netlist`/BOM behavior.
+
+The already-published Design b0 and Netlist a0 JSON Schema files remain frozen
+byte-for-byte compatibility snapshots. Netlist a0 is retained only for
+historical consumers and is not emitted by this release. Generator-specific DTO
+classes are implementation details and are not added to the declared Python
+public surface.
+
+## Supported Environments And Validation
+
+Normal GIL-enabled CPython 3.12 through 3.14 is supported. The required
+`wn-geometer==2026.9.11` wheels define the current platform boundary: Windows
+amd64, macOS arm64, and Linux x86_64/aarch64 using `manylinux_2_35`. The release
+distribution is built from an sdist-derived wheel and validated in clean Python
+3.14 test and core-only environments, including the complete installed-wheel
+public suite and dependency checks.
+
+## Changes
+
+- The exact `wn-geometer` runtime dependency is updated from `2026.9.7` to
+  `2026.9.11`, retaining published wheels for Windows amd64, macOS arm64, and
+  Linux x86_64/aarch64 while avoiding downstream resolver conflicts with the
+  current Geometer release.
+
+- `AltiumDesign.from_prjpcb(...)` now accepts
+  `AltiumProjectLoadMode.METADATA_ONLY` for project parameters, options,
+  variants, DNP/override rows, and document discovery without reading SchDoc or
+  PcbDoc document bytes. Schematic-dependent operations fail explicitly with
+  `AltiumProjectCapabilityError`. The default `FULL` mode retains schematic
+  compiler behavior while also guaranteeing that referenced boards remain
+  unloaded until a PCB-dependent operation requests one. Design JSON retains
+  its compatible `include_pnp=True` default; use
+  `to_json(include_pnp=False)` for a schematic-only projection that does not
+  parse the board. Selected boards are cached by resolved path and preserve
+  mutable object identity across equivalent selectors.
+
+- On Windows Python 3.14, the `examples` and `test` extras constrain transitive
+  CasADi to `<3.8` to avoid a native shutdown failure observed through the
+  CadQuery example environment. Core installs do not include CadQuery or
+  CasADi.
+
+- Schematic SVG keeps packaged Arimo, Tinos, and Cousine fallbacks for portable
+  font resolution and measurement, but no longer embeds their TTF payloads by
+  default. Set
+  `SchSvgRenderOptions(embed_bundled_fallback_fonts=True)` for a self-contained
+  SVG. The opt-in embeds only package-owned fallback faces used by painted text;
+  it never embeds host or configured fonts and creates no font sidecars.
+
+- IPC-2581 component pad references now use each pad's stored designator, so
+  reordered numeric and alphanumeric pin names remain connected to the same
+  package pin. Pads with an empty designator retain their existing sequential
+  fallback.
+
+- Component pads now expose typed 32-layer removed-copper-land inspection and
+  explicit mutation through `is_copper_land_removed(...)` and
+  `set_copper_land_removed(...)`. PcbDoc and PcbLib saves preserve original
+  per-layer geometry, optional bitmap state, full-stack entries, and unknown
+  tail bytes; valid legacy pads without a table receive the Altium-compatible
+  651-byte form on first removal. Ambiguous or malformed layouts fail closed,
+  and existing via behavior is unchanged.
+
+- `AltiumPcbLib(existing_path)` now parses the existing PcbLib immediately,
+  matching `from_file(...)` and the other library containers. This fixes the
+  empty `footprints` result seen when callers passed an IntLib-extracted
+  PcbLib to the constructor. IntLib extraction itself remains byte-exact. A
+  no-argument constructor still creates a new library, and a nonexistent path
+  remains supported as destination metadata for compatible authoring code.
+
+- PcbDoc saves now regenerate each owned counted section's four-byte `Header`
+  together with its `Data`. Direct changes to writer-owned primitive
+  collections no longer leave stale counts that can make Altium reject the
+  saved board, including deletion of the final record. The correction applies
+  across the owned PCB primitive and metadata sections rather than only arcs.
+  It guarantees serialization integrity, not cascading object deletion;
+  unsupported and otherwise unowned streams remain lossless passthrough.
+
+- Schematic geometry documents now derive `failed_renders` from records with
+  nonempty renderer errors, keeping generated IR valid when an individual
+  managed geometry target fails without aborting the whole document.
+
+- Schematic geometry-IR v1 now has a strict public validator and validated
+  dictionary/file decoders. They reject malformed counts and indexes,
+  unbalanced transform/clip/group stacks, non-finite values, duplicate or
+  case-colliding JSON keys, unknown operations, and out-of-budget payloads
+  while preserving allowed extension fields.
+
+- Schematic SVG rendering now exposes Altium's `SingleSlashNegation` option.
+  Overline parsing matches managed UTF-16 behavior for leading, repeated,
+  trailing, and astral-character slash markers, including HarnessEntry and
+  SheetEntry labels.
+
+- `SchPaintColorMode` is now exported for selecting the managed schematic SVG
+  color, grayscale, or monochrome painter modes. `NetlistSourcePage` exposes
+  structured compiled-page identity, and `validate_compiled_design_payload()`
+  validates the strict low-level compiled-design diagnostic transport.
+
+- SchLib mutation now rebuilds Data and Additional membership in Altium's
+  managed depth-first order. Save recomputes owner and `IndexInSheet` fields,
+  keeps object-list members ahead of managed fields, and removes ignored or
+  structurally unattached owner subtrees while clean files retain lossless raw
+  replay.
+
+- Parsed SchLib symbol mutation now persists explicit `add_object()` and
+  `remove_object()` membership changes. Save transactionally rebuilds the Data
+  rows, removes complete child subtrees with their selected owner, repairs
+  unrelated retained ownership across Data and Additional, and adopts new row
+  identities for later edits; schematic parameter values containing literal
+  pipes also survive clean save/reopen.
+
+- Logical schematic multipart labels now use the component's implemented
+  parts in its active display mode, including bound fields. Placing another
+  part with the same design item no longer adds a spurious suffix, and empty
+  designators can correctly display a suffix alone.
+
+- Compiler component names/comments and schematic body labels use the last
+  admitted Designator/Comment field, including explicitly empty values.
+  Ignored later fields do not replace an earlier live field, and physical
+  annotations target the selected field consistently.
+
+- Python schematic compilation indexes component pin evidence once per source
+  document, avoiding repeated scans of unrelated pin buckets while retaining
+  pin order and signal identities.
+
+- Schematic compilation retains components with missing or empty source
+  designators, including their pins, physical annotations and repeated-page
+  names, while preserving component-kind and compile-mask filtering.
+
+- Compiler pin and net projection keeps distinct source parts correctly bound
+  when duplicate logical designators receive different physical annotations,
+  including a multipart component whose part B alone is renamed.
+
+- Public schematic netlists now keep terminals, pin endpoints, and graphical
+  pin references on their exact physical component when a logical designator
+  collides with another component's board-annotated designator, including
+  repeated-channel multipart designs. Ambiguous compatibility aliases no
+  longer select an owner based on component order.
+
+- Schematic Additional-stream ownership now follows Altium's exact `T`
+  flag semantics. Noncanonical text such as `TRUE` or `1` no longer selects
+  the wrong parent stream, and untouched source text still round-trips.
+- Physical schematic body labels now include implemented multipart suffixes
+  inside channel formats (for example, U1A_2), while aggregate component and
+  netlist keys stay unsuffixed. Compiled schematic graph occurrences carry
+  the same full body display names.
+- Explicitly empty component designator annotations now remain empty in
+  compiled component and terminal names. Physical schematic rendering retains
+  logical text when the full physical display name is empty, matching the
+  managed renderer's fresh-state behavior.
+- Component child edits now retain nested owned records in the schematic
+  object store, including harness entries, so they remain available to queries
+  and subsequent saves.
+- IntLib extraction now normalizes dot, Windows device, trailing-dot/space,
+  control-character, and overlong source names deterministically. SchLib split
+  patterns reject rooted, multi-segment, or control-character output names, so
+  symbol metadata cannot escape the requested destination directory.
+- Known limitation: compiled-design and netlist generation derives harness
+  definitions from schematic connectors but does not yet honor `LOCKED;`
+  definitions in sibling `.Harness` files or definitions supplied by custom
+  project `.Harness` documents. Ordinary autogenerated `.Harness` files are
+  not required.
+- `AltiumDesign.to_bom_payload()` adds the schema-tagged
+  `altium_monkey.schematic_bom.a0` transport with immutable typed rows,
+  component/source-page identity, fitted/DNP state, strict validation, and
+  bounded JSON encoding. The established list-returning `to_bom()` API remains
+  available.
+- SchDoc and SchLib JSON interoperability now has explicit schema-tagged
+  `{schema, document}` envelopes and strict validators, while the established
+  untagged `to_json()` document shape remains unchanged.
+- Compiled schematic graph ingress now rejects unknown root fields.
+- Schematic authoring now applies Altium-compatible UniqueID collision repair
+  and identity locking across SchDoc and SchLib containers. `AltiumSymbol`
+  adds an explicit `remove_object()` mutation API that releases the detached
+  record's managed identity lock.
+- Low-level schematic record-stream parsing now raises contextual errors for
+  truncated, zero-length text, or unterminated record framing instead of
+  silently accepting a partial stream.
+- Schematic geometry mutation now persists sparse source-backed setter changes
+  across all scalar, rectangular, curved, vertex, and text-frame record
+  families. Fractional-only coordinates are retained, stale extended vertices
+  are removed when a path is shortened, empty authored paths omit their zero
+  count, and paths beyond Altium's canonical 32,817-vertex writer limit are
+  rejected before allocation or serialization. Typed mutation back to a wire
+  default now removes the field without losing untouched raw defaults. Line,
+  polyline, and rectangle dash-dot styles use Altium's exact extended-key
+  spelling, and unsupported inherited fill/location/TextFrame fields no longer
+  alter typed state or leak into canonical output. Typed angle mutation uses
+  Altium's invariant three-decimal parameter spelling.
+- Low-level schematic geometry construction now uses Altium's managed authored
+  widths, fill flags, unit-backed dimensions, and default preference colors,
+  while sparse records continue to preserve absent fields. Public mil factories
+  retain their documented explicit geometry and color-omission overrides.
+- Low-level connectivity records now distinguish absent raw fields from their
+  effective Altium defaults while preserving source spelling, field order,
+  unknown fields, and sparse mutation. Blanket export no longer synthesizes
+  inherited fill flags that ADDevelop does not persist.
+- Text, port, power-port, and note records now distinguish sparse persisted
+  fields from their effective Altium defaults. Missing text remains absent on
+  round-trip while semantic access returns the correct empty/default value,
+  and sparse port dimensions and note presentation defaults no longer leak
+  incorrect synthesized fields.
+- Connectivity and directive records now follow Altium's exact authored field
+  order and dynamic-string rules. NoERC suppression data is normalized against
+  the complete managed 165-error-kind and 153-connection-pair inventories,
+  record-17 cross-sheet dispatch accepts the documented boolean spellings, and
+  unsupported inherited fields remain raw-lossless without altering typed
+  state or canonical output.
+- IEEE symbols, pie charts, pins, and components now preserve their exact
+  sparse-versus-authored field contracts. Fractional pin coordinates and
+  dynamic UTF-8 sidecars survive mutation, component multipart and extended
+  fields retain source order, and stale noncanonical mirror or description
+  sidecars are removed on serialization.
+- Sheet, sheet-entry, sheet-symbol, child-label, and template records now
+  distinguish raw absence, imported semantic state, authored defaults, and
+  exact exporter output. Sheet rendering also preserves Altium's separate
+  working-margin behavior when `BorderOn` is absent.
+- Harness connector, harness entry/type, signal-harness, and implementation
+  records now preserve Altium's sparse/imported/authored distinctions,
+  dynamic UTF-8 fields, exact exporter order, and owner references. Indexed
+  implementation and map data is bounded before allocation, while unsupported
+  wrapper identities and stale indexed fields are removed only when required.
+- Image records now preserve rotation, fractional geometry, and dynamic UTF-8
+  metadata without emitting unsupported inherited fields. Stream headers are
+  modeled as contextual preambles rather than graphical records, and typed
+  ObjectDefinitions metadata and the complete Altium object-ID dispatch are
+  retained instead of being silently discarded.
+
 # altium-monkey 2026.09.07 Release Notes
 
 Package version: `2026.9.7`

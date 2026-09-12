@@ -31,8 +31,11 @@ from .altium_compiled_schematic_graph_identity import (
     compiled_schematic_graph_design_scope,
     compiled_schematic_pin_source_identity,
 )
+from .altium_sch_display_mode import _pin_owner_part_id_for_component_view
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ._compiler_source import _CompilerDocumentSource
+    from .altium_schdoc import AltiumSchDoc
     from .altium_design import AltiumDesign
     from .altium_record_sch__pin import AltiumSchPin
     from .altium_schdoc_info import SchComponentInfo
@@ -167,12 +170,26 @@ def _child_page_occurrence_paths(
     return source_path, instance_path
 
 
+def _disambiguate_occurrence_source_path(
+    source_path: str,
+    physical_id: str,
+    occurrence_path_uses: Counter[str],
+) -> str:
+    path_use = occurrence_path_uses[source_path]
+    occurrence_path_uses[source_path] += 1
+    if not path_use:
+        return source_path
+    reused_path = f"{source_path}/{physical_id}"
+    return reused_path if path_use == 1 else f"{reused_path}/{path_use}"
+
+
 def _visit_page_occurrence(
     *,
     physical_id: str,
     physical_by_id: dict[str, AltiumCompiledPhysicalDocument],
     symbols_by_owner: dict[str, list[AltiumCompiledPhysicalSheetSymbol]],
     occurrences: list[_PageOccurrenceEvidence],
+    occurrence_path_uses: Counter[str],
     active_templates: set[str],
     parent: _PageOccurrenceEvidence | None = None,
     symbol: AltiumCompiledPhysicalSheetSymbol | None = None,
@@ -192,6 +209,11 @@ def _visit_page_occurrence(
         source_path, instance_path = _child_page_occurrence_paths(
             physical, parent, symbol
         )
+    source_path = _disambiguate_occurrence_source_path(
+        source_path,
+        physical_id,
+        occurrence_path_uses,
+    )
     occurrence = _PageOccurrenceEvidence(
         key=source_path,
         physical_document_id=physical_id,
@@ -209,6 +231,7 @@ def _visit_page_occurrence(
             physical_by_id=physical_by_id,
             symbols_by_owner=symbols_by_owner,
             occurrences=occurrences,
+            occurrence_path_uses=occurrence_path_uses,
             active_templates=active_templates,
             parent=occurrence,
             symbol=child_symbol,
@@ -245,6 +268,7 @@ def _expand_occurrence_roots(
     occurrences: list[_PageOccurrenceEvidence] = []
     active_templates: set[str] = set()
     root_path_uses: Counter[str] = Counter()
+    occurrence_path_uses: Counter[str] = Counter()
 
     def visit(physical_id: str) -> None:
         source_path, _instance_path = _root_page_occurrence_paths(
@@ -257,6 +281,7 @@ def _expand_occurrence_roots(
             physical_by_id=physical_by_id,
             symbols_by_owner=symbols_by_owner,
             occurrences=occurrences,
+            occurrence_path_uses=occurrence_path_uses,
             active_templates=active_templates,
             root_discriminator=root_discriminator,
         )
@@ -288,13 +313,14 @@ def _realized_page_occurrences(
 
 
 def _source_components_by_logical_uid(
-    design: "AltiumDesign", compiled: AltiumCompiledDesign
+    sources: Sequence[AltiumSchDoc | _CompilerDocumentSource],
+    compiled: AltiumCompiledDesign,
 ) -> dict[tuple[str, str], SchComponentInfo]:
     result: dict[tuple[str, str], SchComponentInfo] = {}
     for logical in compiled.logical_documents:
-        if logical.ordinal >= len(design.schdocs):
+        if logical.ordinal >= len(sources):
             continue
-        for component in design.schdocs[logical.ordinal].get_components():
+        for component in sources[logical.ordinal].get_components():
             source_uid = str(component.unique_id or "")
             if not source_uid:
                 continue
@@ -333,7 +359,7 @@ def _expanded_component_body_evidence(
     component_body_evidence: Sequence[AltiumCompiledComponent],
 ) -> tuple[_BodyOccurrenceEvidence, ...]:
     source_components_by_logical_uid = _source_components_by_logical_uid(
-        state.design, state.compiled
+        state.source_documents, state.compiled
     )
     result: list[_BodyOccurrenceEvidence] = []
     seen: set[tuple[str, str]] = set()
@@ -379,14 +405,13 @@ def _pin_matches_terminal(
     pin_source_uid: str,
 ) -> bool:
     source_uid = str(getattr(pin, "unique_id", "") or "")
-    owner_part_value = getattr(pin, "owner_part_id", None)
-    owner_part = int(owner_part_value) if owner_part_value is not None else 0
+    owner_part = _pin_owner_part_id_for_component_view(pin)
     selector_matches = (
         str(getattr(pin, "designator", "") or "") == pin_designator
         and str(getattr(pin, "name", "") or "") == pin_name
     )
     return (source_uid == pin_source_uid if pin_source_uid else selector_matches) and (
-        owner_part <= 0 or owner_part == max(1, body.current_part_id)
+        owner_part == 0 or owner_part == max(1, body.current_part_id)
     )
 
 
@@ -482,6 +507,23 @@ def _component_body_drawing_element_ids(
     return selectors or (body.source_object_id,)
 
 
+def _record_component_owned_drawing_elements(
+    state: "_ProjectionState",
+    body: _BodyOccurrenceEvidence,
+) -> None:
+    source_record = getattr(body.source_component, "record", body.source_component)
+    state.component_owned_drawing_elements.update(
+        (body.physical_document_id, element_id)
+        for graphic in getattr(
+            body.source_component,
+            "_source_graphics",
+            getattr(source_record, "graphics", ()),
+        )
+        or ()
+        if (element_id := str(getattr(graphic, "unique_id", "") or "").strip())
+    )
+
+
 def _physical_local_net_evidence(net: AltiumCompiledNet) -> frozenset[str]:
     selectors: set[str] = set()
     for terminal in getattr(net, "terminals", ()) or ():
@@ -556,8 +598,10 @@ class _ProjectionState:
     page_occurrence_by_key: dict[str, str]
     page_occurrences_by_physical: dict[str, list[str]]
     hierarchy_by_child_page: dict[str, str]
+    component_owned_drawing_elements: set[tuple[str, str]]
     compile_diagnostics: list[AltiumCompileDiagnostic]
     compile_diagnostic_keys: set[tuple[str, str | None]]
+    source_documents: Sequence[AltiumSchDoc | _CompilerDocumentSource] = ()
 
 
 def _add_compile_diagnostic(
@@ -705,6 +749,7 @@ def _build_definition_and_occurrence_rows(
         page_occurrence_by_key=page_occurrence_by_key,
         page_occurrences_by_physical=page_occurrences_by_physical,
         hierarchy_by_child_page={},
+        component_owned_drawing_elements=set(),
         compile_diagnostics=compile_diagnostics,
         compile_diagnostic_keys={
             (diagnostic.code, diagnostic.source_id)
@@ -777,6 +822,7 @@ def _build_component_rows(
     component_by_body_and_page: dict[tuple[str, str], str] = {}
     body_by_page_and_source_uid: dict[tuple[str, str], _BodyOccurrenceEvidence] = {}
     for body in _expanded_component_body_evidence(state, component_body_evidence):
+        _record_component_owned_drawing_elements(state, body)
         page_refs = state.page_occurrences_by_physical.get(
             body.physical_document_id, ()
         )
@@ -1020,7 +1066,9 @@ def _collect_terminal_candidates(
 
 
 def _local_net_topology(
-    net: AltiumCompiledNet, terminal_rows: list[dict[str, object]]
+    state: _ProjectionState,
+    net: AltiumCompiledNet,
+    terminal_rows: list[dict[str, object]],
 ) -> dict[str, list[str]]:
     terminal_refs = sorted(str(row["id"]) for row in terminal_rows)
     if terminal_refs:
@@ -1030,6 +1078,8 @@ def _local_net_topology(
             f"sch.dwg_scene\u001f{element_id}"
             for element_id in (_drawing_element_id(item) for item in net.items)
             if element_id
+            and (net.physical_document_ids[0], element_id)
+            not in state.component_owned_drawing_elements
         }
     )
     return {"graphical_selectors": graphical_selectors} if graphical_selectors else {}
@@ -1045,7 +1095,7 @@ def _materialize_local_nets(
         physical_id = net.physical_document_ids[0]
         for page_ref in state.page_occurrences_by_physical[physical_id]:
             terminal_rows = terminal_rows_by_net_page[(net.id, page_ref)]
-            topology = _local_net_topology(net, terminal_rows)
+            topology = _local_net_topology(state, net, terminal_rows)
             if not topology:
                 continue
             local_ref = state.allocator.allocate_derived(
@@ -1113,7 +1163,14 @@ def _build_net_drawing_links(
                 continue
             for item in (*net.endpoints, *net.items):
                 drawing_id = _drawing_element_id(item)
-                if not drawing_id:
+                if (
+                    not drawing_id
+                    or (
+                        physical_id,
+                        drawing_id,
+                    )
+                    in state.component_owned_drawing_elements
+                ):
                     continue
                 target = _drawing_target(
                     physical_id=physical_id,
@@ -1283,9 +1340,11 @@ def _bind_inter_sheet_links(
         )
 
 
-def _entry_source_ids_by_symbol(design: "AltiumDesign") -> dict[str, set[str]]:
+def _entry_source_ids_by_symbol(
+    sources: Sequence[AltiumSchDoc | _CompilerDocumentSource],
+) -> dict[str, set[str]]:
     result: dict[str, set[str]] = defaultdict(set)
-    for schdoc in design.schdocs:
+    for schdoc in sources:
         for sheet_symbol in schdoc.get_sheet_symbols():
             symbol_uid = str(sheet_symbol.unique_id or "").casefold()
             result[symbol_uid].update(
@@ -1351,7 +1410,7 @@ def _bind_symbol_endpoints(
     terminal_index: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     for row in state.graph.terminal_occurrences:
         terminal_index[(str(row["page_occurrence_ref"]), str(row["role"]))].append(row)
-    source_ids_by_symbol = _entry_source_ids_by_symbol(state.design)
+    source_ids_by_symbol = _entry_source_ids_by_symbol(state.source_documents)
     for occurrence in state.realized_occurrences:
         _bind_symbol_occurrence(
             state, emitted_pairs, terminal_index, source_ids_by_symbol, occurrence
@@ -1394,8 +1453,10 @@ def build_compiled_schematic_graph(
     *,
     component_body_evidence: Sequence[AltiumCompiledComponent],
     compile_diagnostics: list[AltiumCompileDiagnostic] | None = None,
+    source_documents: Sequence[AltiumSchDoc | _CompilerDocumentSource] | None = None,
 ) -> tuple[AltiumCompiledSchematicGraph, tuple[AltiumPhysicalPageMetadata, ...]]:
     """Build the generic graph and narrow Altium physical-page metadata."""
+    from ._compiler_source import _compiler_document_source
 
     scope = compiled_schematic_graph_design_scope(
         source_cad="altium",
@@ -1413,6 +1474,11 @@ def build_compiled_schematic_graph(
         allocator,
         graph,
         projection_diagnostics,
+    )
+    state.source_documents = (
+        source_documents
+        if source_documents is not None
+        else tuple(_compiler_document_source(schdoc) for schdoc in design.schdocs)
     )
     component_occurrence_by_body_and_page, body_by_page_and_source_uid = (
         _build_component_rows(state, component_body_evidence)

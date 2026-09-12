@@ -55,6 +55,7 @@ class _SymbolChildIndex:
     images: set[int]
     labels: set[int]
     text_frames: set[int]
+    implementation_lists: set[int]
 
 
 @dataclass
@@ -218,6 +219,10 @@ def _symbol_child_index(symbol: object) -> _SymbolChildIndex:
         text_frames={
             id(text_frame) for text_frame in getattr(symbol, "text_frames", [])
         },
+        implementation_lists={
+            id(implementation_list)
+            for implementation_list in getattr(symbol, "implementation_lists", [])
+        },
     )
 
 
@@ -226,7 +231,11 @@ def _child_clone_kind(source_id: int, index: _SymbolChildIndex) -> _CloneKind | 
         return "graphic"
     if source_id in index.pins:
         return "pin"
-    if source_id in index.parameters or source_id in index.designators:
+    if (
+        source_id in index.parameters
+        or source_id in index.designators
+        or source_id in index.implementation_lists
+    ):
         return "parameter"
     if source_id in index.images:
         return "image"
@@ -244,8 +253,51 @@ def _clone_child_in_schematic_space(
     font_id_map: dict[int, int],
 ) -> object:
     transformed = to_schematic_space(source_child, component, regenerate_id=True)
-    remap_font_ids(transformed, font_id_map)
+    _prepare_cloned_tree(transformed, font_id_map=font_id_map)
     return transformed
+
+
+def _prepare_cloned_tree(
+    root: object,
+    *,
+    font_id_map: dict[int, int],
+) -> None:
+    """Detach cloned records and refresh descendant serialization identity."""
+    pending = [(root, True)]
+    seen: set[int] = set()
+    while pending:
+        current, is_root = pending.pop()
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        _prepare_cloned_record(
+            current,
+            is_root=is_root,
+            font_id_map=font_id_map,
+        )
+        children = getattr(current, "children", None)
+        if isinstance(children, list):
+            pending.extend((child, False) for child in children)
+
+
+def _prepare_cloned_record(
+    record: object,
+    *,
+    is_root: bool,
+    font_id_map: dict[int, int],
+) -> None:
+    if hasattr(record, "_bound_schematic_context"):
+        setattr(record, "_bound_schematic_context", None)
+    if not is_root and hasattr(record, "_raw_record"):
+        setattr(record, "_raw_record", None)
+    unique_id = getattr(record, "unique_id", None)
+    if not is_root and unique_id is not None:
+        unlock = getattr(record, "_set_unique_id_locked", None)
+        if callable(unlock):
+            unlock(False)
+        setattr(record, "unique_id", generate_unique_id())
+    remap_font_ids(record, font_id_map)
 
 
 def _is_designator_child(source_child: object) -> bool:
@@ -268,7 +320,13 @@ def _clone_symbol_child(
         return None
 
     if kind == "image":
-        return to_schematic_space(source_child, component, regenerate_id=True)
+        transformed_image = to_schematic_space(
+            source_child,
+            component,
+            regenerate_id=True,
+        )
+        _prepare_cloned_tree(transformed_image, font_id_map=font_id_map)
+        return transformed_image
 
     transformed = _clone_child_in_schematic_space(
         source_child,

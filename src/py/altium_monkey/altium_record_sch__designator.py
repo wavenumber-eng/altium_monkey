@@ -1,7 +1,7 @@
 """Schematic record model for SchRecordType.DESIGNATOR."""
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .altium_font_manager import FontIDManager
@@ -10,21 +10,24 @@ if TYPE_CHECKING:
 from .altium_record_types import (
     CoordPoint,
     ReadOnlyState,
-    SchPrimitive,
     SchRecordType,
     TextJustification,
     TextOrientation,
     color_to_hex,
     rgb_to_win32_color,
 )
-from .altium_sch_binding import SingleFontBindableRecordMixin
+from ._sch_managed_defaults import TEXT_COLOR
+from .altium_record_sch__parameter import AltiumSchParameter
 from .altium_serializer import (
     AltiumSerializer,
     Fields,
     read_dynamic_string_field,
+    write_dynamic_string_field,
 )
 from .altium_sch_record_helpers import (
+    _RecordFields,
     detect_case_mode_method_from_dotted_uppercase_fields,
+    serialize_present_coord_point,
 )
 from .altium_sch_svg_renderer import SchSvgRenderContext
 from .altium_text_metrics import (
@@ -34,7 +37,7 @@ from .altium_text_metrics import (
 )
 
 
-class AltiumSchDesignator(SingleFontBindableRecordMixin, SchPrimitive):
+class AltiumSchDesignator(AltiumSchParameter):
     """
     Altium component designator record.
 
@@ -46,20 +49,21 @@ class AltiumSchDesignator(SingleFontBindableRecordMixin, SchPrimitive):
         self._init_single_font_binding()
         self.location = CoordPoint()
         self.name: str = "Designator"
-        self.text: str = "U?"
+        self._text: str = "*"
         self.font_id: int = 1
         self.orientation: TextOrientation = TextOrientation.DEGREES_0
         self.justification: TextJustification = TextJustification.BOTTOM_LEFT
         self.is_hidden: bool = False
         self.is_mirrored: bool = False
-        self.color: int | None = None  # None means not specified
-        self.read_only_state: ReadOnlyState = ReadOnlyState.NONE
+        self.color: int | None = TEXT_COLOR
+        self.read_only_state: ReadOnlyState = ReadOnlyState.NAME
         self.auto_position: bool = True
         # Track which fields were present
         self._has_location_x: bool = False
         self._has_location_y: bool = False
         self._has_name: bool = False
         self._has_text: bool = False
+        self._used_utf8_text: bool = False
         self._has_font_id: bool = False
         self._has_orientation: bool = False
         self._has_justification: bool = False
@@ -67,10 +71,34 @@ class AltiumSchDesignator(SingleFontBindableRecordMixin, SchPrimitive):
         self._has_is_mirrored: bool = False
         self._has_read_only_state: bool = False
         self._has_auto_position: bool = False
+        self._has_color: bool = False
+        self._capture_designator_source_state()
+
+    def _capture_designator_source_state(self) -> None:
+        self._source_name = self.name
+        self._source_text = self.text
+        self._source_font_id = self.font_id
+        self._source_orientation = self.orientation
+        self._source_justification = self.justification
+        self._source_is_hidden = self.is_hidden
+        self._source_is_mirrored = self.is_mirrored
+        self._source_color = self.color
+        self._source_read_only_state = self.read_only_state
+        self._source_auto_position = self.auto_position
 
     @staticmethod
     def _sanitize_text(text: str) -> str:
         return text.replace("\b", "")
+
+    @property
+    def text(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
+        # Designators retain their legacy backspace-sanitizing property while
+        # sharing Parameter's full V5 field model.
+        return self._text
+
+    @text.setter
+    def text(self, value: str) -> None:  # pyright: ignore[reportIncompatibleVariableOverride]
+        self._text = self._sanitize_text(str(value))
 
     @property
     def record_type(self) -> SchRecordType:
@@ -78,7 +106,7 @@ class AltiumSchDesignator(SingleFontBindableRecordMixin, SchPrimitive):
 
     def parse_from_record(
         self,
-        record: dict[str, Any],
+        record: _RecordFields,
         font_manager: "FontIDManager | None" = None,
     ) -> None:
         """
@@ -102,18 +130,15 @@ class AltiumSchDesignator(SingleFontBindableRecordMixin, SchPrimitive):
         self.location = CoordPoint(loc_x, loc_y, loc_x_frac, loc_y_frac)
 
         # Core fields
-        self.name, self._has_name = s.read_str(
-            record, Fields.NAME, default="Designator"
-        )
-        self.name = "Designator"
-        text_value, self._has_text, _ = read_dynamic_string_field(
+        self.name, self._has_name = s.read_str(record, Fields.NAME, default="")
+        text_value, self._has_text, self._used_utf8_text = read_dynamic_string_field(
             s,
             record,
             r,
             Fields.TEXT,
             default="",
         )
-        self.text = self._sanitize_text(text_value)
+        self._text = self._sanitize_text(text_value)
         # Use read_font_id for translation support
         self.font_id, self._has_font_id = s.read_font_id(
             record, Fields.FONT_ID, font_manager, default=1
@@ -134,33 +159,30 @@ class AltiumSchDesignator(SingleFontBindableRecordMixin, SchPrimitive):
         )
 
         # Color field
-        color_val, has_color = s.read_int(record, Fields.COLOR, default=0)
-        self.color = color_val if has_color else None
+        color_val, self._has_color = s.read_color(record, Fields.COLOR, default=0)
+        self.color = color_val
 
         # ReadOnlyState (0=None, 1=Name, 2=Value, 3=NameAndValue)
         ro_val, self._has_read_only_state = s.read_int(
             record, Fields.READ_ONLY_STATE, default=0
         )
-        if self._has_read_only_state:
-            self.read_only_state = ReadOnlyState(ro_val)
+        self.read_only_state = ReadOnlyState(ro_val)
 
-        not_auto_position, self._has_auto_position = s.read_bool(
+        _, _ = s.read_bool(
             record,
             Fields.NOT_AUTO_POSITION,
             default=False,
         )
-        self.auto_position = not not_auto_position
-
         override_not_auto_position, has_override_not_auto_position = s.read_bool(
             record,
             Fields.OVERRIDE_NOT_AUTO_POSITION,
             default=False,
         )
-        if has_override_not_auto_position:
-            self._has_auto_position = True
-            self.auto_position = not override_not_auto_position
+        self._has_auto_position = has_override_not_auto_position
+        self.auto_position = not override_not_auto_position
+        self._capture_designator_source_state()
 
-    def serialize_to_record(self) -> dict[str, Any]:
+    def serialize_to_record(self) -> _RecordFields:
         """
         Serialize to a record.
         """
@@ -171,73 +193,187 @@ class AltiumSchDesignator(SingleFontBindableRecordMixin, SchPrimitive):
         mode = self._detect_case_mode()
         s = AltiumSerializer(mode)
         raw = self._raw_record
+        self._serialize_designator_position_and_text(record, s, raw)
+        self._serialize_designator_style(record, s, raw)
+        self._serialize_designator_visibility(record, s, raw)
+        self._serialize_designator_state(record, s, raw)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Orientation",
+                "Justification",
+                "Color",
+                "FontID",
+                "IsHidden",
+                "Text",
+                "ParamType",
+                "Name",
+                "ShowName",
+                "ReadOnlyState",
+                "UniqueID",
+                "Description",
+                "NotAllowLibrarySynchronize",
+                "NotAllowDatabaseSynchronize",
+                "NotAutoPosition",
+                "IsMirrored",
+                "TextHorzAnchor",
+                "TextVertAnchor",
+                "IsImageParameter",
+                "OverrideNotAutoPosition",
+            ),
+        )
 
-        # Location - only write if present or non-zero
-        if self._has_location_x or self.location.x != 0:
-            s.write_coord(
-                record, "Location", "X", self.location.x, self.location.x_frac, raw
+    def _serialize_designator_position_and_text(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        serialize_present_coord_point(
+            record,
+            serializer,
+            raw_record,
+            self.location,
+            prefix="Location",
+            has_x=self._has_location_x,
+            has_y=self._has_location_y,
+        )
+        self._serialize_designator_text(record, serializer, raw_record)
+
+    def _serialize_designator_text(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        if self._has_name or self.name != self._source_name or raw_record is None:
+            serializer.write_str(
+                record,
+                Fields.NAME,
+                self.name,
+                raw_record,
+                force=self.name != self._source_name,
             )
-        if self._has_location_y or self.location.y != 0:
-            s.write_coord(
-                record, "Location", "Y", self.location.y, self.location.y_frac, raw
-            )
 
-        s.write_str(record, Fields.NAME, "Designator", raw)
-
-        # Text and font
         text_value = self._sanitize_text(self.text)
-        if self._has_text or text_value:
-            s.write_str(record, Fields.TEXT, text_value, raw)
-        else:
-            s.remove_field(record, Fields.TEXT)
-        if self._has_font_id or self.font_id != 1:
-            s.write_int(record, Fields.FONT_ID, self.font_id, raw, force=True)
-        else:
-            s.remove_field(record, Fields.FONT_ID)
-        if self._has_orientation or self.orientation != TextOrientation.DEGREES_0:
-            s.write_int(record, Fields.ORIENTATION, self.orientation.value, raw)
-        else:
-            s.remove_field(record, Fields.ORIENTATION)
-        if (
-            self._has_justification
-            or self.justification != TextJustification.BOTTOM_LEFT
-        ):
-            s.write_int(record, Fields.JUSTIFICATION, self.justification.value, raw)
-        else:
-            s.remove_field(record, Fields.JUSTIFICATION)
-
-        # Color field
-        if self.color is not None:
-            s.write_int(record, Fields.COLOR, self.color, raw, force=True)
-        else:
-            s.remove_field(record, Fields.COLOR)
-
-        # Boolean fields
-        if self.is_hidden:
-            s.write_bool(record, Fields.IS_HIDDEN, self.is_hidden, raw)
-        else:
-            s.remove_field(record, Fields.IS_HIDDEN)
-        if self.is_mirrored:
-            s.write_bool(record, Fields.IS_MIRRORED, self.is_mirrored, raw)
-        else:
-            s.remove_field(record, Fields.IS_MIRRORED)
-
-        # ReadOnlyState - only serialize if present or non-default
-        if self._has_read_only_state or self.read_only_state != ReadOnlyState.NONE:
-            s.write_int(record, Fields.READ_ONLY_STATE, self.read_only_state.value, raw)
-        else:
-            s.remove_field(record, Fields.READ_ONLY_STATE)
-
-        if not self.auto_position:
-            s.write_bool(
-                record, Fields.OVERRIDE_NOT_AUTO_POSITION, True, raw, force=True
+        if self._has_text or text_value != self._source_text or raw_record is None:
+            write_dynamic_string_field(
+                serializer,
+                record,
+                Fields.TEXT,
+                text_value,
+                raw_record=raw_record,
+                used_utf8_sidecar=self._used_utf8_text,
+                was_present=self._has_text,
+                force=text_value != self._source_text,
             )
-            s.remove_field(record, Fields.NOT_AUTO_POSITION)
         else:
-            s.remove_field(record, Fields.OVERRIDE_NOT_AUTO_POSITION)
-            s.remove_field(record, Fields.NOT_AUTO_POSITION)
+            serializer.remove_field(record, Fields.TEXT)
 
-        return record
+    def _serialize_designator_style(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        self._serialize_managed_font_id(
+            record,
+            serializer,
+            Fields.FONT_ID.canonical,
+            self.font_id,
+            self._get_fallback_font_manager(),
+        )
+        if self._has_orientation or self.orientation != self._source_orientation:
+            serializer.write_int(
+                record,
+                Fields.ORIENTATION,
+                self.orientation.value,
+                raw_record,
+                force=self.orientation != self._source_orientation,
+            )
+        else:
+            serializer.remove_field(record, Fields.ORIENTATION)
+        if self._has_justification or self.justification != self._source_justification:
+            serializer.write_int(
+                record,
+                Fields.JUSTIFICATION,
+                self.justification.value,
+                raw_record,
+                force=self.justification != self._source_justification,
+            )
+        else:
+            serializer.remove_field(record, Fields.JUSTIFICATION)
+
+        self._serialize_managed_optional_int(
+            record,
+            "COLOR",
+            ["Color", "COLOR"],
+            self.color,
+            self._source_color,
+        )
+
+    def _serialize_designator_visibility(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        if self.is_hidden != self._source_is_hidden:
+            serializer.write_bool(
+                record, Fields.IS_HIDDEN, self.is_hidden, raw_record, force=True
+            )
+        elif self.is_hidden:
+            serializer.write_bool(record, Fields.IS_HIDDEN, self.is_hidden, raw_record)
+        else:
+            serializer.remove_field(record, Fields.IS_HIDDEN)
+        if self.is_mirrored != self._source_is_mirrored:
+            serializer.write_bool(
+                record, Fields.IS_MIRRORED, self.is_mirrored, raw_record, force=True
+            )
+        elif self.is_mirrored:
+            serializer.write_bool(
+                record, Fields.IS_MIRRORED, self.is_mirrored, raw_record
+            )
+        else:
+            serializer.remove_field(record, Fields.IS_MIRRORED)
+
+    def _serialize_designator_state(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        if (
+            self._has_read_only_state
+            or self.read_only_state != self._source_read_only_state
+            or (raw_record is None and self.read_only_state.value != 0)
+        ):
+            serializer.write_int(
+                record,
+                Fields.READ_ONLY_STATE,
+                self.read_only_state.value,
+                raw_record,
+                force=self.read_only_state != self._source_read_only_state,
+            )
+        else:
+            serializer.remove_field(record, Fields.READ_ONLY_STATE)
+
+        if not self.auto_position or self.auto_position != self._source_auto_position:
+            serializer.write_bool(
+                record,
+                Fields.OVERRIDE_NOT_AUTO_POSITION,
+                not self.auto_position,
+                raw_record,
+                force=True,
+            )
+            serializer.remove_field(record, Fields.NOT_AUTO_POSITION)
+        else:
+            serializer.remove_field(record, Fields.OVERRIDE_NOT_AUTO_POSITION)
+            serializer.remove_field(record, Fields.NOT_AUTO_POSITION)
 
     _detect_case_mode = detect_case_mode_method_from_dotted_uppercase_fields
 
@@ -277,9 +413,12 @@ class AltiumSchDesignator(SingleFontBindableRecordMixin, SchPrimitive):
                     display_text = ctx.designator_text_overrides[override_key]
                     break
 
-        if ctx is not None and not self.is_hidden and display_text:
+        if (
+            ctx is not None
+            and (not self.is_hidden or id(self) in ctx._visible_hidden_parameter_ids)
+            and display_text
+        ):
             baseline_x, baseline_y = ctx.transform_coord_precise(self.location)
-            baseline_x, baseline_y = round(baseline_x, 3), round(baseline_y, 3)
 
             fill_raw = int(self.color) if self.color is not None else 0
             fill_hex = color_to_hex(fill_raw)

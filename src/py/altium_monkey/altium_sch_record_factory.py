@@ -10,7 +10,10 @@ from .altium_record_sch__blanket import AltiumSchBlanket
 from .altium_record_sch__bus import AltiumSchBus
 from .altium_record_sch__bus_entry import AltiumSchBusEntry
 from .altium_record_sch__compile_mask import AltiumSchCompileMask
-from .altium_record_sch__component import AltiumSchComponent
+from .altium_record_sch__component import (
+    AltiumSchComponent,
+    AltiumSchHarnessComponent,
+)
 from .altium_record_sch__designator import AltiumSchDesignator
 from .altium_record_sch__ellipse import AltiumSchEllipse
 from .altium_record_sch__elliptical_arc import AltiumSchEllipticalArc
@@ -20,6 +23,14 @@ from .altium_record_sch__file_name import AltiumSchFileName
 from .altium_record_sch__harness_connector import AltiumSchHarnessConnector
 from .altium_record_sch__harness_entry import AltiumSchHarnessEntry
 from .altium_record_sch__harness_type import AltiumSchHarnessType
+from ._altium_record_sch__harness_layout import (
+    AltiumSchHarnessBundle,
+    AltiumSchHarnessLayoutConnectionPoint,
+    AltiumSchHarnessLayoutCovering,
+    AltiumSchHarnessLayoutLabel,
+    AltiumSchHarnessSplice,
+)
+from ._altium_record_sch__high_level_code import _AltiumSchHighLevelCodeSymbol
 
 # SchDoc-specific records
 from .altium_record_sch__header import AltiumSchHeader
@@ -41,7 +52,21 @@ from .altium_record_sch__line import AltiumSchLine
 from .altium_record_sch__net_label import AltiumSchNetLabel
 from .altium_record_sch__no_erc import AltiumSchNoErc
 from .altium_record_sch__note import AltiumSchNote
-from .altium_record_sch__parameter import AltiumSchParameter
+from .altium_record_sch__object_definition import AltiumSchObjectDefinition
+from .altium_record_sch__parameter import (
+    AltiumSchImageParameter,
+    AltiumSchParameter,
+)
+from ._altium_record_sch__physical_model import (
+    _AltiumSchHarnessCavity,
+    _AltiumSchHarnessCavityComponent,
+    _AltiumSchLineView,
+)
+from ._altium_record_sch__reuse_block import _AltiumSchReuseBlockImplementationInfo
+from ._altium_record_sch__rich_text import (
+    _AltiumSchRichTextDocument,
+    _AltiumSchRtfLink,
+)
 from .altium_record_sch__parameter_set import AltiumSchParameterSet
 from .altium_record_sch__piechart import AltiumSchPieChart
 from .altium_record_sch__pin import AltiumSchPin
@@ -64,10 +89,11 @@ from .altium_sch_json_object_types import (
     SchJsonObjectType,
     normalize_sch_json_object_type,
 )
-from .altium_record_types import SchPrimitive, SchRecordType
+from .altium_record_types import Primitive, SchRecordType
+from .altium_serializer import AltiumSerializer, Fields
 
 # Map canonical JSON ObjectType names to Python classes.
-OBJECT_TYPE_TO_CLASS: dict[SchJsonObjectType, type[SchPrimitive]] = {
+OBJECT_TYPE_TO_CLASS: dict[SchJsonObjectType, type[Primitive]] = {
     # Core records
     SchJsonObjectType.COMPONENT: AltiumSchComponent,
     SchJsonObjectType.PIN: AltiumSchPin,
@@ -122,10 +148,17 @@ OBJECT_TYPE_TO_CLASS: dict[SchJsonObjectType, type[SchPrimitive]] = {
     SchJsonObjectType.HARNESS_ENTRY: AltiumSchHarnessEntry,
     SchJsonObjectType.HARNESS_TYPE: AltiumSchHarnessType,
     SchJsonObjectType.SIGNAL_HARNESS: AltiumSchSignalHarness,
+    SchJsonObjectType.HARNESS_SPLICE: AltiumSchHarnessSplice,
+    SchJsonObjectType.HARNESS_LAYOUT_LABEL: AltiumSchHarnessLayoutLabel,
+    SchJsonObjectType.HARNESS_LAYOUT_CONNECTION_POINT: (
+        AltiumSchHarnessLayoutConnectionPoint
+    ),
+    SchJsonObjectType.HARNESS_BUNDLE: AltiumSchHarnessBundle,
+    SchJsonObjectType.HARNESS_COVERING: AltiumSchHarnessLayoutCovering,
 }
 
 
-def get_record_class(object_type: str) -> type[SchPrimitive] | None:
+def get_record_class(object_type: str) -> type[Primitive] | None:
     """
     Get record class by native ObjectType name.
 
@@ -143,7 +176,7 @@ def get_record_class(object_type: str) -> type[SchPrimitive] | None:
     return OBJECT_TYPE_TO_CLASS.get(normalized)
 
 
-def create_record_from_type(record_type: SchRecordType) -> SchPrimitive | None:
+def create_record_from_type(record_type: SchRecordType) -> Primitive | None:
     """
     Factory function to create record object from type.
 
@@ -203,11 +236,32 @@ def create_record_from_type(record_type: SchRecordType) -> SchPrimitive | None:
         SchRecordType.COMPILE_MASK: AltiumSchCompileMask,
         SchRecordType.BLANKET: AltiumSchBlanket,
         SchRecordType.HYPERLINK: AltiumSchHyperlink,
+        SchRecordType.OBJECT_DEFINITION: AltiumSchObjectDefinition,
         # Harness records
+        SchRecordType.HARNESS_COMPONENT: AltiumSchHarnessComponent,
         SchRecordType.HARNESS_CONNECTOR: AltiumSchHarnessConnector,
         SchRecordType.HARNESS_ENTRY: AltiumSchHarnessEntry,
         SchRecordType.HARNESS_TYPE: AltiumSchHarnessType,
         SchRecordType.SIGNAL_HARNESS: AltiumSchSignalHarness,
+        SchRecordType.HIGH_LEVEL_CODE_SYMBOL: _AltiumSchHighLevelCodeSymbol,
+        SchRecordType.HIGH_LEVEL_CODE_ENTRY: AltiumSchSheetEntry,
+        SchRecordType.HIGH_LEVEL_CODE_NAME: AltiumSchSheetName,
+        SchRecordType.HIGH_LEVEL_CODE_FILE_NAME: AltiumSchFileName,
+        SchRecordType.HARNESS_SPLICE: AltiumSchHarnessSplice,
+        SchRecordType.HARNESS_LAYOUT_LABEL: AltiumSchHarnessLayoutLabel,
+        SchRecordType.HARNESS_LAYOUT_CONNECTION_POINT: (
+            AltiumSchHarnessLayoutConnectionPoint
+        ),
+        SchRecordType.HARNESS_BUNDLE: AltiumSchHarnessBundle,
+        SchRecordType.HARNESS_LAYOUT_COVERING: AltiumSchHarnessLayoutCovering,
+        SchRecordType.REUSE_BLOCK_IMPLEMENTATION_INFO: (
+            _AltiumSchReuseBlockImplementationInfo
+        ),
+        SchRecordType.RICH_TEXT_DOCUMENT: _AltiumSchRichTextDocument,
+        SchRecordType.RTF_LINK: _AltiumSchRtfLink,
+        SchRecordType.LINE_VIEW: _AltiumSchLineView,
+        SchRecordType.HARNESS_CAVITY: _AltiumSchHarnessCavity,
+        SchRecordType.HARNESS_CAVITY_COMPONENT: _AltiumSchHarnessCavityComponent,
     }
 
     record_class = record_classes.get(record_type)
@@ -216,7 +270,7 @@ def create_record_from_type(record_type: SchRecordType) -> SchPrimitive | None:
     return None
 
 
-def create_record_from_record(record: dict[str, object]) -> SchPrimitive | None:
+def create_record_from_record(record: dict[str, object]) -> Primitive | None:
     """
     Create a record object using raw-record discriminators when needed.
 
@@ -233,8 +287,17 @@ def create_record_from_record(record: dict[str, object]) -> SchPrimitive | None:
         return None
 
     if record_type == SchRecordType.POWER_PORT:
-        flag = record.get("IsCrossSheetConnector", record.get("ISCROSSSHEETCONNECTOR"))
-        if flag in {True, 1, "1", "T", "True", "true"}:
+        is_cross_sheet, _ = AltiumSerializer().read_bool(
+            record, Fields.IS_CROSS_SHEET_CONNECTOR, default=False
+        )
+        if is_cross_sheet:
             return AltiumSchCrossSheetConnector()
+
+    if record_type == SchRecordType.PARAMETER:
+        is_image_parameter, _ = AltiumSerializer().read_bool(
+            record, Fields.IS_IMAGE_PARAMETER, default=False
+        )
+        if is_image_parameter:
+            return AltiumSchImageParameter()
 
     return create_record_from_type(record_type)

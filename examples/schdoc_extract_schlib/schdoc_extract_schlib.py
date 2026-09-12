@@ -4,8 +4,8 @@ import json
 import shutil
 from pathlib import Path
 
-from altium_monkey import AltiumSchDoc
-from altium_monkey.altium_schlib import AltiumSchLib
+from altium_monkey import AltiumSchDesignator, AltiumSchDoc
+from altium_monkey.altium_schlib import AltiumSchLib, AltiumSymbol
 
 
 SAMPLE_DIR = Path(__file__).resolve().parent
@@ -32,12 +32,22 @@ def _implementation_child_count(symbol: object) -> int:
     )
 
 
+def _ordinary_parameter_count(symbol: AltiumSymbol) -> int:
+    """Count metadata parameters without treating the required designator as one."""
+    return sum(
+        not isinstance(parameter, AltiumSchDesignator)
+        for parameter in symbol.parameters
+    )
+
+
 def _summarize_schlib(path: Path) -> dict[str, object]:
     schlib = AltiumSchLib(path)
     return {
         "file": str(path.relative_to(SAMPLE_DIR)).replace("\\", "/"),
         "symbol_count": len(schlib.symbols),
-        "parameter_count": sum(len(symbol.parameters) for symbol in schlib.symbols),
+        "parameter_count": sum(
+            _ordinary_parameter_count(symbol) for symbol in schlib.symbols
+        ),
         "implementation_count": sum(
             len(symbol.implementations) for symbol in schlib.symbols
         ),

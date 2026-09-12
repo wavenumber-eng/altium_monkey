@@ -26,6 +26,7 @@ from .altium_record_sch__parameter import AltiumSchParameter
 from .altium_record_sch__pin import AltiumSchPin
 from .altium_record_types import CoordPoint, SchRecordType
 from .altium_sch_enums import Rotation90
+from .altium_serializer import sanitize_stream_name
 from .altium_symbol_transform import (
     normalize_rectangle_coords,
     transform_pin_orientation,
@@ -132,12 +133,14 @@ def write_extracted_symbols(
     if split_schlibs or combined_schlib:
         split_results = schlib.split(split_dir, verbose=debug)
         symbol_key_by_name = {
-            symbol.name: symbol.original_name or symbol.name for symbol in schlib.symbols
+            symbol.name: symbol.original_name or symbol.name
+            for symbol in schlib.symbols
         }
         results = {
             **{symbol_key: False for symbol_key in expected_symbol_keys},
             **{
-                symbol_key_by_name.get(symbol_name, symbol_name): output_path is not None
+                symbol_key_by_name.get(symbol_name, symbol_name): output_path
+                is not None
                 for symbol_name, output_path in split_results.items()
             },
         }
@@ -254,12 +257,28 @@ def _group_components_by_symbol(
     for comp in components:
         # Prefer DesignItemId (database library component)
         # Fallback to LibReference (direct library component)
-        symbol_key = comp.design_item_id or comp.lib_reference
+        symbol_key = (
+            _raw_record_value(comp, "DesignItemId")
+            or comp.design_item_id
+            or _raw_record_value(comp, "LibReference")
+            or comp.lib_reference
+        )
 
         if symbol_key and symbol_key not in ("*", ""):
             components_by_symbol[symbol_key].append(comp)
 
     return dict(components_by_symbol)
+
+
+def _raw_record_value(component: AltiumSchComponent, field: str) -> str:
+    raw_record = getattr(component, "_raw_record", None)
+    if not isinstance(raw_record, dict):
+        return ""
+    folded_field = field.casefold()
+    for key, value in raw_record.items():
+        if key.casefold() == folded_field and value is not None:
+            return str(value)
+    return ""
 
 
 def _select_best_instance(instances: list[AltiumSchComponent]) -> AltiumSchComponent:
@@ -407,9 +426,13 @@ def _add_schlib_symbol_from_template(
     debug: bool = False,
 ) -> AltiumSymbol:
     display_name = _symbol_display_name(symbol_key, template)
-    safe_name = _sanitize_filename(display_name)
+    safe_name = _symbol_storage_name(display_name)
     symbol = schlib.add_symbol(safe_name)
     symbol.original_name = symbol_key
+    symbol._uses_implicit_storage_mapping = safe_name != symbol_key
+    if display_name != symbol_key:
+        symbol._header_display_name = display_name
+        symbol._uses_implicit_storage_mapping = True
 
     _copy_component_metadata(template, symbol)
     _set_symbol_part_count(template, symbol)
@@ -500,6 +523,8 @@ def _bounded_extraction_clone(obj: object) -> object:
     cloned = copy(obj)
     if hasattr(obj, "__dict__") and hasattr(cloned, "__dict__"):
         cloned.__dict__ = dict(obj.__dict__)
+    if hasattr(cloned, "_bound_schematic_context"):
+        setattr(cloned, "_bound_schematic_context", None)
 
     for attr in (
         "location",
@@ -758,10 +783,16 @@ def _transform_designator_for_symbol(
     designator: AltiumSchDesignator,
     template: AltiumSchComponent,
 ) -> AltiumSchDesignator:
-    transformed = cast(AltiumSchDesignator, _transform_child_to_symbol_space(designator, template))
+    transformed = cast(
+        AltiumSchDesignator, _transform_child_to_symbol_space(designator, template)
+    )
     _clear_extracted_record_state(transformed)
     if hasattr(transformed, "text"):
-        setattr(transformed, "text", _library_designator_text(getattr(designator, "text", "")))
+        setattr(
+            transformed,
+            "text",
+            _library_designator_text(getattr(designator, "text", "")),
+        )
     return transformed
 
 
@@ -888,7 +919,9 @@ def _build_symbol_component_record(
     if component_description:
         record["ComponentDescription"] = component_description
 
-    utf8_description = getattr(template, "utf8_component_description", "")
+    utf8_description = _raw_record_value(
+        template, "%UTF8%ComponentDescription"
+    ) or getattr(template, "utf8_component_description", "")
     if utf8_description:
         record["%UTF8%ComponentDescription"] = utf8_description
 
@@ -1138,3 +1171,8 @@ def _sanitize_filename(name: str) -> str:
     for char in r'\/:*?"<>|':
         name = name.replace(char, "_")
     return name
+
+
+def _symbol_storage_name(display_name: str) -> str:
+    """Apply Altium's governed FixName transform for SchLib storage."""
+    return sanitize_stream_name(display_name)

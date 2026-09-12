@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wavenumber.dev/schemas/altium-monkey/schlib-interop-a0.schema.json",
+  "title": "Altium Monkey SchLib interoperability JSON a0",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/legacyDocument"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "const": "altium_monkey.schlib.interop.a0"
+        },
+        "document": {
+          "$ref": "#/$defs/legacyDocument"
+        }
+      },
+      "required": [
+        "schema",
+        "document"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$defs": {
+    "legacyDocument": {
+      "type": "object",
+      "properties": {
+        "Header": {
+          "type": "object"
+        },
+        "Symbols": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "Header",
+        "Symbols"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

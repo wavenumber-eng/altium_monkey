@@ -204,6 +204,10 @@ def main() -> None:
     _write_json(OUTPUT_DIR / "physical_svg_manifest.json", physical_svg_manifest)
     _write_json(OUTPUT_DIR / "netlist.json", netlist.to_json())
     _write_json(
+        OUTPUT_DIR / "schematic_bom.json",
+        design.to_bom_payload().to_json(),
+    )
+    _write_json(
         OUTPUT_DIR / "compiled_net_name_examples.json",
         _compiled_net_name_examples(design_json),
     )
@@ -218,6 +222,7 @@ def main() -> None:
     print("  output/compiled_schematic_graph_summary.json")
     print("  output/physical_svg_manifest.json")
     print("  output/netlist.json")
+    print("  output/schematic_bom.json")
     print("  output/compiled_net_name_examples.json")
     print("  output/bom_all.json")
     for page in physical_svg_manifest["pages"]:

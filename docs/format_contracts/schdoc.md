@@ -18,9 +18,10 @@
 ## Object Ownership
 
 SchDoc uses the `ObjectCollection` model. Typed views such as `components`,
-`wires`, and `notes` are live filtered views over the owned object collection.
-Use `add_object(...)`, `insert_object(...)`, `remove_object(...)`, or typed
-high-level helpers for structural mutation.
+`wires`, and `notes`, plus `objects` and `all_objects`, are read-only live views
+over the owned object collection. Do not append to a view or assign
+`all_objects`. Use `add_object(...)`, `insert_object(...)`,
+`remove_object(...)`, or typed high-level helpers for structural mutation.
 
 Owned child records must be added through their owner:
 

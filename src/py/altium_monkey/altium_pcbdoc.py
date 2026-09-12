@@ -3,7 +3,6 @@ Parse and round-trip Altium PcbDoc board documents.
 """
 
 import copy
-from dataclasses import replace
 import logging
 import math
 import struct
@@ -1130,7 +1129,9 @@ class AltiumPcbDoc:
             self._layer_kind_mapping_data.mapping
         )
         self._authoring_builder: Any | None = None
-        self._source_revision_snapshot: object | None = None
+        self._source_counted_section_counts: dict[str, int] = {}
+        self._source_counted_sections_needing_repair: set[str] = set()
+        self._source_shapebased_regions_rewrite_safe: bool = True
 
     def _profile_for_authoring_builder(self) -> "PcbDocBuildProfile":
         from .altium_pcbdoc_builder import PcbDocBuildProfile
@@ -2786,15 +2787,6 @@ class AltiumPcbDoc:
         source_bytes = filepath.read_bytes()
         pcbdoc = cls.from_bytes(source_bytes, filename=filepath, verbose=verbose)
         pcbdoc.filepath = filepath
-        from .altium_pcb_source_snapshot import PcbDocSourceRevisionSnapshot
-
-        snapshot = pcbdoc._source_revision_snapshot
-        if not isinstance(snapshot, PcbDocSourceRevisionSnapshot):
-            raise RuntimeError("PcbDoc byte parser did not capture source provenance")
-        pcbdoc._source_revision_snapshot = replace(
-            snapshot,
-            source_path=filepath,
-        )
 
         if verbose:
             log.info(
@@ -2828,13 +2820,6 @@ class AltiumPcbDoc:
         pcbdoc = cls(filename)
         with AltiumOleFile(bytes(data)) as ole:
             pcbdoc._parse_open_ole(ole, verbose=verbose)
-        from .altium_pcb_source_snapshot import capture_pcbdoc_source_revision
-
-        pcbdoc._source_revision_snapshot = capture_pcbdoc_source_revision(
-            pcbdoc,
-            source_bytes=bytes(data),
-            source_path=None,
-        )
         return pcbdoc
 
     def _parse(self, verbose: bool = False) -> None:
@@ -2882,6 +2867,7 @@ class AltiumPcbDoc:
         self._store_raw_streams(ole, verbose=verbose)
         self._parse_layer_kind_mapping()
         self._parse_union_streams(verbose=verbose)
+        self._capture_source_counted_section_state()
 
     def _parse_text_lookup_tables(
         self,
@@ -4077,6 +4063,123 @@ class AltiumPcbDoc:
             if verbose:
                 log.info(f"  Wrote passthrough stream: {stream_name}")
 
+    @staticmethod
+    def _strict_shapebased_region_count(data: bytes) -> int:
+        """Count complete shape-region frames and reject gaps or trailers."""
+        offset = 0
+        count = 0
+        while offset < len(data):
+            consumed = AltiumPcbShapeBasedRegion().parse_from_binary(data, offset)
+            if consumed <= 0 or offset + consumed > len(data):
+                raise ValueError(
+                    f"Invalid ShapeBasedRegions6 frame progress at offset {offset}"
+                )
+            offset += consumed
+            count += 1
+        if offset != len(data):
+            raise ValueError(
+                f"ShapeBasedRegions6 has trailing bytes at offset {offset}"
+            )
+        return count
+
+    def _capture_source_counted_section_state(self) -> None:
+        """Capture parse-time counts needed to distinguish deletion from no-op."""
+        self._source_counted_section_counts = {
+            "Tracks6": len(self.tracks),
+            "Arcs6": len(self.arcs),
+            "Pads6": len(self.pads),
+            "Vias6": len(self.vias),
+            "Texts6": len(self.texts),
+            "WideStrings6": len(self.widestrings_table),
+            "Fills6": len(self.fills),
+            "Regions6": len(self.regions),
+            "BoardRegions": len(self.board_regions),
+            "ShapeBasedRegions6": len(self.shapebased_regions),
+            "ComponentBodies6": len(self.component_bodies),
+            "ShapeBasedComponentBodies6": len(self.shapebased_component_bodies),
+            "Models": sum(1 for model in self.models if model.is_embedded),
+            "ModelsNoEmbed": (
+                len(self.models)
+                if self._models_stream_source == "ModelsNoEmbed/Data"
+                else 0
+            ),
+            "Rules6": len(self.rules),
+            "DifferentialPairs6": len(self.differential_pairs),
+            "Dimensions6": len(self.dimensions),
+            "ExtendedPrimitiveInformation": len(self.extended_primitive_information),
+            "CornerRadiusChamfer": len(self.corner_radius_chamfer),
+            "CustomShapes": len(self.custom_shapes),
+            "Components6": len(self.components),
+            "ViaStructureManager": len(self.via_structures),
+            "ViaStructures": len(self.via_structure_links),
+        }
+        self._source_counted_sections_needing_repair = set()
+        for section_name, expected_count in self._source_counted_section_counts.items():
+            header_key = f"{section_name}/Header"
+            data_key = f"{section_name}/Data"
+            header = self._raw_streams.get(header_key)
+            data = self._raw_streams.get(data_key)
+            has_header = header_key in self._raw_streams
+            has_data = data_key in self._raw_streams
+            if not has_header and not has_data:
+                continue
+            malformed_pair = (
+                not has_header
+                or not has_data
+                or header is None
+                or len(header) != 4
+                or struct.unpack("<I", header)[0] != expected_count
+            )
+            repair_is_lossless = expected_count > 0 or not has_data or data == b""
+            if malformed_pair and repair_is_lossless:
+                self._source_counted_sections_needing_repair.add(section_name)
+
+        raw = self._raw_streams.get("ShapeBasedRegions6/Data", b"")
+        raw_records = b"".join(
+            bytes(region._raw_binary or b"") for region in self.shapebased_regions
+        )
+        try:
+            strict_count = self._strict_shapebased_region_count(raw)
+        except (ValueError, IndexError, struct.error):
+            self._source_shapebased_regions_rewrite_safe = False
+        else:
+            self._source_shapebased_regions_rewrite_safe = (
+                strict_count == len(self.shapebased_regions) and raw_records == raw
+            )
+        if not self._source_shapebased_regions_rewrite_safe:
+            self._source_counted_sections_needing_repair.discard("ShapeBasedRegions6")
+
+    def _should_write_counted_section(
+        self,
+        section_name: str,
+        record_count: int,
+    ) -> bool:
+        return (
+            record_count > 0
+            or self._source_counted_section_counts.get(section_name, 0) > 0
+            or section_name in self._source_counted_sections_needing_repair
+        )
+
+    def _write_counted_section(
+        self,
+        writer: AltiumOleWriter,
+        section_name: str,
+        *,
+        record_count: int,
+        data: bytes,
+        force: bool = False,
+    ) -> bool:
+        """Write a counted Header/Data pair from one authoritative count."""
+        if not force and not self._should_write_counted_section(
+            section_name, record_count
+        ):
+            return False
+        if record_count < 0 or record_count > 0xFFFFFFFF:
+            raise ValueError(f"{section_name} record count exceeds uint32")
+        writer.add_stream(f"{section_name}/Header", struct.pack("<I", record_count))
+        writer.add_stream(f"{section_name}/Data", data)
+        return True
+
     def _write_via_structure_streams(
         self, writer: AltiumOleWriter, *, verbose: bool
     ) -> None:
@@ -4094,8 +4197,6 @@ class AltiumPcbDoc:
             self.vias,
             existing_structures=self.via_structures,
         )
-        if not structures and not links:
-            return
         self.via_structures = structures
         self.via_structure_links = links
         self.via_structure_manager_count = len(structures)
@@ -4106,20 +4207,19 @@ class AltiumPcbDoc:
                 len(structures),
                 len(links),
             )
-        writer.add_stream(
-            "ViaStructureManager/Header",
-            len(structures).to_bytes(4, byteorder="little"),
+        self._write_counted_section(
+            writer,
+            "ViaStructureManager",
+            record_count=len(structures),
+            data=serialize_via_structure_manager_stream(structures),
+            force=True,
         )
-        writer.add_stream(
-            "ViaStructureManager/Data",
-            serialize_via_structure_manager_stream(structures),
-        )
-        writer.add_stream(
-            "ViaStructures/Header",
-            len(links).to_bytes(4, byteorder="little"),
-        )
-        writer.add_stream(
-            "ViaStructures/Data", serialize_via_structure_links_stream(links)
+        self._write_counted_section(
+            writer,
+            "ViaStructures",
+            record_count=len(links),
+            data=serialize_via_structure_links_stream(links),
+            force=True,
         )
 
     def _write_union_streams(self, writer: AltiumOleWriter, *, verbose: bool) -> None:
@@ -4145,48 +4245,103 @@ class AltiumPcbDoc:
         """
         Write the primary primitive data streams.
         """
-        if self.tracks:
+        if self._should_write_counted_section("Tracks6", len(self.tracks)):
             if verbose:
                 log.info(f"  Writing Tracks6/Data ({len(self.tracks)} tracks)...")
-            writer.add_stream("Tracks6/Data", self._serialize_tracks())
+            self._write_counted_section(
+                writer,
+                "Tracks6",
+                record_count=len(self.tracks),
+                data=self._serialize_tracks(),
+                force=True,
+            )
 
-        if self.arcs:
+        if self._should_write_counted_section("Arcs6", len(self.arcs)):
             if verbose:
                 log.info(f"  Writing Arcs6/Data ({len(self.arcs)} arcs)...")
-            writer.add_stream("Arcs6/Data", self._serialize_arcs())
+            self._write_counted_section(
+                writer,
+                "Arcs6",
+                record_count=len(self.arcs),
+                data=self._serialize_arcs(),
+                force=True,
+            )
 
-        if self.pads:
+        if self._should_write_counted_section("Pads6", len(self.pads)):
             if verbose:
                 log.info(f"  Writing Pads6/Data ({len(self.pads)} pads)...")
-            writer.add_stream("Pads6/Data", self._serialize_pads())
+            self._write_counted_section(
+                writer,
+                "Pads6",
+                record_count=len(self.pads),
+                data=self._serialize_pads(),
+                force=True,
+            )
 
-        if self.vias:
+        if self._should_write_counted_section("Vias6", len(self.vias)):
             if verbose:
                 log.info(f"  Writing Vias6/Data ({len(self.vias)} vias)...")
-            writer.add_stream("Vias6/Data", self._serialize_vias())
+            self._write_counted_section(
+                writer,
+                "Vias6",
+                record_count=len(self.vias),
+                data=self._serialize_vias(),
+                force=True,
+            )
 
-        if self.texts:
+        if self._should_write_counted_section("Texts6", len(self.texts)):
             if verbose:
                 log.info(f"  Writing Texts6/Data ({len(self.texts)} texts)...")
-            writer.add_stream("WideStrings6/Data", self._serialize_widestrings6())
-            writer.add_stream("Texts6/Data", self._serialize_texts())
+            widestrings_data = self._serialize_widestrings6()
+            self._write_counted_section(
+                writer,
+                "WideStrings6",
+                record_count=len(self.widestrings_table),
+                data=widestrings_data,
+                force=True,
+            )
+            self._write_counted_section(
+                writer,
+                "Texts6",
+                record_count=len(self.texts),
+                data=self._serialize_texts(),
+                force=True,
+            )
 
-        if self.fills:
+        if self._should_write_counted_section("Fills6", len(self.fills)):
             if verbose:
                 log.info(f"  Writing Fills6/Data ({len(self.fills)} fills)...")
-            writer.add_stream("Fills6/Data", self._serialize_fills())
+            self._write_counted_section(
+                writer,
+                "Fills6",
+                record_count=len(self.fills),
+                data=self._serialize_fills(),
+                force=True,
+            )
 
-        if self.regions:
+        if self._should_write_counted_section("Regions6", len(self.regions)):
             if verbose:
                 log.info(f"  Writing Regions6/Data ({len(self.regions)} regions)...")
-            writer.add_stream("Regions6/Data", self._serialize_regions())
+            self._write_counted_section(
+                writer,
+                "Regions6",
+                record_count=len(self.regions),
+                data=self._serialize_regions(),
+                force=True,
+            )
 
-        if self.board_regions:
+        if self._should_write_counted_section("BoardRegions", len(self.board_regions)):
             if verbose:
                 log.info(
                     f"  Writing BoardRegions/Data ({len(self.board_regions)} board regions)..."
                 )
-            writer.add_stream("BoardRegions/Data", self._serialize_board_regions())
+            self._write_counted_section(
+                writer,
+                "BoardRegions",
+                record_count=len(self.board_regions),
+                data=self._serialize_board_regions(),
+                force=True,
+            )
 
     def _write_component_streams(
         self, writer: AltiumOleWriter, *, verbose: bool
@@ -4194,16 +4349,19 @@ class AltiumPcbDoc:
         """
         Write component placement records after semantic component mutation.
         """
-        if not self.components:
-            return
         if not self._union_authoring_dirty:
             return
         if verbose:
             log.info(
                 f"  Writing Components6/Data ({len(self.components)} components)..."
             )
-        writer.add_stream("Components6/Header", struct.pack("<I", len(self.components)))
-        writer.add_stream("Components6/Data", build_component_stream(self.components))
+        self._write_counted_section(
+            writer,
+            "Components6",
+            record_count=len(self.components),
+            data=build_component_stream(self.components),
+            force=True,
+        )
 
     def _write_shapebased_region_stream(
         self, writer: AltiumOleWriter, *, verbose: bool
@@ -4211,22 +4369,57 @@ class AltiumPcbDoc:
         """
         Write shape-based regions when OOP serialization is safe to use.
         """
-        if not self.shapebased_regions:
+        current_count = len(self.shapebased_regions)
+        if not self._should_write_counted_section("ShapeBasedRegions6", current_count):
             return
         if verbose:
             log.info(
                 f"  Writing ShapeBasedRegions6/Data ({len(self.shapebased_regions)} shape-based regions)..."
             )
-        shapebased_regions_data = self._serialize_shapebased_regions()
         raw_stream_key = "ShapeBasedRegions6/Data"
         raw_stream = self._raw_streams.get(raw_stream_key)
-        if raw_stream is not None and len(shapebased_regions_data) != len(raw_stream):
+        source_count = self._source_counted_section_counts.get("ShapeBasedRegions6", 0)
+        count_changed = current_count != source_count
+        repair_needed = (
+            "ShapeBasedRegions6" in self._source_counted_sections_needing_repair
+        )
+        if repair_needed and not self._source_shapebased_regions_rewrite_safe:
+            raise ValueError(
+                "Cannot repair ShapeBasedRegions6 Header because the source "
+                "Data stream contains unparsed bytes"
+            )
+        if count_changed and not self._source_shapebased_regions_rewrite_safe:
+            raise ValueError(
+                "Cannot change ShapeBasedRegions6 record count because the "
+                "source Data stream contains unparsed bytes"
+            )
+        shapebased_regions_data = self._serialize_shapebased_regions()
+        if count_changed:
+            try:
+                serialized_count = self._strict_shapebased_region_count(
+                    shapebased_regions_data
+                )
+            except (ValueError, IndexError, struct.error) as exc:
+                raise ValueError(
+                    "Cannot write invalid ShapeBasedRegions6 record framing"
+                ) from exc
+            if serialized_count != current_count:
+                raise ValueError(
+                    "ShapeBasedRegions6 serialized count does not match collection"
+                )
+        elif raw_stream is not None and len(shapebased_regions_data) != len(raw_stream):
             log.debug(
                 f"  SBR stream size mismatch ({len(shapebased_regions_data)} vs "
                 f"{len(raw_stream)}), using raw stream passthrough"
             )
             return
-        writer.add_stream(raw_stream_key, shapebased_regions_data)
+        self._write_counted_section(
+            writer,
+            "ShapeBasedRegions6",
+            record_count=current_count,
+            data=shapebased_regions_data,
+            force=True,
+        )
 
     def _write_component_body_streams(
         self, writer: AltiumOleWriter, *, verbose: bool
@@ -4234,31 +4427,49 @@ class AltiumPcbDoc:
         """
         Write component body streams.
         """
-        if self.component_bodies:
+        if self._should_write_counted_section(
+            "ComponentBodies6", len(self.component_bodies)
+        ):
             if verbose:
                 log.info(
                     f"  Writing ComponentBodies6/Data ({len(self.component_bodies)} component bodies)..."
                 )
-            writer.add_stream(
-                "ComponentBodies6/Data", self._serialize_component_bodies()
+            self._write_counted_section(
+                writer,
+                "ComponentBodies6",
+                record_count=len(self.component_bodies),
+                data=self._serialize_component_bodies(),
+                force=True,
             )
 
-        if self.shapebased_component_bodies:
+        if self._should_write_counted_section(
+            "ShapeBasedComponentBodies6", len(self.shapebased_component_bodies)
+        ):
             if verbose:
                 log.info(
                     "  Writing ShapeBasedComponentBodies6/Data (%d shape-based component bodies)...",
                     len(self.shapebased_component_bodies),
                 )
-            writer.add_stream(
-                "ShapeBasedComponentBodies6/Data",
-                self._serialize_shapebased_component_bodies(),
+            self._write_counted_section(
+                writer,
+                "ShapeBasedComponentBodies6",
+                record_count=len(self.shapebased_component_bodies),
+                data=self._serialize_shapebased_component_bodies(),
+                force=True,
             )
 
     def _write_model_streams(self, writer: AltiumOleWriter, *, verbose: bool) -> None:
         """
         Write embedded and linked model metadata streams.
         """
-        if not self.models:
+        embedded_models = [model for model in self.models if model.is_embedded]
+        if not (
+            self.models
+            or self._source_counted_section_counts.get("Models", 0) > 0
+            or self._source_counted_section_counts.get("ModelsNoEmbed", 0) > 0
+            or "Models" in self._source_counted_sections_needing_repair
+            or "ModelsNoEmbed" in self._source_counted_sections_needing_repair
+        ):
             return
         if verbose:
             log.info(
@@ -4266,7 +4477,6 @@ class AltiumPcbDoc:
             )
 
         models_data_all = self._serialize_models(self.models)
-        embedded_models = [model for model in self.models if model.is_embedded]
         models_data_embedded = self._serialize_models(embedded_models)
         write_models_no_embed = (
             self._models_stream_source == "ModelsNoEmbed/Data"
@@ -4274,87 +4484,123 @@ class AltiumPcbDoc:
             or len(embedded_models) != len(self.models)
         )
         if write_models_no_embed:
-            writer.add_stream("ModelsNoEmbed/Data", models_data_all)
-            writer.add_stream("Models/Data", models_data_embedded)
+            self._write_counted_section(
+                writer,
+                "ModelsNoEmbed",
+                record_count=len(self.models),
+                data=models_data_all,
+                force=True,
+            )
+            self._write_counted_section(
+                writer,
+                "Models",
+                record_count=len(embedded_models),
+                data=models_data_embedded,
+                force=True,
+            )
             return
-        writer.add_stream("Models/Data", models_data_all)
+        self._write_counted_section(
+            writer,
+            "Models",
+            record_count=len(self.models),
+            data=models_data_all,
+            force=True,
+        )
 
     def _write_support_streams(self, writer: AltiumOleWriter, *, verbose: bool) -> None:
         """
         Write remaining parsed support streams.
         """
-        if self.rules:
+        if self._should_write_counted_section("Rules6", len(self.rules)):
             if verbose:
                 log.info(f"  Writing Rules6/Data ({len(self.rules)} rules)...")
-            writer.add_stream("Rules6/Data", self._serialize_rules())
+            self._write_counted_section(
+                writer,
+                "Rules6",
+                record_count=len(self.rules),
+                data=self._serialize_rules(),
+                force=True,
+            )
 
-        if self.differential_pairs:
+        if self._should_write_counted_section(
+            "DifferentialPairs6", len(self.differential_pairs)
+        ):
             if verbose:
                 log.info(
                     "  Writing DifferentialPairs6/Data (%d pairs)...",
                     len(self.differential_pairs),
                 )
-            writer.add_stream(
-                "DifferentialPairs6/Header",
-                len(self.differential_pairs).to_bytes(4, byteorder="little"),
-            )
-            writer.add_stream(
-                "DifferentialPairs6/Data",
-                self._serialize_differential_pairs(),
+            self._write_counted_section(
+                writer,
+                "DifferentialPairs6",
+                record_count=len(self.differential_pairs),
+                data=self._serialize_differential_pairs(),
+                force=True,
             )
 
-        if self.dimensions:
+        if self._should_write_counted_section("Dimensions6", len(self.dimensions)):
             if verbose:
                 log.info(
                     f"  Writing Dimensions6/Data ({len(self.dimensions)} dimensions)..."
                 )
-            writer.add_stream(
-                "Dimensions6/Header",
-                len(self.dimensions).to_bytes(4, byteorder="little"),
+            self._write_counted_section(
+                writer,
+                "Dimensions6",
+                record_count=len(self.dimensions),
+                data=self._serialize_dimensions(),
+                force=True,
             )
-            writer.add_stream("Dimensions6/Data", self._serialize_dimensions())
 
-        if self.extended_primitive_information:
+        if self._should_write_counted_section(
+            "ExtendedPrimitiveInformation",
+            len(self.extended_primitive_information),
+        ):
             if verbose:
                 log.info(
                     "  Writing ExtendedPrimitiveInformation/Data (%d records)...",
                     len(self.extended_primitive_information),
                 )
-            writer.add_stream(
-                "ExtendedPrimitiveInformation/Data",
-                self._serialize_extended_primitive_information(),
+            self._write_counted_section(
+                writer,
+                "ExtendedPrimitiveInformation",
+                record_count=len(self.extended_primitive_information),
+                data=self._serialize_extended_primitive_information(),
+                force=True,
             )
 
         corner_records = corner_radius_chamfer_records_for_pads(
             self.corner_radius_chamfer, self.pads
         )
         self.corner_radius_chamfer = corner_records
-        if corner_records:
+        if self._should_write_counted_section(
+            "CornerRadiusChamfer", len(corner_records)
+        ):
             if verbose:
                 log.info(
                     "  Writing CornerRadiusChamfer/Data (%d records)...",
                     len(corner_records),
                 )
-            writer.add_stream(
-                "CornerRadiusChamfer/Header",
-                len(corner_records).to_bytes(4, byteorder="little"),
-            )
-            writer.add_stream(
-                "CornerRadiusChamfer/Data",
-                serialize_corner_radius_chamfer_records(corner_records),
+            self._write_counted_section(
+                writer,
+                "CornerRadiusChamfer",
+                record_count=len(corner_records),
+                data=serialize_corner_radius_chamfer_records(corner_records),
+                force=True,
             )
 
-        if self.custom_shapes:
+        if self._should_write_counted_section("CustomShapes", len(self.custom_shapes)):
             if verbose:
                 log.info(
                     "  Writing CustomShapes/Data (%d records)...",
                     len(self.custom_shapes),
                 )
-            writer.add_stream(
-                "CustomShapes/Header",
-                len(self.custom_shapes).to_bytes(4, byteorder="little"),
+            self._write_counted_section(
+                writer,
+                "CustomShapes",
+                record_count=len(self.custom_shapes),
+                data=self._serialize_custom_shapes(),
+                force=True,
             )
-            writer.add_stream("CustomShapes/Data", self._serialize_custom_shapes())
 
     def _to_file_impl(self, filepath: Path, verbose: bool = False) -> None:
         """

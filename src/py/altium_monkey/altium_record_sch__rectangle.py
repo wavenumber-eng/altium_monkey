@@ -13,9 +13,11 @@ from .altium_record_types import (
     SchGraphicalObject,
     SchRecordType,
 )
+from ._sch_managed_defaults import RECT_BORDER_COLOR, RECT_FILL_COLOR
 from .altium_serializer import AltiumSerializer, Fields
 from .altium_sch_record_helpers import (
     RectangularBoundsMilsMixin,
+    _LineStyleDirtyMixin,
     detect_case_mode_method_from_dotted_uppercase_fields,
 )
 from .altium_sch_svg_renderer import (
@@ -25,7 +27,9 @@ from .altium_sch_svg_renderer import (
 )
 
 
-class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
+class AltiumSchRectangle(
+    _LineStyleDirtyMixin, RectangularBoundsMilsMixin, SchGraphicalObject
+):
     """
     Rectangle record.
 
@@ -39,11 +43,17 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self.corner = CoordPoint()
+        if self.record_type is SchRecordType.RECTANGLE:
+            self.color = RECT_BORDER_COLOR
+            self.area_color = RECT_FILL_COLOR
+        self.corner = CoordPoint(50, 50)
         self.line_width: LineWidth = LineWidth.SMALLEST
-        self.line_style: LineStyle = LineStyle.SOLID
+        self._line_style: LineStyle = LineStyle.SOLID
+        self._line_style_dirty = False
+        self._source_line_style: LineStyle = LineStyle.SOLID
         self.is_solid: bool = True
-        self.transparent: bool = False
+        self._transparent: bool = False
+        self._transparent_dirty = False
 
     @property
     def record_type(self) -> SchRecordType:
@@ -77,16 +87,35 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
         self.line_width = LineWidth(line_width_val)
 
         # LineStyle vs LineStyleExt: prefer LineStyleExt if present and LineStyle is 0
-        line_style_val, _ = s.read_int(record, Fields.LINE_STYLE, default=0)
-        line_style_ext, has_ext = s.read_int(record, Fields.LINE_STYLE_EXT, default=0)
-        if line_style_val == 0 and has_ext and line_style_ext > 0:
-            self.line_style = LineStyle(line_style_ext)
+        if self.record_type in {
+            SchRecordType.TEXT_FRAME,
+            SchRecordType.NOTE,
+            SchRecordType.COMPILE_MASK,
+        }:
+            line_style_ext, has_ext = 0, False
         else:
-            self.line_style = LineStyle(line_style_val)
+            line_style_ext, has_ext = s.read_int(
+                record, Fields.LINE_STYLE_EXT, default=0
+            )
+        self._line_style = LineStyle(line_style_ext if has_ext else 0)
+        self._source_line_style = self.line_style
+        self._line_style_dirty = False
 
         # Parse boolean properties
-        self.is_solid, _ = s.read_bool(record, Fields.IS_SOLID, default=False)
-        self.transparent, _ = s.read_bool(record, Fields.TRANSPARENT, default=False)
+        if self.record_type is SchRecordType.COMPILE_MASK:
+            self.is_solid = True
+        else:
+            self.is_solid, _ = s.read_bool(record, Fields.IS_SOLID, default=False)
+        if self.record_type in {SchRecordType.TEXT_FRAME, SchRecordType.NOTE}:
+            self._transparent = False
+        elif self.record_type is SchRecordType.COMPILE_MASK:
+            self._transparent = True
+        else:
+            self._transparent, _ = s.read_bool(
+                record, Fields.TRANSPARENT, default=False
+            )
+        self._transparent_dirty = False
+        self._apply_imported_color_defaults(area_color=True)
 
     def serialize_to_record(self) -> dict[str, Any]:
         """
@@ -117,47 +146,99 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
             loc_y, corner_y = corner_y, loc_y
             loc_y_frac, corner_y_frac = corner_y_frac, loc_y_frac
 
-        # Write location (overwriting parent's values with normalized)
-        # Do not use skip_if_zero for normalized coordinates. The base record may
-        # still contain pre-normalization values, so the normalized coordinates
-        # must always overwrite them.
-        s.write_coord(record, "Location", "X", loc_x, loc_x_frac, raw)
-        s.write_coord(record, "Location", "Y", loc_y, loc_y_frac, raw)
+        # Existing source coordinates must be overwritten after normalization,
+        # but a detached authored origin remains omitted like Param WriteCoord.
+        self._serialize_managed_family_coord(
+            record, s, "Location", "X", loc_x, loc_x_frac
+        )
+        self._serialize_managed_family_coord(
+            record, s, "Location", "Y", loc_y, loc_y_frac
+        )
 
         # Write corner - also no skip_if_zero since raw record may have stale values
-        s.write_coord(record, "Corner", "X", corner_x, corner_x_frac, raw)
-        s.write_coord(record, "Corner", "Y", corner_y, corner_y_frac, raw)
+        self._serialize_managed_family_coord(
+            record, s, "Corner", "X", corner_x, corner_x_frac
+        )
+        self._serialize_managed_family_coord(
+            record, s, "Corner", "Y", corner_y, corner_y_frac
+        )
 
         # Write line properties - skip if default (0 = SMALLEST)
         # Altium's Library Splitter omits LineWidth=0.
         # If raw record omitted LineWidth but caller changed width to non-default
         # (e.g., clean transform setting SMALL), force emission so change persists.
-        if raw:
-            _, has_line_width = Fields.LINE_WIDTH.find_in_record(raw)
-        else:
-            has_line_width = False
-        line_width_raw = raw if has_line_width else None
-        s.write_int(
-            record,
-            Fields.LINE_WIDTH,
-            self.line_width.value,
-            line_width_raw,
-            skip_if_default=True,
-            default=0,
+        self._serialize_managed_family_int(
+            record, s, Fields.LINE_WIDTH.canonical, self.line_width.value
         )
 
-        if self.line_style != LineStyle.SOLID:
-            s.write_int(record, Fields.LINE_STYLE_EXT, self.line_style.value, raw)
+        if self.record_type not in {
+            SchRecordType.TEXT_FRAME,
+            SchRecordType.NOTE,
+            SchRecordType.COMPILE_MASK,
+        } and (raw is None or self._line_style_dirty):
+            s.remove_field(record, Fields.LINE_STYLE)
+            s.remove_field(record, Fields.LINE_STYLE_EXT)
+            if self.line_style != LineStyle.SOLID:
+                s.write_int(
+                    record,
+                    Fields.LINE_STYLE_EXT,
+                    self.line_style.value,
+                    None,
+                    force=True,
+                )
 
         # Write boolean properties
-        s.write_bool(record, Fields.IS_SOLID, self.is_solid, raw)
-        # Only write Transparent if True - Altium's Library Splitter omits Transparent=F
-        if self.transparent:
-            s.write_bool(record, Fields.TRANSPARENT, self.transparent, raw)
-        else:
-            s.remove_field(record, Fields.TRANSPARENT)
+        if self.record_type is not SchRecordType.COMPILE_MASK:
+            self._serialize_managed_family_bool(
+                record, s, Fields.IS_SOLID.canonical, self.is_solid
+            )
+        if self.record_type not in {
+            SchRecordType.TEXT_FRAME,
+            SchRecordType.NOTE,
+            SchRecordType.COMPILE_MASK,
+        }:
+            self._serialize_managed_family_bool(
+                record, s, Fields.TRANSPARENT.canonical, self.transparent
+            )
 
-        return record
+        self._move_geometry_identity_to_end_if_needed(record)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Corner.X",
+                "Corner.X_Frac",
+                "Corner.Y",
+                "Corner.Y_Frac",
+                "LineStyleExt",
+                "LineWidth",
+                "Color",
+                "AreaColor",
+                "IsSolid",
+                "Transparent",
+                "UniqueID",
+            ),
+        )
+
+    @property
+    def line_style(self) -> LineStyle:
+        return super().line_style
+
+    @line_style.setter
+    def line_style(self, value: LineStyle) -> None:
+        self._set_line_style(value)
+
+    @property
+    def transparent(self) -> bool:
+        return self._transparent
+
+    @transparent.setter
+    def transparent(self, value: bool) -> None:
+        self._transparent = bool(value)
+        self._transparent_dirty = True
 
     _detect_case_mode = detect_case_mode_method_from_dotted_uppercase_fields
 
@@ -175,9 +256,10 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
+            make_rounded_rectangle_operation,
             make_pen,
             make_solid_brush,
-            svg_coord_to_geometry,
             wrap_record_operations,
         )
 
@@ -187,18 +269,6 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
         svg_right = max(float(x1), float(x2))
         svg_top = min(float(y1), float(y2))
         svg_bottom = max(float(y1), float(y2))
-        geo_left, geo_top = svg_coord_to_geometry(
-            svg_left,
-            svg_top,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
-        )
-        geo_right, geo_bottom = svg_coord_to_geometry(
-            svg_right,
-            svg_bottom,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
-        )
         left = min(float(self.location.x), float(self.corner.x))
         right = max(float(self.location.x), float(self.corner.x))
         bottom = min(float(self.location.y), float(self.corner.y))
@@ -215,7 +285,10 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
         pen_width = (
             0
             if self.line_width == LineWidth.SMALLEST
-            else int(round(stroke_width_mils * units_per_px))
+            else _geometry_item_length(
+                stroke_width_mils * ctx.get_stroke_scale(),
+                units_per_px=units_per_px,
+            )
         )
         fill_color_raw = (
             int(ctx.area_color_override)
@@ -233,11 +306,14 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
         operations: list[SchGeometryOp] = []
         if self.is_solid:
             operations.append(
-                SchGeometryOp.rounded_rectangle(
-                    x1=geo_left,
-                    y1=geo_top,
-                    x2=geo_right,
-                    y2=geo_bottom,
+                make_rounded_rectangle_operation(
+                    x1_px=svg_left,
+                    y1_px=svg_top,
+                    x2_px=svg_right,
+                    y2_px=svg_bottom,
+                    sheet_height_px=float(ctx.sheet_height or 0.0),
+                    units_per_px=units_per_px,
+                    source_rotation=ctx.rotation,
                     brush=make_solid_brush(
                         fill_color_raw,
                         alpha=SEMI_TRANSPARENT_ALPHA if self.transparent else 0xFF,
@@ -246,11 +322,14 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
             )
 
         operations.append(
-            SchGeometryOp.rounded_rectangle(
-                x1=geo_left,
-                y1=geo_top,
-                x2=geo_right,
-                y2=geo_bottom,
+            make_rounded_rectangle_operation(
+                x1_px=svg_left,
+                y1_px=svg_top,
+                x2_px=svg_right,
+                y2_px=svg_bottom,
+                sheet_height_px=float(ctx.sheet_height or 0.0),
+                units_per_px=units_per_px,
+                source_rotation=ctx.rotation,
                 pen=make_pen(
                     stroke_color_raw,
                     width=pen_width,
@@ -260,9 +339,10 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
             )
         )
 
+        unique_id = str(self.unique_id or "")
         return SchGeometryRecord(
-            handle=f"{document_id}\\{self.unique_id}",
-            unique_id=self.unique_id,
+            handle=f"{document_id}\\{unique_id}",
+            unique_id=unique_id,
             kind="rectangle",
             object_id="eRectangle",
             bounds=SchGeometryBounds(
@@ -272,7 +352,7 @@ class AltiumSchRectangle(RectangularBoundsMilsMixin, SchGraphicalObject):
                 bottom=int(round((bottom - inflate) * 100000)),
             ),
             operations=wrap_record_operations(
-                self.unique_id,
+                unique_id,
                 operations,
                 units_per_px=units_per_px,
             ),

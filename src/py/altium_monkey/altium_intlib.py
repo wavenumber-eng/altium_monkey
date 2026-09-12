@@ -8,6 +8,7 @@ import zlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from ._safe_artifact_name import dedupe_artifact_basename, safe_artifact_basename
 from .altium_ole import AltiumOleFile
 
 _COMPRESSED_PREFIX = 0x02
@@ -353,13 +354,13 @@ class AltiumIntLib:
         use_original_filenames: bool,
     ) -> list[IntLibSource]:
         extracted: list[IntLibSource] = []
-        used_by_kind: dict[str, set[str]] = {}
+        used_by_kind: dict[str, dict[str, int]] = {}
         for source in self.get_source_entries():
             kind_dir = output_dir / source.kind
             kind_dir.mkdir(parents=True, exist_ok=True)
             filename = _choose_output_filename(source, use_original_filenames)
             filename = _dedupe_filename(
-                filename, used_by_kind.setdefault(source.kind, set())
+                filename, used_by_kind.setdefault(source.kind, {})
             )
             output_path = kind_dir / filename
             if output_path.exists() and not overwrite:
@@ -436,8 +437,7 @@ def _portable_basename(path: str) -> str:
 
 
 def _safe_filename(filename: str) -> str:
-    cleaned = "".join("_" if c in '<>:"/\\|?*' or ord(c) < 32 else c for c in filename)
-    return cleaned or "source.bin"
+    return safe_artifact_basename(filename, fallback="source.bin")
 
 
 def _choose_output_filename(source: IntLibSource, use_original_filenames: bool) -> str:
@@ -446,15 +446,8 @@ def _choose_output_filename(source: IntLibSource, use_original_filenames: bool) 
     return _safe_filename(source.stream_path.rsplit("/", 1)[-1])
 
 
-def _dedupe_filename(filename: str, used: set[str]) -> str:
-    path = Path(filename)
-    candidate = filename
-    index = 2
-    while candidate.casefold() in used:
-        candidate = f"{path.stem}_{index}{path.suffix}"
-        index += 1
-    used.add(candidate.casefold())
-    return candidate
+def _dedupe_filename(filename: str, used: dict[str, int]) -> str:
+    return dedupe_artifact_basename(filename, used)
 
 
 __all__ = [

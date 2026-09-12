@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from functools import cmp_to_key
 from typing import Protocol, TypeAlias
 
 from .altium_sch_enums import PinElectrical
+from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
 from .altium_netlist_model import Net, PinType, UnionFind
+from .altium_managed_alpha_numeric import managed_alpha_numeric_compare
 from .altium_prjpcb import NetIdentifierScope
 
 
@@ -191,10 +194,16 @@ def _normalize_text(text: str, strict: bool = True) -> str:
     return text
 
 
-def _evaluate_altium_expression(expr: str, params: dict[str, str]) -> str:
+def _evaluate_altium_expression(
+    expr: str,
+    params: dict[str, str],
+    *,
+    preserve_unresolved_formula: bool = False,
+) -> str:
     """Evaluate a simple Altium parameter expression."""
 
     result_parts = []
+    has_unresolved_identifier = False
     i = 0
     expr_len = len(expr)
 
@@ -219,19 +228,21 @@ def _evaluate_altium_expression(expr: str, params: dict[str, str]) -> str:
             while j < expr_len and (expr[j].isalnum() or expr[j] == "_"):
                 j += 1
             ident = expr[i:j]
-            ident_lower = ident.lower()
+            ident_key = dotnet_ordinal_ignore_case_key(ident)
             found = False
             for key, value in params.items():
-                if key.lower() == ident_lower:
+                if dotnet_ordinal_ignore_case_key(key) == ident_key:
                     result_parts.append(value)
                     found = True
                     break
             if not found:
-                result_parts.append("")
+                has_unresolved_identifier = True
             i = j
             continue
         i += 1
 
+    if preserve_unresolved_formula and has_unresolved_identifier:
+        return f"={expr}"
     return "".join(result_parts)
 
 
@@ -253,22 +264,26 @@ def _resolve_component_display_value(
     expr = comment[1:]
     if "+" not in expr and "'" not in expr:
         param_name = expr
-        if param_name.lower() == "value":
+        param_key = dotnet_ordinal_ignore_case_key(param_name)
+        if param_key == dotnet_ordinal_ignore_case_key("value"):
             return comp.value
         param_value = comp.get_parameter(param_name)
         if param_value is not None:
             return param_value
-        if param_name.lower() == "description" and component_description:
+        if (
+            param_key == dotnet_ordinal_ignore_case_key("description")
+            and component_description
+        ):
             return component_description
         if sheet_params:
             for key, value in sheet_params.items():
-                if key.lower() == param_name.lower():
+                if dotnet_ordinal_ignore_case_key(key) == param_key:
                     return value
         if project_params:
             for key, value in project_params.items():
-                if key.lower() == param_name.lower():
+                if dotnet_ordinal_ignore_case_key(key) == param_key:
                     return value
-        return ""
+        return comment
 
     merged_params = {}
     if project_params:
@@ -281,7 +296,11 @@ def _resolve_component_display_value(
     for param in getattr(comp, "parameters", []):
         if hasattr(param, "name") and hasattr(param, "text"):
             merged_params[param.name] = param.text
-    return _evaluate_altium_expression(expr, merged_params)
+    return _evaluate_altium_expression(
+        expr,
+        merged_params,
+        preserve_unresolved_formula=True,
+    )
 
 
 def _points_connected(
@@ -327,46 +346,46 @@ def _emit_port_named_nets(
     nets: list[Net],
     processed_roots: set[RootPoint],
     create_net: _CreateNetFn,
-    port_names_ordered: list[str],
-    final_name_to_root: dict[str, RootPoint],
+    port_net_names: dict[RootPoint, str],
     final_pin_groups: PinGroupsByRoot,
 ) -> None:
     """Emit nets named by ports."""
 
-    port_names_sorted = sorted(
-        set(port_names_ordered),
-        key=_altium_net_total_sort_key,
+    port_rows = sorted(
+        port_net_names.items(),
+        key=lambda row: _altium_net_total_sort_key(row[1]),
         reverse=True,
     )
-    for name in port_names_sorted:
-        if name in final_name_to_root:
-            root = final_name_to_root[name]
-            if root not in processed_roots:
-                nets.append(create_net(name, final_pin_groups.get(root, []), root))
-                processed_roots.add(root)
+    for root, name in port_rows:
+        if root not in processed_roots:
+            nets.append(create_net(name, final_pin_groups.get(root, []), root))
+            processed_roots.add(root)
 
 
 def _emit_named_roots(
     nets: list[Net],
     processed_roots: set[RootPoint],
     create_net: _CreateNetFn,
-    names_sorted: list[str],
-    final_name_to_root: dict[str, RootPoint],
+    selected_names: dict[RootPoint, str],
     final_pin_groups: PinGroupsByRoot,
     *,
     allow_empty_pins: bool = False,
 ) -> None:
     """Emit nets for a sorted list of explicit names."""
 
-    for name in names_sorted:
-        if name in final_name_to_root:
-            root = final_name_to_root[name]
-            if root not in processed_roots:
-                if root in final_pin_groups and final_pin_groups[root]:
-                    nets.append(create_net(name, final_pin_groups[root], root))
-                elif allow_empty_pins:
-                    nets.append(create_net(name, [], root))
-                processed_roots.add(root)
+    rows = sorted(
+        selected_names.items(),
+        key=lambda row: _altium_net_total_sort_key(row[1]),
+        reverse=True,
+    )
+    for root, name in rows:
+        if root in processed_roots:
+            continue
+        if root in final_pin_groups and final_pin_groups[root]:
+            nets.append(create_net(name, final_pin_groups[root], root))
+        elif allow_empty_pins:
+            nets.append(create_net(name, [], root))
+        processed_roots.add(root)
 
 
 def _find_root_name_in_map(
@@ -394,6 +413,8 @@ def _emit_bridge_roots(
     final_se_ids: dict[RootPoint, list[str]],
     port_roots: RootsByName,
     se_roots: RootsByName,
+    exact_name_by_root: Mapping[RootPoint, str] | None = None,
+    eligible_interface_ids: frozenset[str] | None = None,
 ) -> None:
     """Emit hierarchy bridge roots that still need a named placeholder net."""
 
@@ -403,23 +424,75 @@ def _emit_bridge_roots(
     ):
         return
 
-    bridge_roots: set[RootPoint] = set()
-    for root in final_port_ids:
-        if root not in processed_roots and root not in final_pin_groups:
-            bridge_roots.add(root)
-    for root in final_se_ids:
-        if root not in processed_roots and root not in final_pin_groups:
-            bridge_roots.add(root)
-
+    bridge_roots = _unprocessed_bridge_roots(
+        processed_roots,
+        final_pin_groups,
+        final_port_ids,
+        final_se_ids,
+    )
     for root in sorted(bridge_roots):
-        name = final_net_names.get(root)
-        if not name:
-            name = _find_root_name_in_map(uf, root, port_roots)
-        if not name:
-            name = _find_root_name_in_map(uf, root, se_roots)
+        if not _bridge_root_is_eligible(
+            root,
+            final_port_ids,
+            final_se_ids,
+            eligible_interface_ids,
+        ):
+            continue
+        name = _bridge_root_name(
+            root,
+            uf,
+            final_net_names,
+            port_roots,
+            se_roots,
+            exact_name_by_root,
+        )
         if name:
             nets.append(create_net(name, [], root))
             processed_roots.add(root)
+
+
+def _unprocessed_bridge_roots(
+    processed_roots: set[RootPoint],
+    final_pin_groups: PinGroupsByRoot,
+    final_port_ids: Mapping[RootPoint, Sequence[str]],
+    final_se_ids: Mapping[RootPoint, Sequence[str]],
+) -> set[RootPoint]:
+    return {
+        root
+        for root in {*final_port_ids, *final_se_ids}
+        if root not in processed_roots and root not in final_pin_groups
+    }
+
+
+def _bridge_root_is_eligible(
+    root: RootPoint,
+    final_port_ids: Mapping[RootPoint, Sequence[str]],
+    final_se_ids: Mapping[RootPoint, Sequence[str]],
+    eligible_interface_ids: frozenset[str] | None,
+) -> bool:
+    if eligible_interface_ids is None:
+        return True
+    return any(
+        dotnet_ordinal_ignore_case_key(identity) in eligible_interface_ids
+        for identity in (*final_port_ids.get(root, ()), *final_se_ids.get(root, ()))
+    )
+
+
+def _bridge_root_name(
+    root: RootPoint,
+    uf: UnionFind[RootPoint],
+    final_net_names: Mapping[RootPoint, str],
+    port_roots: RootsByName,
+    se_roots: RootsByName,
+    exact_name_by_root: Mapping[RootPoint, str] | None,
+) -> str | None:
+    exact_name = exact_name_by_root.get(root) if exact_name_by_root else None
+    return (
+        final_net_names.get(root)
+        or exact_name
+        or _find_root_name_in_map(uf, root, port_roots)
+        or _find_root_name_in_map(uf, root, se_roots)
+    )
 
 
 def _emit_auto_named_nets(
@@ -429,6 +502,8 @@ def _emit_auto_named_nets(
     uf: UnionFind[RootPoint],
     final_pin_groups: PinGroupsByRoot,
     floating_pin_roots: set[RootPoint],
+    *,
+    include_single_pin_nets: bool,
 ) -> None:
     """Emit auto-named nets for the remaining pin groups."""
 
@@ -437,22 +512,39 @@ def _emit_auto_named_nets(
 
     for root, pins in final_pin_groups.items():
         if root not in processed_roots and pins:
-            if len(pins) == 1 and root in final_floating_roots:
+            if (
+                not include_single_pin_nets
+                and len(pins) == 1
+                and root in final_floating_roots
+            ):
                 continue
-            sorted_pins = sorted(
-                pins,
-                key=lambda pin: (
-                    _natural_sort_key(pin.component_designator),
-                    _natural_sort_key(pin.designator),
-                ),
-            )
+
+            def compare_pins(left: _NetPinLike, right: _NetPinLike) -> int:
+                component_order = managed_alpha_numeric_compare(
+                    left.component_designator,
+                    right.component_designator,
+                )
+                if component_order:
+                    return component_order
+                return managed_alpha_numeric_compare(left.designator, right.designator)
+
+            sorted_pins = sorted(pins, key=cmp_to_key(compare_pins))
             first_pin = sorted_pins[0]
             name = f"Net{first_pin.component_designator}_{first_pin.designator}"
-            auto_nets.append((name, pins, root))
+            auto_nets.append(
+                (
+                    name,
+                    pins,
+                    root,
+                    len(pins) == 1 and root in final_floating_roots,
+                )
+            )
 
     auto_nets.sort(key=lambda item: _altium_net_total_sort_key(item[0]), reverse=True)
-    for name, pins, root in auto_nets:
-        nets.append(create_net(name, pins, root, is_auto_named=True))
+    for name, pins, root, single_pin_retention_only in auto_nets:
+        net = create_net(name, pins, root, is_auto_named=True)
+        net._single_pin_retention_only = single_pin_retention_only
+        nets.append(net)
         processed_roots.add(root)
 
 

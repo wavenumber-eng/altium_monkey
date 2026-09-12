@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 class AltiumSchFileName(AltiumSchSheetSymbolChildLabel):
     """
     FILE_NAME record.
-    
+
     File name label on hierarchical sheet symbol.
     Inherits all behavior from LABEL.
     """
@@ -32,11 +32,12 @@ class AltiumSchFileName(AltiumSchSheetSymbolChildLabel):
         document_id: str,
         units_per_px: int = 64,
     ) -> "SchGeometryRecord | None":
-        record = super().to_geometry(ctx, document_id=document_id, units_per_px=units_per_px)
+        record = super().to_geometry(
+            ctx, document_id=document_id, units_per_px=units_per_px
+        )
         if record is None:
             return None
         return replace(record, kind="sheetfilename", object_id="eSheetFileName")
 
     def __repr__(self) -> str:
         return f"<AltiumSchFileName '{self.text}'>"
-

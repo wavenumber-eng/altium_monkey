@@ -17,8 +17,20 @@ from typing import TYPE_CHECKING, Any
 
 from .altium_api_markers import public_api
 from ._version import __version__, __version_info__
+from .altium_sch_interop_contract import (
+    SCHDOC_INTEROP_SCHEMA,
+    SCHLIB_INTEROP_SCHEMA,
+    validate_schdoc_interop_json,
+    validate_schlib_interop_json,
+)
 
 if TYPE_CHECKING:
+    from .altium_netlist_model import NetlistSourcePage
+    from .altium_schematic_bom import SchematicBomPayload
+    from .altium_schematic_contract import (
+        SchematicContractError,
+        SchematicContractLimits,
+    )
     from .altium_compiled_design_model import (
         AltiumCompileDiagnostic,
         AltiumCompiledAnnotationState,
@@ -34,12 +46,17 @@ if TYPE_CHECKING:
         AltiumCompiledPhysicalSheetSymbol,
         AltiumCompiledSheetSymbol,
         AltiumProjectCompileOptions,
+        validate_compiled_design_payload,
     )
     from .altium_compiled_schematic_graph import (
         AltiumCompiledSchematicGraph,
         AltiumPhysicalPageMetadata,
     )
-    from .altium_design import AltiumDesign
+    from .altium_design import (
+        AltiumDesign,
+        AltiumProjectCapabilityError,
+        AltiumProjectLoadMode,
+    )
     from .altium_draftsman import (
         AltiumDraftsmanDocument,
         AltiumDraftsmanDocumentOptions,
@@ -85,6 +102,11 @@ if TYPE_CHECKING:
         AltiumTransmissionLineSpec,
     )
     from .altium_schdoc import AltiumSchDoc
+    from .altium_sch_geometry_oracle import (
+        SCH_GEOMETRY_IR_SCHEMA,
+        SCH_GEOMETRY_ORACLE_SCHEMA,
+        validate_sch_geometry_ir_payload,
+    )
     from .altium_schlib import AltiumSchLib
     from .altium_stackup import AltiumStackupDocument, StackupTextFeature
     from .altium_stackupx import (
@@ -324,6 +346,7 @@ from .altium_sch_object_factory import (
 from .altium_sch_svg_renderer import (
     SchCompileMaskRenderMode,
     SchJunctionZOrder,
+    SchPaintColorMode,
     SchSvgRenderContext,
     SchSvgRenderOptions,
 )
@@ -663,6 +686,12 @@ __all__ = [
     "EmbeddedModel",
     # High-level parsers (lazy loaded)
     "AltiumDesign",
+    "AltiumProjectCapabilityError",
+    "AltiumProjectLoadMode",
+    "NetlistSourcePage",
+    "SchematicBomPayload",
+    "SchematicContractError",
+    "SchematicContractLimits",
     "AltiumCompileDiagnostic",
     "AltiumCompiledAnnotationState",
     "AltiumCompiledComponent",
@@ -679,8 +708,16 @@ __all__ = [
     "AltiumCompiledPhysicalSheetSymbol",
     "AltiumCompiledSheetSymbol",
     "AltiumProjectCompileOptions",
+    "validate_compiled_design_payload",
     "AltiumSchLib",
     "AltiumSchDoc",
+    "SCHDOC_INTEROP_SCHEMA",
+    "SCHLIB_INTEROP_SCHEMA",
+    "validate_schdoc_interop_json",
+    "validate_schlib_interop_json",
+    "SCH_GEOMETRY_IR_SCHEMA",
+    "SCH_GEOMETRY_ORACLE_SCHEMA",
+    "validate_sch_geometry_ir_payload",
     "AltiumPcbDoc",
     "AltiumPcbLib",
     "AltiumPcbFootprint",
@@ -709,6 +746,7 @@ __all__ = [
     "SchSvgRenderOptions",
     "SchJunctionZOrder",
     "SchCompileMaskRenderMode",
+    "SchPaintColorMode",
     "PcbSvgRenderContext",
     "PcbSvgRenderOptions",
     "PcbSvgRenderer",
@@ -905,6 +943,12 @@ def _mark_declared_public_surfaces() -> None:
 _LAZY_PUBLIC_EXPORTS = {
     # High-level parsers
     "AltiumDesign": "altium_design",
+    "AltiumProjectCapabilityError": "altium_design",
+    "AltiumProjectLoadMode": "altium_design",
+    "NetlistSourcePage": "altium_netlist_model",
+    "SchematicBomPayload": "altium_schematic_bom",
+    "SchematicContractError": "altium_schematic_contract",
+    "SchematicContractLimits": "altium_schematic_contract",
     "AltiumCompileDiagnostic": "altium_compiled_design_model",
     "AltiumCompiledAnnotationState": "altium_compiled_design_model",
     "AltiumCompiledComponent": "altium_compiled_design_model",
@@ -921,6 +965,7 @@ _LAZY_PUBLIC_EXPORTS = {
     "AltiumCompiledPhysicalSheetSymbol": "altium_compiled_design_model",
     "AltiumCompiledSheetSymbol": "altium_compiled_design_model",
     "AltiumProjectCompileOptions": "altium_compiled_design_model",
+    "validate_compiled_design_payload": "altium_compiled_design_model",
     "AltiumSchLib": "altium_schlib",
     "AltiumPcbDoc": "altium_pcbdoc",
     "PcbDocBuilder": "altium_pcbdoc_builder",
@@ -929,6 +974,9 @@ _LAZY_PUBLIC_EXPORTS = {
     "AltiumPcbFootprint": "altium_pcblib",
     "AltiumPcbLibPrimitiveParameterGroup": "altium_pcblib",
     "AltiumSchDoc": "altium_schdoc",
+    "SCH_GEOMETRY_IR_SCHEMA": "altium_sch_geometry_oracle",
+    "SCH_GEOMETRY_ORACLE_SCHEMA": "altium_sch_geometry_oracle",
+    "validate_sch_geometry_ir_payload": "altium_sch_geometry_oracle",
     # Draftsman
     "AltiumDraftsmanDocument": "altium_draftsman",
     "AltiumDraftsmanPage": "altium_draftsman",

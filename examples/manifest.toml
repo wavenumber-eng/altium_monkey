@@ -1368,6 +1368,7 @@ outputs = [
   "hello_altium_design/output/physical_svg_manifest.json",
   "hello_altium_design/output/physical_svgs/",
   "hello_altium_design/output/netlist.json",
+  "hello_altium_design/output/schematic_bom.json",
   "hello_altium_design/output/compiled_net_name_examples.json",
   "hello_altium_design/output/bom_all.json",
   "hello_altium_design/output/variant_boms/",
@@ -1800,7 +1801,7 @@ tags = ["schlib", "symbol", "split"]
 [[examples]]
 id = "schlib_merge"
 title = "Merge SchLib files"
-summary = "Scan a folder of SchLib files, merge all symbols into one combined SchLib, and write a merge manifest."
+summary = "Scan a folder of SchLib files, merge fully parseable symbols, and report any skipped legacy libraries in the manifest."
 areas = ["schlib"]
 status = "ready"
 entrypoint = "schlib_merge/schlib_merge.py"

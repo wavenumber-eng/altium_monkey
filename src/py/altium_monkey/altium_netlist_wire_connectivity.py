@@ -6,14 +6,11 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from enum import Enum
 from math import hypot
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from .altium_netlist_common import _points_connected
 from .altium_netlist_model import UnionFind
 from .altium_sch_enums import PinElectrical
-
-if TYPE_CHECKING:
-    from .altium_schdoc import AltiumSchDoc
 
 
 Point = tuple[int, int]
@@ -51,6 +48,14 @@ class _HasLocationRecord(Protocol):
     @property
     def location(self) -> _PointLike:
         raise NotImplementedError("record location")
+
+
+class _WireGraphSource(Protocol):
+    def get_wires(self) -> Iterable[_WireLike]: ...
+
+    def get_junctions(self) -> Iterable[_HasLocationRecord]: ...
+
+    def get_all_pins(self) -> Iterable[_PinLike]: ...
 
 
 class _NetLabelLike(Protocol):
@@ -766,7 +771,7 @@ def connect_endpoint_t_junctions(
 
 
 def build_wire_graph(
-    schdoc: "AltiumSchDoc",
+    schdoc: _WireGraphSource,
     tolerance: int = 0,
     *,
     cell_size: int = 100,
@@ -814,7 +819,7 @@ def build_wire_graph(
 
 
 def group_pins_by_network(
-    schdoc: "AltiumSchDoc",
+    schdoc: _WireGraphSource,
     union_find: UnionFind[RootPoint],
     wire_index: WireGeometryIndex,
     internal_tolerance: int = 0,

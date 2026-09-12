@@ -2,6 +2,13 @@
 
 `AltiumPcbDoc` is the public board model for PCB documents.
 
+Ordinary `from_file(...)` and `from_bytes(...)` loading parses the requested
+board without constructing a second whole-document normalized-state snapshot.
+Loading establishes parseability of supported structures, not compilation,
+electrical validity, or complete semantic certification. Output workflows are
+expected to start from a caller-selected saved input and validate the facts
+needed by that output.
+
 ## Stable Surface
 
 - Parse existing `.PcbDoc` files.
@@ -27,6 +34,9 @@
   object-oriented dimension model.
 - Author round, square, and slotted pad drill-hole shapes. Slotted holes
   require a positive slot length; square holes require a positive drill size.
+- Inspect and change a component pad's stored removed-copper-land state in
+  strict legacy Top/Mid1..Mid30/Bottom order while retaining its per-layer
+  geometry and full-stack tail.
 - Inspect user-defined PCB unions through union-name records, typed smart-union
   records, and computed user-union member summaries.
 - Inspect and author semantic mechanical layer kind assignments through
@@ -47,6 +57,30 @@ document-owned helpers such as `add_track(...)`, `add_via(...)`,
 
 Direct record-list mutation remains an advanced escape hatch for narrow edits
 or preservation work.
+
+For every counted section that the writer owns, `save(...)` treats `Header`
+and `Data` as one serialization unit. `Header` is the current little-endian
+32-bit record count and `Data` is the matching serialized collection. A
+transition from one record to none writes a zero Header and empty Data instead
+of falling back to the original source streams. A transition from none to one
+creates both streams. Unsupported and otherwise unowned sections remain raw
+passthrough. A source-backed save may still regenerate an owned section that
+the caller did not edit; streams outside the selected regenerated set remain
+byte-identical.
+
+This is a serialization-integrity rule, not a generic object-management API.
+Direct list mutation does not imply cascading removal or repair of component
+ownership, primitive indexes, custom-shape relationships, model references,
+or other companion state. Use a document-owned helper when one exists. The
+current direct-list behavior remains available for narrow compatibility
+workflows, but callers must coordinate related lists and references themselves.
+
+Some owned streams are deliberately coupled: text serialization owns its wide
+string table, embedded and non-embedded model catalogs have different counts,
+and several region, component-body, corner/chamfer, custom-shape, and
+via-structure streams have companion relationships. Count-changing
+shape-based-region serialization fails closed when the source contains opaque
+bytes that cannot be proven safe to regenerate.
 
 ## Custom Pads
 
@@ -109,6 +143,29 @@ percents write only the legacy integer lane, so existing whole-number output
 stays byte-identical. Fractional percents write both lanes and are supported
 for simple top- or bottom-layer pads; they are not combined with per-layer pad
 body overrides. Round-tripped documents preserve both lanes.
+
+## Component-pad removed copper lands
+
+`AltiumPcbPad.removed_copper_layers` is an immutable 32-value snapshot in
+legacy copper-layer order. Use `is_copper_land_removed(layer)` for one strict
+`PcbLayer` query and `set_copper_land_removed(layer, removed)` for an explicit
+Boolean mutation. `has_removed_copper_layer_map` distinguishes a persisted
+complete map from an absent map; `removed_copper_layer_map_is_canonical`
+reports whether every persisted byte is zero or one.
+
+`has_stored_copper_land_on_layer(layer)` is a structural query. It combines
+the stored removed state with the pad's owning layer, but it does not render,
+delete geometry, recompute connectivity, or decide manufacturing output.
+
+Save patches only the owned map byte when a valid full-stack table is already
+present. The first true state on a valid absent, geometry-only, or all-false
+map-only pad materializes Altium's 651-byte base form. Original per-layer
+geometry, optional map state, full-stack entries, unknown entry suffixes, and
+residual bytes remain lossless. Ambiguous or malformed layouts fail closed.
+An all-false map-only pad permits one pending first-true change (or its
+reversion) before save; stage additional removals after saving and reopening
+the proven framed form.
+Via removed-layer behavior and storage are separate and unchanged.
 
 ## Dimensions
 

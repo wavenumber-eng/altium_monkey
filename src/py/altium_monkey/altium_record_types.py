@@ -11,14 +11,26 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
 from math import isfinite
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, cast, overload
 
 from .altium_sch_enums import PinOrientation as PinOrientation  # noqa: F401
 from .altium_sch_enums import SchHorizontalAlign as SchHorizontalAlign  # noqa: F401
 from .altium_sch_enums import TextJustification as TextJustification  # noqa: F401
 from .altium_sch_enums import TextOrientation as TextOrientation  # noqa: F401
+from ._sch_managed_defaults import GRAPHICAL_FILL_COLOR
+
+_RecordFields = dict[str, Any]
+MAX_INDEXED_ITEMS_PER_RECORD = 65_536
+_MANAGED_GEOMETRY_WIRING_ORIGIN_RECORD_CODES = frozenset(
+    {1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 28, 30}
+)
+_MANAGED_GEOMETRY_DYNAMIC_UNIQUE_ID_RECORD_CODES = frozenset(
+    {5, 6, 7, 8, 10, 11, 12, 13, 14, 28, 30}
+)
 
 if TYPE_CHECKING:
+    from .altium_font_manager import FontIDManager
+    from .altium_serializer import AltiumSerializer
     from .altium_sch_binding import SchematicBindingContext
 
 # =============================================================================
@@ -119,9 +131,56 @@ def generate_unique_id() -> str:
     return "".join(random.choices(string.ascii_uppercase, k=8))
 
 
+def _generate_available_unique_id(
+    generate: Callable[[], str], is_in_use: Callable[[str], bool]
+) -> str:
+    """Generate identifiers until the owning container accepts one."""
+    while True:
+        unique_id = generate()
+        if not is_in_use(unique_id):
+            return unique_id
+
+
+class _ManagedUniqueIdOwner:
+    """Shared managed identity lifecycle for document and library objects."""
+
+    unique_id: str | None
+    _is_unique_id_locked: bool
+
+    def _set_unique_id(self, value: str) -> None:
+        """Apply the managed SetUniqueId lock rule."""
+        if not self._is_unique_id_locked:
+            self._update_unique_id(value)
+
+    def _update_unique_id(self, value: str) -> None:
+        """Replace the UniqueID even when managed identity is locked."""
+        self.unique_id = value
+
+    def _reset_unique_id(self) -> None:
+        """Clear the UniqueID without synthesizing a replacement."""
+        self.unique_id = ""
+
+    def _set_unique_id_locked(self, locked: bool) -> None:
+        """Set the document-managed identity lock state."""
+        self._is_unique_id_locked = locked
+
+
 # =============================================================================
 # Type Enforcement Descriptor
 # =============================================================================
+
+
+def _require_int_width(field: str, value: int, minimum: int, maximum: int) -> int:
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{field} is outside [{minimum}, {maximum}]")
+    return value
+
+
+def _require_optional_int_width(
+    field: str, value: int | None, minimum: int, maximum: int
+) -> None:
+    if value is not None:
+        _require_int_width(field, value, minimum, maximum)
 
 
 class IntField:
@@ -137,8 +196,16 @@ class IntField:
             font_id = IntField(default=1)
     """
 
-    def __init__(self, default: int = 0) -> None:
+    def __init__(
+        self,
+        default: int = 0,
+        *,
+        minimum: int | None = None,
+        maximum: int | None = None,
+    ) -> None:
         self.default = int(default)
+        self.minimum = minimum
+        self.maximum = maximum
         self.name = ""  # Set by __set_name__
         self.private_name = ""
 
@@ -152,7 +219,12 @@ class IntField:
         return getattr(obj, self.private_name, self.default)
 
     def __set__(self, obj: Any, value: Any) -> None:
-        setattr(obj, self.private_name, int(value))
+        parsed = int(value)
+        if self.minimum is not None and parsed < self.minimum:
+            raise ValueError(f"{self.name} is below {self.minimum}")
+        if self.maximum is not None and parsed > self.maximum:
+            raise ValueError(f"{self.name} is above {self.maximum}")
+        setattr(obj, self.private_name, parsed)
 
 
 class OptionalIntField:
@@ -166,7 +238,11 @@ class OptionalIntField:
             owner_part_id = OptionalIntField()  # Can be None or int
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, minimum: int | None = None, maximum: int | None = None
+    ) -> None:
+        self.minimum = minimum
+        self.maximum = maximum
         self.name = ""  # Set by __set_name__
         self.private_name = ""
 
@@ -183,7 +259,12 @@ class OptionalIntField:
         if value is None:
             setattr(obj, self.private_name, None)
         else:
-            setattr(obj, self.private_name, int(value))
+            parsed = int(value)
+            if self.minimum is not None and parsed < self.minimum:
+                raise ValueError(f"{self.name} is below {self.minimum}")
+            if self.maximum is not None and parsed > self.maximum:
+                raise ValueError(f"{self.name} is above {self.maximum}")
+            setattr(obj, self.private_name, parsed)
 
 
 class SchRecordType(IntEnum):
@@ -241,6 +322,18 @@ class SchRecordType(IntEnum):
     MAP_DEFINER = 47  # Map definition
     IMPL_PARAMS = 48  # Implementation parameters
 
+    # Harness-layout document records
+    HARNESS_COMPONENT = 106
+    HARNESS_SPLICE = 108
+    HARNESS_LAYOUT_LABEL = 109
+    HARNESS_LAYOUT_CONNECTION_POINT = 110
+    HARNESS_BUNDLE = 111
+    LINE_VIEW = 126
+    HARNESS_LAYOUT_COVERING = 128
+    REUSE_BLOCK_IMPLEMENTATION_INFO = 138
+    HARNESS_CAVITY = 140
+    HARNESS_CAVITY_COMPONENT = 141
+
     # Additional records
     NOTE = 209  # Annotation note
     COMPILE_MASK = 211  # Compile mask
@@ -248,8 +341,15 @@ class SchRecordType(IntEnum):
     HARNESS_ENTRY = 216  # Harness entry point
     HARNESS_TYPE = 217  # Harness type definition
     SIGNAL_HARNESS = 218  # Signal harness
+    HIGH_LEVEL_CODE_SYMBOL = 220
+    HIGH_LEVEL_CODE_ENTRY = 221
+    HIGH_LEVEL_CODE_NAME = 222
+    HIGH_LEVEL_CODE_FILE_NAME = 223
     BLANKET = 225  # Blanket directive
     HYPERLINK = 226  # Hyperlink
+    RICH_TEXT_DOCUMENT = 240
+    RTF_LINK = 241
+    OBJECT_DEFINITION = 129  # ObjectDefinitions stream metadata
 
 
 class PcbRecordType(IntEnum):
@@ -1262,7 +1362,33 @@ class Primitive(ABC):
         return f"<{self.__class__.__name__} record={self.record_type.name}>"
 
 
-class SchPrimitive(Primitive):
+class _AccessibilityFlag:
+    """Preserve the public flag while tracking assignments for private snapshots."""
+
+    @overload
+    def __get__(
+        self, obj: None, objtype: type["SchPrimitive"] | None = None
+    ) -> "_AccessibilityFlag": ...
+
+    @overload
+    def __get__(
+        self, obj: "SchPrimitive", objtype: type["SchPrimitive"] | None = None
+    ) -> bool: ...
+
+    def __get__(
+        self, obj: "SchPrimitive | None", objtype: type["SchPrimitive"] | None = None
+    ) -> "bool | _AccessibilityFlag":
+        if obj is None:
+            return self
+        return cast(bool, vars(obj)["is_not_accessible"])
+
+    def __set__(self, obj: "SchPrimitive", value: bool) -> None:
+        vars(obj)["is_not_accessible"] = value
+        # Even assigning the same value is an explicit write to engine state.
+        obj._accessibility_assignment_revision += 1
+
+
+class SchPrimitive(Primitive, _ManagedUniqueIdOwner):
     """
     Base class for schematic primitives.
 
@@ -1277,26 +1403,68 @@ class SchPrimitive(Primitive):
     owner_part_id = OptionalIntField()
     owner_part_display_mode = OptionalIntField()
     index_in_sheet = OptionalIntField()
+    is_not_accessible = _AccessibilityFlag()
 
     def __init__(self) -> None:
         super().__init__()
         # Initialize via descriptors (will call __set__)
-        self.owner_index = 0
-        # Default to -1 for standalone objects in SchDoc files.
-        # SchLib objects should explicitly set to 1-N for part variants
-        self.owner_part_id = -1
+        self.owner_index = -1
+        self.owner_part_id = None
         self.owner_part_display_mode = None
-        self.is_not_accessible: bool = False
-        self.graphically_locked: bool = False
+        self._accessibility_assignment_revision = 0
+        self.is_not_accessible = False
+        self._graphically_locked: bool = False
+        self._graphically_locked_dirty = False
         # Auto-generate a unique_id for newly created objects.
         # Parsed records will overwrite with actual value from file
-        self.unique_id: str = generate_unique_id()
-        self.index_in_sheet = None  # Z-order position in schematic
+        self.unique_id: str | None = generate_unique_id()
+        self._is_unique_id_locked: bool = False
+        self.index_in_sheet = -1  # Detached managed-object sentinel
         # Parent reference is set during hierarchy building and is not serialized.
         self.parent: SchPrimitive | None = None
         # Narrow document/library binding context for resource resolution such
         # as fonts. This is not serialized and does not imply ownership.
         self._bound_schematic_context: Any | None = None
+        self._capture_primitive_source_state()
+
+    def _capture_primitive_source_state(self) -> None:
+        """Remember managed metadata state for sparse four-state serialization."""
+        self._source_owner_index = self.owner_index
+        self._source_owner_part_id = self.owner_part_id
+        self._source_owner_part_display_mode = self.owner_part_display_mode
+        self._source_is_not_accessible = self.is_not_accessible
+        self._source_graphically_locked = self.graphically_locked
+        self._graphically_locked_dirty = False
+        self._source_index_in_sheet = self.index_in_sheet
+
+    def _apply_authored_graphical_metadata_defaults(self) -> None:
+        """Apply SchDataGraphicalObject detached defaults to adapter families."""
+        self.owner_part_id = -1
+        self.owner_part_display_mode = 0
+        self._graphically_locked = False
+        self._capture_primitive_source_state()
+
+    def _apply_imported_graphical_metadata_defaults(self) -> None:
+        """Apply ImportGraphicalObject zero/false semantics after base import."""
+        from .altium_serializer import AltiumSerializer
+
+        serializer = AltiumSerializer()
+        self.owner_part_id = _require_int_width(
+            "OwnerPartId",
+            serializer._read_int_checked(self._record, "OwnerPartId", default=0)[0],
+            -(1 << 15),
+            (1 << 15) - 1,
+        )
+        self.owner_part_display_mode = _require_int_width(
+            "OwnerPartDisplayMode",
+            serializer._read_int_checked(
+                self._record, "OwnerPartDisplayMode", default=0
+            )[0],
+            0,
+            (1 << 8) - 1,
+        )
+        self._graphically_locked = False
+        self._capture_primitive_source_state()
 
     def parse_from_record(
         self,
@@ -1310,83 +1478,392 @@ class SchPrimitive(Primitive):
         super().parse_from_record(record, font_manager)
         r = self._record  # Case-insensitive view
 
-        # Descriptors handle int conversion automatically
-        self.owner_index = r.get("OwnerIndex", 0)
-        self.owner_part_id = r.get("OwnerPartId")
-        self.owner_part_display_mode = r.get("OwnerPartDisplayMode")
+        from .altium_serializer import AltiumSerializer
+
+        serializer = AltiumSerializer()
+        self.owner_index = serializer._read_int_checked(r, "OwnerIndex", default=0)[0]
+        owner_part_id, owner_part_id_present = serializer._read_int_checked(
+            r, "OwnerPartId", default=0
+        )
+        self.owner_part_id = (
+            _require_int_width("OwnerPartId", owner_part_id, -(1 << 15), (1 << 15) - 1)
+            if owner_part_id_present
+            else None
+        )
+        owner_part_display_mode, owner_part_display_mode_present = (
+            serializer._read_int_checked(r, "OwnerPartDisplayMode", default=0)
+        )
+        self.owner_part_display_mode = (
+            _require_int_width(
+                "OwnerPartDisplayMode",
+                owner_part_display_mode,
+                0,
+                (1 << 8) - 1,
+            )
+            if owner_part_display_mode_present
+            else None
+        )
 
         # Note: Altium has a typo - "IsNotAccesible" (missing 's')
         self.is_not_accessible = r.get("IsNotAccesible", "F") == "T"
-        self.graphically_locked = r.get("GraphicallyLocked", "F") == "T"
+        self._graphically_locked = r.get("GraphicallyLocked", "F") == "T"
+        # Preserve the parser's established missing-field representation. The
+        # managed identity helpers operate only on explicit identity strings.
         self.unique_id = r.get("UniqueID")
 
         # Z-order position - descriptor handles int conversion
-        self.index_in_sheet = r.get("IndexInSheet")
+        self.index_in_sheet = serializer._read_int_checked(
+            r, "IndexInSheet", default=0
+        )[0]
+        self._capture_primitive_source_state()
 
     def serialize_to_record(self) -> dict[str, Any]:
         """
         Serialize common SchPrimitive fields, preserving original structure.
         """
+        self._validate_primitive_metadata_widths()
         # Start with raw record if available (for round-trip)
         record = self._get_base_record()
 
-        # Update fields we understand, preserving original names
-        # Only add OwnerIndex if object has an actual owner (owner_index > 0)
-        # Top-level objects (owner_index=0) should NOT have this field
-        owner_index = getattr(self, "_owner_index", 0)
-        if owner_index > 0:
-            self._update_field(
-                record, "OWNERINDEX", owner_index, ["OwnerIndex", "OWNERINDEX"]
+        self._serialize_managed_int(
+            record,
+            "OWNERINDEX",
+            ["OwnerIndex", "OWNERINDEX"],
+            self.owner_index,
+            self._source_owner_index,
+        )
+        self._serialize_managed_bool(
+            record,
+            "ISNOTACCESIBLE",
+            ["IsNotAccesible", "ISNOTACCESIBLE"],
+            self.is_not_accessible,
+            self._source_is_not_accessible,
+        )
+        if self.index_in_sheet == -2:
+            self._remove_fields_case_insensitively(
+                record, ["IndexInSheet", "INDEXINSHEET"]
             )
-
-        if self.owner_part_id is not None:
-            self._update_field(
+        else:
+            self._serialize_managed_optional_int(
                 record,
-                "OWNERPARTID",
-                self.owner_part_id,
-                ["OwnerPartId", "OWNERPARTID"],
+                "INDEXINSHEET",
+                ["IndexInSheet", "INDEXINSHEET"],
+                self.index_in_sheet,
+                self._source_index_in_sheet,
             )
-
-        if self.owner_part_display_mode is not None:
-            self._update_field(
-                record,
-                "OWNERPARTDISPLAYMODE",
-                self.owner_part_display_mode,
-                ["OwnerPartDisplayMode", "OWNERPARTDISPLAYMODE"],
+        self._serialize_managed_optional_int(
+            record,
+            "OWNERPARTID",
+            ["OwnerPartId", "OWNERPARTID"],
+            self.owner_part_id,
+            self._source_owner_part_id,
+        )
+        self._serialize_managed_optional_int(
+            record,
+            "OWNERPARTDISPLAYMODE",
+            ["OwnerPartDisplayMode", "OWNERPARTDISPLAYMODE"],
+            self.owner_part_display_mode,
+            self._source_owner_part_display_mode,
+        )
+        if self._graphically_locked_dirty:
+            self._remove_fields_case_insensitively(
+                record, ["GraphicallyLocked", "GRAPHICALLYLOCKED"]
             )
-
-        # Note: Preserve the Altium typo "IsNotAccesible" (missing 's')
-        if self.is_not_accessible:
-            self._update_field(
-                record, "ISNOTACCESIBLE", "T", ["IsNotAccesible", "ISNOTACCESIBLE"]
-            )
-
-        if self.graphically_locked:
-            self._update_field(
+            if self.graphically_locked:
+                self._update_field(
+                    record,
+                    "GRAPHICALLYLOCKED",
+                    "T",
+                    ["GraphicallyLocked", "GRAPHICALLYLOCKED"],
+                    force=True,
+                )
+        else:
+            self._serialize_managed_bool(
                 record,
                 "GRAPHICALLYLOCKED",
-                "T",
                 ["GraphicallyLocked", "GRAPHICALLYLOCKED"],
+                self.graphically_locked,
+                self._source_graphically_locked,
             )
 
-        # Only update UniqueID if we have one
-        if self.unique_id:
+        # UniqueID is family-owned in V5; subclasses may move it to the exact
+        # exporter position after writing their fields.
+        if (
+            self.unique_id
+            and not getattr(self, "_supports_managed_geometry_dynamic_unique_id", False)
+            and not getattr(self, "_family_owns_dynamic_unique_id", False)
+        ):
             self._update_field(
                 record, "UNIQUEID", self.unique_id, ["UniqueID", "UNIQUEID"]
             )
 
-        # Z-order position
-        # -1 is valid (used by SheetName/FileName children)
-        # -2 is sentinel meaning "omit this field" (used for first SheetEntry)
-        if self.index_in_sheet is not None and self.index_in_sheet != -2:
-            self._update_field(
-                record,
-                "INDEXINSHEET",
-                self.index_in_sheet,
-                ["IndexInSheet", "INDEXINSHEET"],
-            )
-
         return record
+
+    def _validate_primitive_metadata_widths(self) -> None:
+        _require_int_width("OwnerIndex", self.owner_index, -(1 << 31), (1 << 31) - 1)
+        _require_optional_int_width(
+            "OwnerPartId", self.owner_part_id, -(1 << 15), (1 << 15) - 1
+        )
+        _require_optional_int_width(
+            "OwnerPartDisplayMode", self.owner_part_display_mode, 0, (1 << 8) - 1
+        )
+        _require_optional_int_width(
+            "IndexInSheet", self.index_in_sheet, -(1 << 31), (1 << 31) - 1
+        )
+
+    @property
+    def graphically_locked(self) -> bool:
+        return self._graphically_locked
+
+    @graphically_locked.setter
+    def graphically_locked(self, value: bool) -> None:
+        self._graphically_locked = bool(value)
+        self._graphically_locked_dirty = True
+
+    def _serialize_managed_int(
+        self,
+        record: dict[str, object],
+        canonical: str,
+        names: list[str],
+        value: int,
+        source: int,
+    ) -> None:
+        self._serialize_managed_optional_int(record, canonical, names, value, source)
+
+    def _serialize_managed_optional_int(
+        self,
+        record: dict[str, object],
+        canonical: str,
+        names: list[str],
+        value: int | None,
+        source: int | None,
+    ) -> None:
+        if self._raw_record is not None and value == source:
+            return
+        self._remove_fields_case_insensitively(record, names)
+        if value not in (None, 0):
+            self._update_field(record, canonical, value, names, force=True)
+
+    def _serialize_managed_font_id(
+        self,
+        record: _RecordFields,
+        serializer: "AltiumSerializer",
+        field: str,
+        value: int,
+        font_manager: "FontIDManager | None",
+        *,
+        default: int = 1,
+    ) -> None:
+        source, _ = serializer.read_font_id(
+            self._raw_record or {}, field, font_manager, default=default
+        )
+        if self._raw_record is not None and value == source:
+            return
+        serializer.remove_field(record, field)
+        if value != 0:
+            serializer.write_font_id(record, field, value, font_manager, None)
+
+    def _serialize_managed_bool(
+        self,
+        record: dict[str, object],
+        canonical: str,
+        names: list[str],
+        value: bool,
+        source: bool,
+    ) -> None:
+        if self._raw_record is not None and value == source:
+            return
+        self._remove_fields_case_insensitively(record, names)
+        if value:
+            self._update_field(record, canonical, "T", names, force=True)
+
+    def _serialize_managed_string(
+        self,
+        record: dict[str, object],
+        canonical: str,
+        names: list[str],
+        value: str,
+        source: str,
+    ) -> None:
+        if self._raw_record is not None and value == source:
+            return
+        self._remove_fields_case_insensitively(record, names)
+        if value:
+            self._update_field(record, canonical, value, names, force=True)
+
+    @staticmethod
+    def _remove_fields_case_insensitively(
+        record: dict[str, object], names: list[str]
+    ) -> None:
+        folded = {name.casefold() for name in names}
+        for key in list(record):
+            if key.casefold() in folded:
+                record.pop(key)
+
+    @staticmethod
+    def _move_fields_to_end_case_insensitively(
+        record: dict[str, object], names: list[str]
+    ) -> None:
+        folded = {name.casefold() for name in names}
+        moved = [
+            (key, record.pop(key)) for key in list(record) if key.casefold() in folded
+        ]
+        record.update(moved)
+
+    def _order_authored_graphical_fields(
+        self,
+        record: dict[str, object],
+        family_order: tuple[str, ...],
+    ) -> dict[str, object]:
+        """Return new graphical records in the managed V5 export sequence."""
+        if self._raw_record is not None:
+            return record
+        base_order = (
+            "RECORD",
+            "OwnerIndex",
+            "IsNotAccesible",
+            "OwnerIndexAdditionalList",
+            "IndexInSheet",
+            "IgnoreOnLoad",
+            "WiringDiagramOriginUniqueId",
+            "IsSchematicBlockObject",
+            "UniqueIDInReuseBlock",
+            "OwnerPartId",
+            "OwnerPartDisplayMode",
+            "SelectionMemory",
+            "UnionIndex",
+            "GraphicallyLocked",
+        )
+        return self._order_fields_case_insensitively(
+            record, (*base_order, *family_order)
+        )
+
+    def _order_changed_graphical_family_fields(
+        self,
+        record: dict[str, object],
+        family_order: tuple[str, ...],
+        *,
+        changed: bool,
+    ) -> dict[str, object]:
+        """Canonicalize one changed V5 family without moving unrelated fields."""
+        if self._raw_record is None:
+            return self._order_authored_graphical_fields(record, family_order)
+        if not changed:
+            return record
+        family_names = set(map(str.casefold, family_order))
+        family_names.update(map(str.casefold, map("%UTF8%{}".format, family_order)))
+        ordered_family = self._order_fields_case_insensitively(record, family_order)
+        family_items = [
+            (key, value)
+            for key, value in ordered_family.items()
+            if key.casefold() in family_names
+        ]
+        return self._replace_graphical_family_fields(record, family_names, family_items)
+
+    @staticmethod
+    def _replace_graphical_family_fields(
+        record: dict[str, object],
+        family_names: set[str],
+        family_items: list[tuple[str, object]],
+    ) -> dict[str, object]:
+        result: dict[str, Any] = {}
+        emitted = False
+        for key, value in record.items():
+            if key.casefold() in family_names:
+                if not emitted:
+                    result.update(family_items)
+                    emitted = True
+                continue
+            result[key] = value
+        if not emitted:
+            result.update(family_items)
+        return result
+
+    def _order_fields_case_insensitively(
+        self,
+        record: dict[str, object],
+        ordered_names: tuple[str, ...],
+    ) -> dict[str, object]:
+        """Order owned fields while retaining unknown fields and UTF8 companions."""
+        by_name = {key.casefold(): (key, value) for key, value in record.items()}
+        result: dict[str, Any] = {}
+        emitted: set[str] = set()
+        for name in ordered_names:
+            if name == "__Vertices__":
+                for key, value in record.items():
+                    if self._is_vertex_field(key) and key.casefold() not in emitted:
+                        result[key] = value
+                        emitted.add(key.casefold())
+                continue
+            item = by_name.get(name.casefold())
+            if item is not None:
+                result[item[0]] = item[1]
+                emitted.add(item[0].casefold())
+            utf8_name = f"%UTF8%{name}"
+            utf8_item = by_name.get(utf8_name.casefold())
+            if utf8_item is not None:
+                result[utf8_item[0]] = utf8_item[1]
+                emitted.add(utf8_item[0].casefold())
+        for key, value in record.items():
+            if key.casefold() not in emitted:
+                result[key] = value
+        return result
+
+    def _init_family_dynamic_unique_id(self) -> None:
+        """Mark a V5 family whose UniqueID field uses DynamicString."""
+        self._family_owns_dynamic_unique_id = True
+        self._has_family_unique_id = False
+        self._family_unique_id_used_utf8 = False
+        self._source_family_unique_id = self.unique_id or ""
+
+    def _parse_family_dynamic_unique_id(
+        self, serializer: "AltiumSerializer", record: dict[str, object]
+    ) -> None:
+        from .altium_serializer import read_dynamic_string_field
+
+        value, present, used_utf8 = read_dynamic_string_field(
+            serializer, record, self._record, "UniqueID", default=""
+        )
+        self.unique_id = value if present else None
+        self._has_family_unique_id = present
+        self._family_unique_id_used_utf8 = used_utf8
+        self._source_family_unique_id = value
+
+    def _serialize_family_dynamic_unique_id(
+        self, record: dict[str, object], serializer: "AltiumSerializer"
+    ) -> None:
+        from .altium_serializer import write_dynamic_string_field
+
+        value = self.unique_id or ""
+        if self._raw_record is not None and value == self._source_family_unique_id:
+            return
+        if not value:
+            self._remove_fields_case_insensitively(
+                record, ["UniqueID", "%UTF8%UniqueID"]
+            )
+            return
+        write_dynamic_string_field(
+            serializer,
+            record,
+            "UniqueID",
+            value,
+            raw_record=self._raw_record,
+            used_utf8_sidecar=self._family_unique_id_used_utf8,
+            was_present=self._has_family_unique_id,
+            force=True,
+        )
+
+    @staticmethod
+    def _is_vertex_field(key: str) -> bool:
+        normalized = key.casefold()
+        if normalized in {"locationcount", "extralocationcount"}:
+            return True
+        for prefix in ("ex", "ey", "x", "y"):
+            if not normalized.startswith(prefix):
+                continue
+            suffix = normalized[len(prefix) :].removesuffix("_frac")
+            return bool(suffix) and suffix.isascii() and suffix.isdigit()
+        return False
 
     def _bind_to_schematic_context(self, context: "SchematicBindingContext") -> None:
         """
@@ -1411,6 +1888,20 @@ class SchGraphicalObject(SchPrimitive):
 
     def __init__(self) -> None:
         super().__init__()
+        self._apply_authored_graphical_metadata_defaults()
+        self._supports_managed_geometry_wiring_origin = (
+            self.record_type.value in _MANAGED_GEOMETRY_WIRING_ORIGIN_RECORD_CODES
+        )
+        self._supports_managed_geometry_dynamic_unique_id = (
+            self.record_type.value in _MANAGED_GEOMETRY_DYNAMIC_UNIQUE_ID_RECORD_CODES
+        )
+        if self._supports_managed_geometry_wiring_origin:
+            self.wiring_diagram_origin_unique_id = ""
+            self._source_wiring_diagram_origin_unique_id = ""
+            self._wiring_diagram_origin_unique_id_used_utf8 = False
+        if self._supports_managed_geometry_dynamic_unique_id:
+            self._source_geometry_unique_id = self.unique_id
+            self._geometry_unique_id_used_utf8 = False
         self.location = CoordPoint()
         # CRITICAL: Use None for colors, not defaults
         # When None, these fields are omitted from serialized output
@@ -1418,12 +1909,44 @@ class SchGraphicalObject(SchPrimitive):
         self.color: int | None = (
             None  # Win32 format (0x00BBGGRR), None if not specified
         )
-        self.area_color: int | None = (
-            None  # Win32 format (0x00BBGGRR), None if not specified
-        )
+        self._area_color: int | None = None
+        self._area_color_dirty = False
         # Track which location fields were present in original
         self._has_location_x: bool = False
         self._has_location_y: bool = False
+        self._has_color: bool = False
+        self._has_area_color: bool = False
+        self._capture_graphical_source_state()
+        self._capture_primitive_source_state()
+
+    def _capture_graphical_source_state(self) -> None:
+        """Remember parsed color state so semantic defaults stay sparse on write."""
+        self._source_color = self.color
+        self._source_area_color = self.area_color
+        self._area_color_dirty = False
+
+    def _apply_imported_color_defaults(self, *, area_color: bool) -> None:
+        """Apply V5 missing-field semantics without materializing absent colors."""
+        if not self._has_color:
+            self.color = 0
+        if area_color and not self._has_area_color:
+            self.area_color = 0
+        self._capture_graphical_source_state()
+
+    def _apply_nonpersisted_area_color_default(self) -> None:
+        """Keep the inherited managed fill state without persisting AreaColor."""
+        self._area_color = GRAPHICAL_FILL_COLOR
+        self._source_area_color = GRAPHICAL_FILL_COLOR
+        self._area_color_dirty = False
+
+    @property
+    def area_color(self) -> int | None:
+        return self._area_color
+
+    @area_color.setter
+    def area_color(self, value: int | None) -> None:
+        self._area_color = value
+        self._area_color_dirty = True
 
     def parse_from_record(
         self,
@@ -1436,95 +1959,436 @@ class SchGraphicalObject(SchPrimitive):
         super().parse_from_record(record, font_manager)
         r = self._record  # Case-insensitive view
 
+        self._parse_geometry_dynamic_metadata(r)
+        self._parse_graphical_location(record, r)
+        self._parse_graphical_colors(record)
+        self._apply_imported_graphical_metadata_defaults()
+        self._capture_graphical_source_state()
+
+    def _parse_geometry_dynamic_metadata(self, record: CaseInsensitiveDict) -> None:
+        if not self._supports_managed_geometry_wiring_origin:
+            return
+
+        from .altium_serializer import process_mbcs_string
+
+        wiring_name = "WiringDiagramOriginUniqueId"
+        wiring_utf8_name = f"%UTF8%{wiring_name}"
+        wiring_utf8_value = record.get(wiring_utf8_name)
+        wiring_value = record.get(wiring_name)
+        self._wiring_diagram_origin_unique_id_used_utf8 = wiring_utf8_value is not None
+        self.wiring_diagram_origin_unique_id = process_mbcs_string(
+            str(
+                wiring_utf8_value
+                if wiring_utf8_value is not None
+                else wiring_value or ""
+            )
+        )
+        self._source_wiring_diagram_origin_unique_id = (
+            self.wiring_diagram_origin_unique_id
+        )
+        if self._supports_managed_geometry_dynamic_unique_id:
+            unique_id_utf8 = record.get("%UTF8%UniqueID")
+            unique_id_ordinary = record.get("UniqueID")
+            self._geometry_unique_id_used_utf8 = unique_id_utf8 is not None
+            unique_id_value = (
+                unique_id_utf8 if unique_id_utf8 is not None else unique_id_ordinary
+            )
+            self.unique_id = (
+                process_mbcs_string(str(unique_id_value))
+                if unique_id_value is not None
+                else None
+            )
+            self._source_geometry_unique_id = self.unique_id
+
+    def _parse_graphical_location(
+        self, raw_record: _RecordFields, record: CaseInsensitiveDict
+    ) -> None:
         # Parse location with fractional parts
         # NOTE: Altium uses mixed case: Location.X (not LOCATION.X)
         # Track if fields were present
-        self._has_location_x = "Location.X" in record or "LOCATION.X" in record
-        self._has_location_y = "Location.Y" in record or "LOCATION.Y" in record
+        self._has_location_x = "Location.X" in raw_record or "LOCATION.X" in raw_record
+        self._has_location_y = "Location.Y" in raw_record or "LOCATION.Y" in raw_record
 
-        # Handle both integer and float string values (translation may produce floats)
-        x_val = r.get("Location.X", 0)
-        y_val = r.get("Location.Y", 0)
-        x = int(float(x_val)) if x_val else 0
-        y = int(float(y_val)) if y_val else 0
-        x_frac = int(r.get("Location.X_Frac", 0))
-        y_frac = int(r.get("Location.Y_Frac", 0))
+        ignores_location = self.record_type in {
+            SchRecordType.POLYLINE,
+            SchRecordType.POLYGON,
+            SchRecordType.BEZIER,
+        }
+        # Vertex families do not import inherited graphical Location fields.
+        if ignores_location:
+            x, x_frac, y, y_frac = 0, 0, 0, 0
+        else:
+            from .altium_serializer import AltiumSerializer
+
+            serializer = AltiumSerializer()
+            x = self._read_graphical_whole(record.get("Location.X", 0))
+            y = self._read_graphical_whole(record.get("Location.Y", 0))
+            x_frac, _ = serializer.read_int(record, "Location.X_Frac")
+            y_frac, _ = serializer.read_int(record, "Location.Y_Frac")
         self.location = CoordPoint(x, y, x_frac, y_frac)
 
-        # Parse colors (Win32 format)
-        # NOTE: Check both cases
-        if "Color" in record:
-            self.color = int(record["Color"])
-        elif "COLOR" in record:
-            self.color = int(record["COLOR"])
-        # Keep color=None if not present
+    @staticmethod
+    def _read_graphical_whole(value: object) -> int:
+        """Read the established graphical float adapter within Coord width."""
+        try:
+            parsed = int(float(str(value))) if value else 0
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        return parsed if -(1 << 15) <= parsed <= (1 << 15) - 1 else 0
 
-        if "AreaColor" in record:
-            self.area_color = int(record["AreaColor"])
-        elif "AREACOLOR" in record:
-            self.area_color = int(record["AREACOLOR"])
-        # Keep area_color=None if not present
+    def _parse_graphical_colors(self, record: _RecordFields) -> None:
+        from .altium_serializer import AltiumSerializer
+
+        serializer = AltiumSerializer()
+        self._has_color = "Color" in record or "COLOR" in record
+        color, _ = serializer.read_color(record, "Color", default=0)
+        if self._has_color:
+            self.color = color
+
+        self._has_area_color = "AreaColor" in record or "AREACOLOR" in record
+        ignores_area_color = self.record_type in {
+            SchRecordType.LINE,
+            SchRecordType.ARC,
+            SchRecordType.ELLIPTICAL_ARC,
+            SchRecordType.POLYLINE,
+            SchRecordType.BEZIER,
+            SchRecordType.WIRE,
+            SchRecordType.BUS,
+            SchRecordType.BUS_ENTRY,
+            SchRecordType.JUNCTION,
+            SchRecordType.NET_LABEL,
+            SchRecordType.NO_ERC,
+            SchRecordType.LABEL,
+            SchRecordType.HYPERLINK,
+            SchRecordType.PARAMETER_SET,
+            SchRecordType.POWER_PORT,
+            SchRecordType.IMAGE,
+        }
+        if self._has_area_color and not ignores_area_color:
+            self.area_color = serializer.read_color(record, "AreaColor", default=0)[0]
 
     def serialize_to_record(self) -> dict[str, Any]:
         """
         Serialize common SchGraphicalObject fields, preserving original structure.
         """
         record = super().serialize_to_record()
-
-        # Location fields: write if present in original (round-trip) OR non-zero (synthesis)
-        # Altium omits Location.X=0 and Location.Y=0 in Library Splitter output
-        if self._has_location_x or self.location.x != 0:
-            self._update_field(
-                record,
-                "LOCATION.X",
-                self.location.x,
-                ["Location.X", "LOCATION.X"],
-                force=self.location.x != 0,
-            )
-        if self._has_location_y or self.location.y != 0:
-            self._update_field(
-                record,
-                "LOCATION.Y",
-                self.location.y,
-                ["Location.Y", "LOCATION.Y"],
-                force=self.location.y != 0,
-            )
-
-        if self.location.x_frac != 0:
-            self._update_field(
-                record,
-                "LOCATION.X_FRAC",
-                self.location.x_frac,
-                ["Location.X_Frac", "LOCATION.X_FRAC"],
-                force=True,
-            )
-
-        if self.location.y_frac != 0:
-            self._update_field(
-                record,
-                "LOCATION.Y_FRAC",
-                self.location.y_frac,
-                ["Location.Y_Frac", "LOCATION.Y_FRAC"],
-                force=True,
-            )
-
-        # Nullable colors are explicit object state: None means omitted/default,
-        # any integer value must serialize even if the parsed source omitted it.
-        if self.color is not None:
-            self._update_field(
-                record, "COLOR", self.color, ["Color", "COLOR"], force=True
-            )
-
-        if self.area_color is not None:
-            self._update_field(
-                record,
-                "AREACOLOR",
-                self.area_color,
-                ["AreaColor", "AREACOLOR"],
-                force=True,
-            )
-
+        if self._supports_managed_geometry_dynamic_unique_id:
+            self._serialize_geometry_unique_id(record)
+        if self._supports_managed_geometry_wiring_origin:
+            self._serialize_wiring_diagram_origin_unique_id(record)
+        self._serialize_graphical_location(record)
+        self._serialize_graphical_colors(record)
         return record
+
+    def _serialize_geometry_unique_id(self, record: _RecordFields) -> None:
+        value = self.unique_id or ""
+        source = self._source_geometry_unique_id or ""
+        if self._raw_record is not None and value == source:
+            return
+        if not value:
+            self._remove_fields_case_insensitively(
+                record, ["UniqueID", "%UTF8%UniqueID"]
+            )
+            return
+        if self._geometry_unique_id_used_utf8:
+            self._update_field(
+                record,
+                "%UTF8%UNIQUEID",
+                value,
+                ["%UTF8%UniqueID", "%UTF8%UNIQUEID"],
+                force=True,
+            )
+            return
+        self._remove_fields_case_insensitively(record, ["%UTF8%UniqueID"])
+        self._update_field(
+            record, "UNIQUEID", value, ["UniqueID", "UNIQUEID"], force=True
+        )
+
+    def _move_geometry_identity_to_end_if_needed(self, record: _RecordFields) -> None:
+        if not self._supports_managed_geometry_dynamic_unique_id:
+            self._move_fields_to_end_case_insensitively(
+                record, ["UniqueID", "%UTF8%UniqueID"]
+            )
+            return
+        if (
+            self._raw_record is None
+            or self.unique_id != self._source_geometry_unique_id
+        ):
+            self._move_fields_to_end_case_insensitively(
+                record, ["UniqueID", "%UTF8%UniqueID"]
+            )
+
+    def _serialize_wiring_diagram_origin_unique_id(self, record: _RecordFields) -> None:
+        field = "WiringDiagramOriginUniqueId"
+        utf8_field = f"%UTF8%{field}"
+        value = self.wiring_diagram_origin_unique_id
+        changed = value != self._source_wiring_diagram_origin_unique_id
+        if self._raw_record is not None and not changed:
+            return
+        if not value:
+            self._remove_fields_case_insensitively(record, [field, utf8_field])
+            return
+        if self._wiring_diagram_origin_unique_id_used_utf8:
+            self._update_field(
+                record,
+                utf8_field.upper(),
+                value,
+                [utf8_field, utf8_field.upper()],
+                force=True,
+            )
+            return
+        self._remove_fields_case_insensitively(record, [utf8_field])
+        self._update_field(
+            record,
+            field.upper(),
+            value,
+            [field, field.upper()],
+            force=True,
+        )
+
+    def _serialize_graphical_location(self, record: _RecordFields) -> None:
+        self._serialize_graphical_axis(
+            record,
+            axis="X",
+            value=self.location.x,
+            fraction=self.location.x_frac,
+            was_present=self._has_location_x,
+        )
+        self._serialize_graphical_axis(
+            record,
+            axis="Y",
+            value=self.location.y,
+            fraction=self.location.y_frac,
+            was_present=self._has_location_y,
+        )
+
+    def _serialize_graphical_axis(
+        self,
+        record: _RecordFields,
+        *,
+        axis: str,
+        value: int,
+        fraction: int,
+        was_present: bool,
+    ) -> None:
+        canonical = f"LOCATION.{axis}"
+        pascal = f"Location.{axis}"
+        frac_canonical = f"LOCATION.{axis}_FRAC"
+        frac_pascal = f"Location.{axis}_Frac"
+        source_aware_location = self._supports_managed_geometry_wiring_origin or (
+            self.record_type
+            in {
+                SchRecordType.SHEET_SYMBOL,
+                SchRecordType.SHEET_NAME,
+                SchRecordType.FILE_NAME,
+                SchRecordType.HARNESS_CONNECTOR,
+                SchRecordType.HARNESS_TYPE,
+            }
+        )
+        if source_aware_location:
+            from .altium_serializer import AltiumSerializer
+
+            serializer = AltiumSerializer()
+            source_value, source_fraction, _ = serializer.read_coord(
+                self._raw_record or {}, "Location", axis
+            )
+            if self._raw_record is not None and (value, fraction) == (
+                source_value,
+                source_fraction,
+            ):
+                return
+            self._remove_fields_case_insensitively(
+                record, [pascal, canonical, frac_pascal, frac_canonical]
+            )
+            if value != 0 or fraction != 0:
+                serializer.write_coord(
+                    record,
+                    "Location",
+                    axis,
+                    value,
+                    fraction,
+                    force=True,
+                )
+            return
+        from .altium_serializer import require_coordinate_wire_parts
+
+        require_coordinate_wire_parts(value, fraction, pascal)
+        if was_present or value != 0 or fraction != 0:
+            self._update_field(
+                record,
+                canonical,
+                value,
+                [pascal, canonical],
+                force=value != 0 or fraction != 0,
+            )
+        if fraction != 0:
+            self._update_field(
+                record,
+                frac_canonical,
+                fraction,
+                [frac_pascal, frac_canonical],
+                force=True,
+            )
+
+    def _serialize_graphical_colors(self, record: _RecordFields) -> None:
+        self._serialize_graphical_color(
+            record,
+            value=self.color,
+            source_value=self._source_color,
+            was_present=self._has_color,
+            canonical_name="COLOR",
+            field_names=["Color", "COLOR"],
+        )
+        nonpersisted_area_color = self.record_type in {
+            SchRecordType.LINE,
+            SchRecordType.ARC,
+            SchRecordType.ELLIPTICAL_ARC,
+            SchRecordType.POLYLINE,
+            SchRecordType.BEZIER,
+            SchRecordType.WIRE,
+            SchRecordType.BUS,
+            SchRecordType.BUS_ENTRY,
+            SchRecordType.JUNCTION,
+            SchRecordType.NET_LABEL,
+            SchRecordType.NO_ERC,
+            SchRecordType.LABEL,
+            SchRecordType.HYPERLINK,
+            SchRecordType.PARAMETER_SET,
+            SchRecordType.POWER_PORT,
+        }
+        if nonpersisted_area_color:
+            if self._raw_record is None or self._area_color_dirty:
+                self._remove_fields_case_insensitively(
+                    record, ["AreaColor", "AREACOLOR"]
+                )
+        else:
+            self._serialize_graphical_color(
+                record,
+                value=self.area_color,
+                source_value=self._source_area_color,
+                was_present=self._has_area_color,
+                canonical_name="AREACOLOR",
+                field_names=["AreaColor", "AREACOLOR"],
+            )
+
+    def _serialize_graphical_color(
+        self,
+        record: _RecordFields,
+        *,
+        value: int | None,
+        source_value: int | None,
+        was_present: bool,
+        canonical_name: str,
+        field_names: list[str],
+    ) -> None:
+        value = self._require_optional_color(value)
+        if self._raw_record is not None and value == source_value:
+            return
+        if self._supports_managed_geometry_wiring_origin:
+            self._remove_fields_case_insensitively(record, field_names)
+            if value not in (None, 0):
+                self._update_field(
+                    record, canonical_name, value, field_names, force=True
+                )
+            return
+        if self._raw_record is None and value == 0:
+            self._remove_field(record, field_names)
+            return
+        if not was_present and value == source_value:
+            return
+        if value is None:
+            self._remove_field(record, field_names)
+            return
+        self._update_field(
+            record,
+            canonical_name,
+            value,
+            field_names,
+            force=value != source_value,
+        )
+
+    @staticmethod
+    def _require_optional_color(value: int | None) -> int | None:
+        if value is None:
+            return None
+        from .altium_serializer import require_color_wire_value
+
+        return require_color_wire_value(value)
+
+    def _serialize_managed_family_int(
+        self,
+        record: _RecordFields,
+        serializer: "AltiumSerializer",
+        field: str,
+        value: int,
+    ) -> None:
+        source, _ = serializer.read_int(self._raw_record or {}, field, default=0)
+        if self._raw_record is not None and value == source:
+            return
+        if value == 0:
+            serializer.remove_field(record, field)
+            return
+        serializer.write_int(record, field, value, self._raw_record, force=True)
+
+    def _serialize_managed_family_color(
+        self,
+        record: _RecordFields,
+        serializer: "AltiumSerializer",
+        field: str,
+        value: int,
+    ) -> None:
+        source, _ = serializer.read_color(self._raw_record or {}, field, default=0)
+        if self._raw_record is not None and value == source:
+            return
+        if value == 0:
+            serializer.remove_field(record, field)
+            return
+        serializer.write_color(record, field, value, self._raw_record, force=True)
+
+    def _serialize_managed_family_bool(
+        self,
+        record: _RecordFields,
+        serializer: "AltiumSerializer",
+        field: str,
+        value: bool,
+    ) -> None:
+        source, _ = serializer.read_bool(self._raw_record or {}, field, default=False)
+        if self._raw_record is not None and value == source:
+            return
+        serializer.remove_field(record, field)
+        if value:
+            serializer.write_bool(record, field, True, None, force=True)
+
+    def _serialize_managed_family_coord(
+        self,
+        record: _RecordFields,
+        serializer: "AltiumSerializer",
+        base: str,
+        prefix: str,
+        value: int,
+        fraction: int,
+    ) -> None:
+        source_value, source_fraction, _ = serializer.read_coord(
+            self._raw_record or {}, base, prefix
+        )
+        if self._raw_record is not None and (value, fraction) == (
+            source_value,
+            source_fraction,
+        ):
+            return
+        field = f"{base}.{prefix}" if prefix else base
+        frac_field = f"{field}_Frac"
+        serializer.remove_field(record, field)
+        serializer.remove_field(record, frac_field)
+        if value != 0 or fraction != 0:
+            serializer.write_coord(
+                record,
+                base,
+                prefix,
+                value,
+                fraction,
+                force=True,
+            )
 
     @property
     def color_rgb(self) -> tuple[int, int, int] | None:

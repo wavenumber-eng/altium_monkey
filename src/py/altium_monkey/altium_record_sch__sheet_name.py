@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 class AltiumSchSheetName(AltiumSchSheetSymbolChildLabel):
     """
     SHEET_NAME record.
-    
+
     Sheet name label on hierarchical sheet symbol.
     Inherits all behavior from LABEL.
     """
@@ -32,11 +32,12 @@ class AltiumSchSheetName(AltiumSchSheetSymbolChildLabel):
         document_id: str,
         units_per_px: int = 64,
     ) -> "SchGeometryRecord | None":
-        record = super().to_geometry(ctx, document_id=document_id, units_per_px=units_per_px)
+        record = super().to_geometry(
+            ctx, document_id=document_id, units_per_px=units_per_px
+        )
         if record is None:
             return None
         return replace(record, kind="sheetname", object_id="eSheetName")
 
     def __repr__(self) -> str:
         return f"<AltiumSchSheetName '{self.text}'>"
-

@@ -6,18 +6,29 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .altium_sch_geometry_oracle import (
     SchGeometryDocument,
+    SchGeometryOp,
     SchGeometryOpKind,
     SchGeometryRecord,
 )
-from .altium_font_resolver import resolve_font_with_style
+from .altium_sch_harness_patterns import (
+    HarnessCoveringPatternResource,
+    harness_covering_pattern_by_id,
+)
+from .altium_font_resolver import (
+    FontResolution,
+    FontResolutionSource,
+    canonical_package_bundled_font_path,
+    resolve_font_with_style,
+)
 from .altium_sch_svg_renderer import (
     SchCompileMaskRenderMode,
     SchSvgRenderContext,
     SchSvgRenderOptions,
+    _format_svg_number as _fmt_native_text_coord,
     build_compile_mask_visual_overlay_svg,
     svg_arc,
     svg_ellipse,
@@ -25,6 +36,106 @@ from .altium_sch_svg_renderer import (
 )
 
 FontDiagnosticPayload = dict[str, object]
+type _BundledFontFaceKey = tuple[str, bool, bool, str]
+type _SvgRenderChunk = str | list[_SvgRenderChunk]
+
+
+@dataclass(frozen=True, slots=True)
+class _PortablePatternState:
+    resource: HarnessCoveringPatternResource
+    origin_x: float
+    origin_y: float
+    tile_width: float
+    tile_height: float
+    screen_degrees: float
+    opacity: float
+    color: str
+
+
+def _finite_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _portable_pattern_numbers(
+    value: dict[object, object],
+) -> tuple[float, float, float, float, float, float] | None:
+    numbers: list[float] = []
+    for name in (
+        "origin_x",
+        "origin_y",
+        "tile_width",
+        "tile_height",
+        "slope_radians",
+        "opacity",
+    ):
+        number = _finite_float(value.get(name))
+        if number is None:
+            return None
+        numbers.append(number)
+    return (
+        numbers[0],
+        numbers[1],
+        numbers[2],
+        numbers[3],
+        numbers[4],
+        numbers[5],
+    )
+
+
+def _portable_pattern_resource(
+    value: object,
+) -> tuple[dict[object, object], HarnessCoveringPatternResource] | None:
+    if not isinstance(value, dict):
+        return None
+    if value.get("schema") != "altium.harness_covering_pattern.v1":
+        return None
+    resource_id = value.get("resource_id")
+    if not isinstance(resource_id, str):
+        return None
+    resource = harness_covering_pattern_by_id(resource_id)
+    return None if resource is None else (value, resource)
+
+
+def _portable_pattern_state(
+    value: object,
+    *,
+    units_per_px: float,
+) -> _PortablePatternState | None:
+    if not math.isfinite(units_per_px):
+        return None
+    if units_per_px <= 0.0:
+        return None
+    resolved = _portable_pattern_resource(value)
+    if resolved is None:
+        return None
+    pattern, resource = resolved
+    numbers = _portable_pattern_numbers(pattern)
+    if numbers is None:
+        return None
+    color = pattern.get("color_hex")
+    if not isinstance(color, str):
+        return None
+    origin_x, origin_y, tile_width, tile_height, slope_radians, opacity = numbers
+    tile_width /= units_per_px
+    tile_height /= units_per_px
+    if tile_width <= 0.0 or tile_height <= 0.0:
+        return None
+    return _PortablePatternState(
+        resource=resource,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        tile_width=tile_width,
+        tile_height=tile_height,
+        screen_degrees=math.degrees(slope_radians),
+        opacity=max(0.0, min(1.0, opacity)),
+        color=html.escape(color, quote=True),
+    )
 
 
 def _identity_affine() -> tuple[float, float, float, float, float, float]:
@@ -65,6 +176,10 @@ def _fmt_num(value: float) -> str:
     return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
+def _fmt_native_text_rotation_coord(value: float) -> str:
+    return f"{value:.4f}"
+
+
 def _to_svg_point(
     x: float,
     y: float,
@@ -83,6 +198,23 @@ def _pen_width_to_svg(pen: dict[str, Any], *, units_per_px: float) -> float:
     return max(width / units_per_px, 0.5 if min_width > 0.0 else 0.0)
 
 
+def _style_alpha(style: dict[str, object]) -> int | None:
+    raw = style.get("color_raw")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None
+    try:
+        return (int(raw) & 0xFFFFFFFF) >> 24
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _stroke_opacity_attr(pen: dict[str, object]) -> str:
+    alpha = _style_alpha(pen)
+    if alpha is None or alpha >= 0xFF:
+        return ""
+    return f' stroke-opacity="{alpha / 255.0}"'
+
+
 @dataclass(frozen=True)
 class SchGeometrySvgRenderOptions:
     """Rendering options for SVG generated from schematic geometry IR."""
@@ -95,6 +227,7 @@ class SchGeometrySvgRenderOptions:
     text_as_polygons: bool = False
     polygon_text_tolerance: float = 0.5
     include_view_box: bool = True
+    embed_bundled_fallback_fonts: bool = False
 
 
 class SchGeometrySvgRenderer:
@@ -103,6 +236,9 @@ class SchGeometrySvgRenderer:
     def __init__(self, options: SchGeometrySvgRenderOptions | None = None) -> None:
         self.options = options or SchGeometrySvgRenderOptions()
         self._clip_rect_counter = 0
+        self._pattern_counter = 0
+        self._painted_bundled_font_faces: set[_BundledFontFaceKey] = set()
+        self._font_face_candidates: list[FontDiagnosticPayload] = []
 
     def _next_clip_rect_id(self) -> str:
         self._clip_rect_counter += 1
@@ -194,34 +330,104 @@ class SchGeometrySvgRenderer:
     def _collect_sheet_and_nested_record_ids(
         self,
         document: SchGeometryDocument,
-    ) -> tuple[SchGeometryRecord | None, set[str]]:
+    ) -> tuple[SchGeometryRecord | None, set[str], set[str]]:
         sheet_record = next(
             (record for record in document.records if record.kind == "sheet"), None
         )
         all_record_ids = {
-            str(getattr(record, "unique_id", "") or "")
+            self._record_render_group_id(record)
             for record in document.records
-            if str(getattr(record, "unique_id", "") or "")
+            if self._record_render_group_id(record)
         }
-        nested_record_ids: set[str] = set()
+        all_record_identities = {
+            self._record_source_key(record)
+            for record in document.records
+            if self._record_render_group_id(record)
+        }
+        nested_record_identities: set[str] = set()
+        legacy_nested_record_ids: set[str] = set()
         for record in document.records:
             for op in record.operations:
-                if op.kind_str() != SchGeometryOpKind.BEGIN_GROUP.value:
+                group_id = self._nested_operation_group_id(record, op)
+                if not group_id:
                     continue
-                group_id = str(op.payload.get("parameters", "") or "")
-                if group_id in {"", "DocumentMainGroup", record.unique_id}:
-                    continue
-                if group_id not in all_record_ids:
-                    continue
-                nested_record_ids.add(group_id)
-        return sheet_record, nested_record_ids
+                group_identity = (
+                    f"source:{op.render_source_id}"
+                    if op.render_source_id is not None
+                    else str(op.render_group_identity or group_id)
+                )
+                if group_identity in all_record_identities:
+                    nested_record_identities.add(group_identity)
+                elif (
+                    op.render_source_id is None
+                    and not op.render_group_identity
+                    and group_id in all_record_ids
+                ):
+                    legacy_nested_record_ids.add(group_id)
+        return sheet_record, nested_record_identities, legacy_nested_record_ids
+
+    def _nested_operation_group_id(
+        self, record: SchGeometryRecord, operation: SchGeometryOp
+    ) -> str:
+        if operation.kind_str() != SchGeometryOpKind.BEGIN_GROUP.value:
+            return ""
+        group_id = str(
+            operation.render_group_id or operation.payload.get("parameters", "") or ""
+        )
+        if group_id in {"", "DocumentMainGroup", "DocumentItemsGroup"}:
+            return ""
+        if self._operation_is_record_wrapper(record, operation, group_id):
+            return ""
+        return group_id
+
+    def _record_source_key(self, record: SchGeometryRecord) -> str:
+        if record.render_source_id is not None:
+            return f"source:{record.render_source_id}"
+        return self._record_render_group_identity(record)
+
+    def _operation_is_record_wrapper(
+        self, record: SchGeometryRecord, operation: SchGeometryOp, group_id: str
+    ) -> bool:
+        if (
+            operation.render_source_id is not None
+            and record.render_source_id is not None
+        ):
+            return operation.render_source_id == record.render_source_id
+        if operation.render_group_identity:
+            return (
+                operation.render_group_identity
+                == self._record_render_group_identity(record)
+            )
+        return group_id in {str(record.unique_id), str(record.unique_id or "")}
+
+    @staticmethod
+    def _record_render_group_id(record: SchGeometryRecord) -> str:
+        return str(record.render_group_id or record.unique_id or "")
+
+    @classmethod
+    def _record_render_group_identity(cls, record: SchGeometryRecord) -> str:
+        return str(
+            record.render_group_identity
+            or f"{record.object_id}\0{cls._record_render_group_id(record)}"
+        )
+
+    def _record_group_key(self, record: SchGeometryRecord) -> str:
+        if self.options.text_mode == "native_svg_export":
+            return self._record_render_group_id(record)
+        return self._record_render_group_identity(record)
+
+    def _operation_group_key(self, operation: SchGeometryOp, group_id: str) -> str:
+        if self.options.text_mode == "native_svg_export":
+            return group_id
+        return str(operation.render_group_identity or group_id)
 
     def _render_document_items_group(
         self,
         document: SchGeometryDocument,
         *,
         sheet_record: SchGeometryRecord | None,
-        nested_record_ids: set[str],
+        nested_record_identities: set[str],
+        legacy_nested_record_ids: set[str],
         units_per_px: float,
         canvas_height_px: float,
         compiled_visual_masks: bool,
@@ -229,7 +435,10 @@ class SchGeometrySvgRenderer:
         lines: list[str] = ['<g id = "DocumentItemsGroup" >']
         foreground_compile_mask_records: list[str] = []
         transparent_back_elements: list[str] = []
-        if self.options.text_mode == "native_svg_export":
+        if (
+            self.options.text_mode == "native_svg_export"
+            or self._has_explicit_transparent_back(document)
+        ):
             transparent_back_elements = self._render_transparent_back_elements(
                 document=document,
                 units_per_px=units_per_px,
@@ -240,8 +449,19 @@ class SchGeometrySvgRenderer:
             lines.extend(transparent_back_elements)
             lines.append("</g>")
 
+        claimed_group_ids: set[str] = set()
+        group_slots: dict[str, int] = {}
+        item_chunks: list[list[str]] = []
         for record in document.records:
-            if record is sheet_record or record.unique_id in nested_record_ids:
+            group_id = self._record_render_group_id(record)
+            group_identity = self._record_group_key(record)
+            if (
+                record is sheet_record
+                or self._record_source_key(record) in nested_record_identities
+                or group_id in legacy_nested_record_ids
+            ):
+                continue
+            if group_id and group_identity in claimed_group_ids:
                 continue
             rendered_record = self._render_item_record(
                 record,
@@ -251,10 +471,38 @@ class SchGeometrySvgRenderer:
             )
             if compiled_visual_masks and record.kind == "compilemask":
                 foreground_compile_mask_records.extend(rendered_record)
-            else:
-                lines.extend(rendered_record)
+                continue
+            if not group_id:
+                item_chunks.append(rendered_record)
+                continue
+            self._place_document_group(
+                group_identity,
+                rendered_record,
+                item_chunks,
+                group_slots,
+                claimed_group_ids,
+            )
+        lines.extend(line for chunk in item_chunks for line in chunk)
         lines.append("</g>")
         return lines, foreground_compile_mask_records
+
+    @staticmethod
+    def _place_document_group(
+        group_identity: str,
+        rendered_record: list[str],
+        item_chunks: list[list[str]],
+        group_slots: dict[str, int],
+        claimed_group_ids: set[str],
+    ) -> None:
+        slot = group_slots.get(group_identity)
+        if slot is None:
+            group_slots[group_identity] = len(item_chunks)
+            item_chunks.append(rendered_record)
+            if rendered_record:
+                claimed_group_ids.add(group_identity)
+        elif rendered_record and group_identity not in claimed_group_ids:
+            item_chunks[slot] = rendered_record
+            claimed_group_ids.add(group_identity)
 
     def _resolve_compile_mask_overlay(
         self,
@@ -332,32 +580,53 @@ class SchGeometrySvgRenderer:
                 diagnostics.append(resolution.to_dict())
         return diagnostics
 
-    def _render_font_face_style(self, document: SchGeometryDocument) -> list[str]:
-        diagnostics = [
+    def _font_face_candidate_diagnostics(
+        self,
+        document: SchGeometryDocument,
+    ) -> list[FontDiagnosticPayload]:
+        return [
             *self._font_resolution_diagnostics_from_hints(document),
             *self._font_resolution_diagnostics_from_text_ops(document),
         ]
-        if not diagnostics:
+
+    def _bundled_font_face_key(
+        self,
+        diagnostic: FontDiagnosticPayload,
+    ) -> _BundledFontFaceKey | None:
+        if str(diagnostic.get("source", "")) != FontResolutionSource.BUNDLED_FONT.value:
+            return None
+        path_value = diagnostic.get("path")
+        resolved_family = str(diagnostic.get("resolved_family", "") or "").strip()
+        if not resolved_family or not isinstance(path_value, str):
+            return None
+        font_path = canonical_package_bundled_font_path(path_value)
+        if font_path is None:
+            return None
+        return (
+            resolved_family,
+            bool(diagnostic.get("requested_bold", False)),
+            bool(diagnostic.get("requested_italic", False)),
+            str(font_path),
+        )
+
+    def _render_font_face_style(
+        self,
+        diagnostics: list[FontDiagnosticPayload],
+        *,
+        painted_faces: set[_BundledFontFaceKey],
+    ) -> list[str]:
+        if not self.options.embed_bundled_fallback_fonts or not painted_faces:
             return []
 
         rules: list[str] = []
-        seen: set[tuple[str, bool, bool, str]] = set()
+        seen: set[_BundledFontFaceKey] = set()
         for diagnostic in diagnostics:
-            if str(diagnostic.get("source", "")) != "bundled_font":
-                continue
-            path_value = diagnostic.get("path")
-            resolved_family = str(diagnostic.get("resolved_family", "") or "").strip()
-            if not resolved_family or not isinstance(path_value, str):
-                continue
-            font_path = Path(path_value)
-            if not font_path.exists():
-                continue
-            bold = bool(diagnostic.get("requested_bold", False))
-            italic = bool(diagnostic.get("requested_italic", False))
-            key = (resolved_family, bold, italic, str(font_path))
-            if key in seen:
+            key = self._bundled_font_face_key(diagnostic)
+            if key is None or key not in painted_faces or key in seen:
                 continue
             seen.add(key)
+            resolved_family, bold, italic, font_path_value = key
+            font_path = Path(font_path_value)
             encoded_font = base64.b64encode(font_path.read_bytes()).decode("ascii")
             font_style = "italic" if italic else "normal"
             font_weight = "700" if bold else "400"
@@ -374,19 +643,43 @@ class SchGeometrySvgRenderer:
             return []
         return ["<defs>", "<style>", *rules, "</style>", "</defs>"]
 
-    def _resolve_svg_font_family(self, font: FontDiagnosticPayload) -> str:
+    def _attach_bundled_font_faces(
+        self,
+        document: SchGeometryDocument,
+        lines: list[str],
+        *,
+        svg_root_line_index: int,
+    ) -> None:
+        if not self.options.embed_bundled_fallback_fonts:
+            return
+        font_face_style = self._render_font_face_style(
+            self._font_face_candidates,
+            painted_faces=self._painted_bundled_font_faces,
+        )
+        if font_face_style:
+            lines[svg_root_line_index + 1 : svg_root_line_index + 1] = font_face_style
+
+    def _resolve_svg_font(
+        self,
+        font: FontDiagnosticPayload,
+    ) -> tuple[str, FontResolution | None]:
         font_name = str(font.get("name", "") or "")
         if not font_name:
-            return ""
+            return "", None
         resolution = resolve_font_with_style(
             font_name,
             bold=bool(font.get("bold", False)),
             italic=bool(font.get("italic", False)),
         )
-        return resolution.resolved_family or font_name
+        return resolution.resolved_family or font_name, resolution
 
     def render(self, document: SchGeometryDocument) -> str:
         self._clip_rect_counter = 0
+        self._pattern_counter = 0
+        self._painted_bundled_font_faces.clear()
+        # The historical diagnostic scan includes nonpainted operations. Keep it
+        # separate from the later paint-time set that authorizes payload bytes.
+        self._font_face_candidates = self._font_face_candidate_diagnostics(document)
         width_px, height_px, units_per_px, doc_id, workspace_bg = (
             self._resolve_render_frame(document)
         )
@@ -424,7 +717,7 @@ class SchGeometrySvgRenderer:
         if artifact_key:
             svg_attrs.append(f'data-artifact-key="{html.escape(artifact_key)}"')
         lines.append(f"<svg {' '.join(svg_attrs)}>")
-        lines.extend(self._render_font_face_style(document))
+        svg_root_line_index = len(lines) - 1
         lines.append('<g id = "scene" >')
 
         lines.append('<g id = "DocumentMainGroup" >')
@@ -438,9 +731,11 @@ class SchGeometrySvgRenderer:
 
         lines.append(f'<g id = "{html.escape(doc_id)}" >')
 
-        sheet_record, nested_record_ids = self._collect_sheet_and_nested_record_ids(
-            document
-        )
+        (
+            sheet_record,
+            nested_record_identities,
+            legacy_nested_record_ids,
+        ) = self._collect_sheet_and_nested_record_ids(document)
         if sheet_record is not None:
             lines.extend(
                 self._render_record_primitives(
@@ -459,7 +754,8 @@ class SchGeometrySvgRenderer:
         item_lines, foreground_compile_mask_records = self._render_document_items_group(
             document,
             sheet_record=sheet_record,
-            nested_record_ids=nested_record_ids,
+            nested_record_identities=nested_record_identities,
+            legacy_nested_record_ids=legacy_nested_record_ids,
             units_per_px=units_per_px,
             canvas_height_px=height_px,
             compiled_visual_masks=compiled_visual_masks,
@@ -484,6 +780,11 @@ class SchGeometrySvgRenderer:
         lines.append("</g>")
         lines.append("</g>")
         lines.append("</svg>")
+        self._attach_bundled_font_faces(
+            document,
+            lines,
+            svg_root_line_index=svg_root_line_index,
+        )
         return "\n".join(lines)
 
     def _build_text_render_context(
@@ -512,16 +813,21 @@ class SchGeometrySvgRenderer:
             units_per_px=units_per_px,
             canvas_height_px=canvas_height_px,
             suppress_transparent_back=(
-                self.options.text_mode == "native_svg_export"
-                and str(getattr(record, "kind", "") or "") in {"compilemask", "blanket"}
+                self._record_has_explicit_transparent_back(record)
+                or (
+                    self.options.text_mode == "native_svg_export"
+                    and str(getattr(record, "kind", "") or "")
+                    in {"compilemask", "blanket"}
+                )
             ),
         )
         if not primitives:
             return []
-        if record.unique_id:
-            graph_attrs = self._compiled_graph_group_attrs(document, record.unique_id)
+        group_id = self._record_render_group_id(record)
+        if group_id:
+            graph_attrs = self._compiled_graph_group_attrs(document, group_id)
             return [
-                f'<g id = "{html.escape(record.unique_id)}"{graph_attrs} >',
+                f'<g id = "{html.escape(group_id)}"{graph_attrs} >',
                 *primitives,
                 "</g>",
             ]
@@ -576,25 +882,48 @@ class SchGeometrySvgRenderer:
             {
                 "frame_type": "root",
                 "group_id": None,
+                "group_identity": self._record_group_key(record),
                 "content": [],
+                "groups": [],
+                "claimed_group_ids": set(),
+                "group_slots": {},
+                "has_paint": False,
             }
         ]
         transform_stack: list[tuple[float, float, float, float, float, float]] = [
             _identity_affine()
         ]
         polygon_op_index = -1
+        skipped_group_depth = 0
 
         for op in record.operations:
             kind = op.kind_str()
             payload = op.payload
+            if skipped_group_depth:
+                if kind == SchGeometryOpKind.BEGIN_GROUP.value:
+                    skipped_group_depth += 1
+                elif kind == SchGeometryOpKind.END_GROUP.value:
+                    skipped_group_depth -= 1
+                continue
+            if (
+                kind == SchGeometryOpKind.BEGIN_GROUP.value
+                and self._record_group_is_populated(record, op, rendered_stack[-1])
+            ):
+                skipped_group_depth = 1
+                continue
 
             if self._skip_record_op_for_transparent_back(
-                kind, transparent_back_only=transparent_back_only
+                kind,
+                payload=payload,
+                record_kind=str(getattr(record, "kind", "") or ""),
+                transparent_back_only=transparent_back_only,
+                suppress_transparent_back=suppress_transparent_back,
             ):
                 continue
 
             if self._handle_record_stack_operation(
                 kind,
+                operation=op,
                 payload=payload,
                 record=record,
                 document=document,
@@ -619,30 +948,46 @@ class SchGeometrySvgRenderer:
                 transparent_back_only=transparent_back_only,
             )
             rendered_stack[-1]["content"].extend(rendered)
+            if rendered:
+                rendered_stack[-1]["has_paint"] = True
         while len(rendered_stack) > 1:
-            completed = rendered_stack.pop()
-            rendered_stack[-1]["content"].extend(
-                self._wrap_completed_frame(
-                    completed,
-                    units_per_px=units_per_px,
-                    canvas_height_px=canvas_height_px,
-                )
+            self._pop_render_frame(
+                rendered_stack,
+                units_per_px=units_per_px,
+                canvas_height_px=canvas_height_px,
             )
-        return list(rendered_stack[0]["content"])
+        content = self._frame_content(rendered_stack[0])
+        if not content and rendered_stack[0]["has_paint"]:
+            # An owner with an empty child group is structurally nonempty.
+            # Retain its outer wrapper even though the child draws nothing.
+            return [""]
+        return content
 
     def _skip_record_op_for_transparent_back(
         self,
         kind: str,
         *,
+        payload: dict[str, object],
+        record_kind: str,
         transparent_back_only: bool,
+        suppress_transparent_back: bool,
     ) -> bool:
+        targets_transparent_back = payload.get("transparent_back") is True
         if not transparent_back_only:
-            return False
-        return kind not in {
+            return suppress_transparent_back and targets_transparent_back
+        if kind in {
             SchGeometryOpKind.PUSH_TRANSFORM.value,
             SchGeometryOpKind.POP_TRANSFORM.value,
-            SchGeometryOpKind.POLYGONS.value,
-        }
+        }:
+            return False
+        if targets_transparent_back:
+            return False
+        if payload.get("transparent_back") is False:
+            return True
+        return not (
+            record_kind in {"compilemask", "blanket"}
+            and kind == SchGeometryOpKind.POLYGONS.value
+        )
 
     def _pop_render_frame(
         self,
@@ -654,18 +999,56 @@ class SchGeometrySvgRenderer:
         if len(rendered_stack) <= 1:
             return
         completed = rendered_stack.pop()
-        rendered_stack[-1]["content"].extend(
-            self._wrap_completed_frame(
-                completed,
-                units_per_px=units_per_px,
-                canvas_height_px=canvas_height_px,
-            )
+        if completed is rendered_stack[-1]:
+            return
+        has_paint = bool(completed.get("has_paint", False))
+        group_id = str(completed.get("group_id", "") or "")
+        group_identity = str(completed.get("group_identity", group_id) or group_id)
+        wrapped = self._wrap_completed_frame(
+            completed,
+            units_per_px=units_per_px,
+            canvas_height_px=canvas_height_px,
         )
+        parent = rendered_stack[-1]
+        if group_id:
+            self._place_completed_group(
+                parent,
+                group_identity,
+                wrapped,
+                has_paint,
+            )
+        else:
+            parent["content"].append(wrapped)
+        if group_id or has_paint:
+            parent["has_paint"] = True
+
+    @staticmethod
+    def _place_completed_group(
+        parent: dict[str, object],
+        group_identity: str,
+        wrapped: list[_SvgRenderChunk],
+        has_paint: bool,
+    ) -> None:
+        claimed_group_ids = cast(set[str], parent["claimed_group_ids"])
+        group_slots = cast(dict[str, int], parent["group_slots"])
+        groups = cast(list[list[_SvgRenderChunk]], parent["groups"])
+        slot = group_slots.get(group_identity)
+        if slot is None:
+            group_slots[group_identity] = len(groups)
+            groups.append(wrapped)
+            if has_paint:
+                claimed_group_ids.add(group_identity)
+            return
+        if not has_paint or group_identity in claimed_group_ids:
+            return
+        groups[slot] = wrapped
+        claimed_group_ids.add(group_identity)
 
     def _handle_record_stack_operation(
         self,
         kind: str,
         *,
+        operation: SchGeometryOp,
         payload: dict[str, Any],
         record: SchGeometryRecord,
         document: SchGeometryDocument,
@@ -692,20 +1075,26 @@ class SchGeometrySvgRenderer:
                 transform_stack.pop()
             return True
         if kind == SchGeometryOpKind.BEGIN_GROUP.value:
-            group_id = str(payload.get("parameters", "") or "")
-            if group_id in {
-                "",
-                "DocumentMainGroup",
-                "DocumentItemsGroup",
-                str(getattr(record, "unique_id", "") or ""),
-            }:
-                group_id = ""
+            group_id, group_identity = self._render_operation_group(record, operation)
+            parent = rendered_stack[-1]
+            if not group_id:
+                rendered_stack.append(parent)
+                return True
+            self_match = group_identity == parent.get("group_identity")
+            if self_match and not parent["has_paint"]:
+                rendered_stack.append(parent)
+                return True
             rendered_stack.append(
                 {
                     "frame_type": "group",
                     "group_id": group_id,
+                    "group_identity": group_identity,
                     "graph_attrs": self._compiled_graph_group_attrs(document, group_id),
                     "content": [],
+                    "groups": [],
+                    "claimed_group_ids": set(),
+                    "group_slots": {},
+                    "has_paint": False,
                 }
             )
             return True
@@ -725,6 +1114,10 @@ class SchGeometrySvgRenderer:
                     "clip_payload": dict(payload),
                     "clip_transform": transform_stack[-1],
                     "content": [],
+                    "groups": [],
+                    "claimed_group_ids": set(),
+                    "group_slots": {},
+                    "has_paint": False,
                 }
             )
             return True
@@ -736,6 +1129,32 @@ class SchGeometrySvgRenderer:
             )
             return True
         return False
+
+    def _render_operation_group(
+        self, record: SchGeometryRecord, operation: SchGeometryOp
+    ) -> tuple[str, str]:
+        persisted_group_id = str(operation.payload.get("parameters", "") or "")
+        group_id = str(operation.render_group_id or persisted_group_id)
+        group_identity = self._operation_group_key(operation, group_id)
+        if self._operation_is_record_wrapper(record, operation, persisted_group_id):
+            return "", ""
+        if group_id in {"", "DocumentMainGroup", "DocumentItemsGroup"}:
+            return "", ""
+        return group_id, group_identity
+
+    def _record_group_is_populated(
+        self,
+        record: SchGeometryRecord,
+        operation: SchGeometryOp,
+        parent: dict[str, object],
+    ) -> bool:
+        group_id, group_identity = self._render_operation_group(record, operation)
+        if not group_id:
+            return False
+        if group_identity == parent.get("group_identity"):
+            return bool(parent.get("has_paint"))
+        claimed = parent.get("claimed_group_ids")
+        return isinstance(claimed, set) and group_identity in claimed
 
     def _record_clip_path(
         self,
@@ -844,9 +1263,12 @@ class SchGeometrySvgRenderer:
         canvas_height_px: float,
     ) -> list[str]:
         rendered: list[str] = []
+        claimed_group_ids: set[str] = set()
         for record in document.records:
-            record_kind = str(getattr(record, "kind", "") or "")
-            if record_kind not in {"compilemask", "blanket"}:
+            if not self._record_has_transparent_back_pass(record):
+                continue
+            group_id = self._transparent_back_group_id(record)
+            if group_id and group_id in claimed_group_ids:
                 continue
             fill_only = self._render_record_transparent_back(
                 record,
@@ -856,15 +1278,45 @@ class SchGeometrySvgRenderer:
             )
             if not fill_only:
                 continue
-            group_id = str(getattr(record, "unique_id", "") or "")
             if group_id:
-                group_id = f"{group_id}TransparentBackSuffix"
+                claimed_group_ids.add(group_id)
                 rendered.append(f'<g id = "{html.escape(group_id)}" >')
                 rendered.extend(fill_only)
                 rendered.append("</g>")
             else:
                 rendered.extend(fill_only)
         return rendered
+
+    def _record_has_transparent_back_pass(self, record: SchGeometryRecord) -> bool:
+        record_kind = str(getattr(record, "kind", "") or "")
+        return self._record_has_explicit_transparent_back(record) or (
+            self.options.text_mode == "native_svg_export"
+            and record_kind in {"compilemask", "blanket"}
+        )
+
+    def _transparent_back_group_id(self, record: SchGeometryRecord) -> str:
+        unique_id = self._record_render_group_id(record)
+        if not unique_id:
+            return ""
+        if self.options.text_mode == "native_svg_export":
+            return f"{unique_id}TransparentBackSuffix"
+        object_id = str(getattr(record, "object_id", "") or "")
+        prefix = f"{object_id}_" if object_id else ""
+        return f"{prefix}{unique_id}TransparentBackSuffix"
+
+    @staticmethod
+    def _record_has_explicit_transparent_back(record: SchGeometryRecord) -> bool:
+        return any(
+            operation.payload.get("transparent_back") is True
+            for operation in record.operations
+        )
+
+    @classmethod
+    def _has_explicit_transparent_back(cls, document: SchGeometryDocument) -> bool:
+        return any(
+            cls._record_has_explicit_transparent_back(record)
+            for record in document.records
+        )
 
     def _render_record_transparent_back(
         self,
@@ -901,9 +1353,14 @@ class SchGeometrySvgRenderer:
         *,
         units_per_px: float,
         canvas_height_px: float,
-    ) -> list[str]:
+    ) -> list[_SvgRenderChunk]:
         frame_type = str(frame.get("frame_type", "group") or "group")
-        content = list(frame.get("content", []))
+        content: list[_SvgRenderChunk] = [
+            frame.get("content", []),
+            frame.get("groups", []),
+        ]
+        if not frame.get("has_paint", False):
+            return []
         if frame_type == "clip":
             clip_id = str(frame.get("clip_id", "") or "")
             if clip_id:
@@ -920,10 +1377,25 @@ class SchGeometrySvgRenderer:
             graph_attrs = str(frame.get("graph_attrs", "") or "")
             return [
                 f'<g id = "{html.escape(group_id)}"{graph_attrs} >',
-                *content,
+                content,
                 "</g>",
             ]
         return content
+
+    @staticmethod
+    def _frame_content(frame: dict[str, object]) -> list[str]:
+        lines: list[str] = []
+        pending: list[_SvgRenderChunk] = [
+            cast(list[_SvgRenderChunk], frame.get("groups", [])),
+            cast(list[_SvgRenderChunk], frame.get("content", [])),
+        ]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, list):
+                pending.extend(reversed(item))
+                continue
+            lines.append(item)
+        return lines
 
     def _render_clip_wrapper(
         self,
@@ -931,10 +1403,10 @@ class SchGeometrySvgRenderer:
         clip_id: str,
         payload: dict[str, Any],
         transform: tuple[float, float, float, float, float, float],
-        content: list[str],
+        content: list[_SvgRenderChunk],
         units_per_px: float,
         canvas_height_px: float,
-    ) -> list[str]:
+    ) -> list[_SvgRenderChunk]:
         x1 = float(payload.get("x1", 0) or 0.0)
         y1 = float(payload.get("y1", 0) or 0.0)
         x2 = float(payload.get("x2", 0) or 0.0)
@@ -958,7 +1430,7 @@ class SchGeometrySvgRenderer:
             f'<rect x="{_fmt_num(clip_x)}" y="{_fmt_num(clip_y)}" '
             f'width="{_fmt_num(clip_width)}" height="{_fmt_num(clip_height)}"/>'
             f"</clipPath>",
-            *content,
+            content,
             "</g>",
         ]
 
@@ -1038,6 +1510,9 @@ class SchGeometrySvgRenderer:
 
         if pen is not None:
             attrs.append(f'stroke="{pen.get("color_hex", "#000000")}"')
+            alpha = _style_alpha(pen)
+            if alpha is not None and alpha < 0xFF:
+                attrs.append(f'stroke-opacity="{alpha / 255.0}"')
             stroke_width = _pen_width_to_svg(pen, units_per_px=units_per_px)
             attrs.append(f'stroke-width="{_fmt_num(stroke_width)}px"')
             dash_style = str(pen.get("dash_style", "") or "")
@@ -1081,6 +1556,7 @@ class SchGeometrySvgRenderer:
         pen = payload.get("pen") or {}
         stroke = pen.get("color_hex", "#000000")
         stroke_width = _pen_width_to_svg(pen, units_per_px=units_per_px)
+        stroke_opacity = _stroke_opacity_attr(pen)
         vector_effect = (
             ' vector-effect="non-scaling-stroke"' if stroke_width <= 0.5 + 1e-9 else ""
         )
@@ -1089,7 +1565,8 @@ class SchGeometrySvgRenderer:
             return [
                 f'<line x1="{_fmt_num(x1)}" y1="{_fmt_num(y1)}" '
                 f'x2="{_fmt_num(x2)}" y2="{_fmt_num(y2)}" '
-                f'stroke="{stroke}" stroke-width="{_fmt_num(stroke_width)}px"{vector_effect}/>'
+                f'stroke="{stroke}" stroke-width="{_fmt_num(stroke_width)}px"'
+                f"{stroke_opacity}{vector_effect}/>"
             ]
 
         rendered: list[str] = []
@@ -1097,7 +1574,8 @@ class SchGeometrySvgRenderer:
             rendered.append(
                 f'<line x1="{_fmt_num(start[0])}" y1="{_fmt_num(start[1])}" '
                 f'x2="{_fmt_num(end[0])}" y2="{_fmt_num(end[1])}" '
-                f'stroke="{stroke}" stroke-width="{_fmt_num(stroke_width)}px"{vector_effect}/>'
+                f'stroke="{stroke}" stroke-width="{_fmt_num(stroke_width)}px"'
+                f"{stroke_opacity}{vector_effect}/>"
             )
         return rendered
 
@@ -1128,6 +1606,12 @@ class SchGeometrySvgRenderer:
         pen = payload.get("pen") or {}
         stroke = pen.get("color_hex", "#000000")
         stroke_width = _pen_width_to_svg(pen, units_per_px=units_per_px)
+        stroke_alpha = _style_alpha(pen)
+        stroke_opacity = (
+            stroke_alpha / 255.0
+            if stroke_alpha is not None and stroke_alpha < 0xFF
+            else None
+        )
         vector_effect = "non-scaling-stroke" if stroke_width <= 0.5 + 1e-9 else None
 
         angle_diff = end_angle - start_angle
@@ -1145,6 +1629,7 @@ class SchGeometrySvgRenderer:
                     stroke=stroke,
                     stroke_width=stroke_width,
                     fill=None,
+                    stroke_opacity=stroke_opacity,
                     vector_effect=vector_effect,
                 )
             ]
@@ -1160,6 +1645,7 @@ class SchGeometrySvgRenderer:
                 stroke=stroke,
                 stroke_width=stroke_width,
                 fill=None,
+                stroke_opacity=stroke_opacity,
                 vector_effect=vector_effect,
             )
         ]
@@ -1181,12 +1667,21 @@ class SchGeometrySvgRenderer:
         pen = payload.get("pen")
         rendered: list[str] = []
         brush_alpha = self._polygon_brush_alpha(brush)
+        portable_pattern = self._portable_pattern_definition(
+            payload.get("portable_pattern"),
+            transform=transform,
+            units_per_px=units_per_px,
+            canvas_height_px=canvas_height_px,
+        )
+        if portable_pattern is not None:
+            rendered.append(portable_pattern[0])
         native_transparent_back_kind, transparent_back_fill = (
             self._polygon_transparent_back_state(
                 record_kind,
                 brush=brush,
                 pen=pen,
                 op_index=op_index,
+                transparent_back=payload.get("transparent_back"),
             )
         )
 
@@ -1213,12 +1708,65 @@ class SchGeometrySvgRenderer:
                 suppress_transparent_back=suppress_transparent_back,
                 transparent_back_only=transparent_back_only,
                 units_per_px=units_per_px,
+                pattern_fill=(
+                    None if portable_pattern is None else portable_pattern[1]
+                ),
+                pattern_opacity=(
+                    None if portable_pattern is None else portable_pattern[2]
+                ),
             )
             if attrs is None:
                 continue
             rendered.append(f"<polygon {' '.join(attrs)}/>")
 
         return rendered
+
+    def _portable_pattern_definition(
+        self,
+        value: object,
+        *,
+        transform: tuple[float, float, float, float, float, float],
+        units_per_px: float,
+        canvas_height_px: float,
+    ) -> tuple[str, str, float] | None:
+        state = _portable_pattern_state(value, units_per_px=units_per_px)
+        if state is None:
+            return None
+        origin_x, origin_y = _apply_affine(
+            transform,
+            state.origin_x,
+            state.origin_y,
+        )
+        svg_origin_x, svg_origin_y = _to_svg_point(
+            origin_x,
+            origin_y,
+            units_per_px=units_per_px,
+            canvas_height_px=canvas_height_px,
+        )
+        self._pattern_counter += 1
+        pattern_id = f"HarnessCoveringPattern{self._pattern_counter}"
+        path_attrs = [
+            f'd="{html.escape(state.resource.path_data, quote=True)}"',
+            f'fill="{state.color}"',
+        ]
+        if state.resource.fill_rule is not None:
+            path_attrs.append(f'fill-rule="{state.resource.fill_rule}"')
+        if state.resource.clip_rule is not None:
+            path_attrs.append(f'clip-rule="{state.resource.clip_rule}"')
+        definition = (
+            f'<defs><pattern id="{pattern_id}" '
+            f'x="{_fmt_num(svg_origin_x)}" y="{_fmt_num(svg_origin_y)}" '
+            f'width="{_fmt_num(state.tile_width)}" '
+            f'height="{_fmt_num(state.tile_height)}" '
+            f'patternUnits="userSpaceOnUse" '
+            f'viewBox="0 0 {state.resource.view_box_width} '
+            f'{state.resource.view_box_height}" '
+            f'preserveAspectRatio="none" '
+            f'patternTransform="rotate({_fmt_num(state.screen_degrees)} '
+            f'{_fmt_num(svg_origin_x)} {_fmt_num(svg_origin_y)})">'
+            f"<path {' '.join(path_attrs)}/></pattern></defs>"
+        )
+        return definition, f"url(#{pattern_id})", state.opacity
 
     def _polygon_brush_alpha(self, brush: dict[str, Any] | None) -> int | None:
         if brush is None:
@@ -1235,8 +1783,14 @@ class SchGeometrySvgRenderer:
         brush: dict[str, Any] | None,
         pen: dict[str, Any] | None,
         op_index: int,
+        transparent_back: object = None,
     ) -> tuple[bool, bool]:
         native_transparent_back_kind = record_kind in {"compilemask", "blanket"}
+        # Explicit routing overrides the legacy kind/position heuristic.
+        if transparent_back is True:
+            return True, True
+        if transparent_back is False:
+            return native_transparent_back_kind, False
         transparent_back_fill = False
         if native_transparent_back_kind and brush is not None and pen is None:
             if record_kind == "compilemask":
@@ -1286,6 +1840,8 @@ class SchGeometrySvgRenderer:
         suppress_transparent_back: bool,
         transparent_back_only: bool,
         units_per_px: float,
+        pattern_fill: str | None,
+        pattern_opacity: float | None,
     ) -> list[str] | None:
         attrs = [f'points="{points_attr}"']
         if transparent_back_only:
@@ -1307,6 +1863,8 @@ class SchGeometrySvgRenderer:
             transparent_back_fill=transparent_back_fill,
             suppress_transparent_back=suppress_transparent_back,
             pen=pen,
+            pattern_fill=pattern_fill,
+            pattern_opacity=pattern_opacity,
         )
         if fill_attrs is None:
             return None
@@ -1327,6 +1885,8 @@ class SchGeometrySvgRenderer:
         transparent_back_fill: bool,
         suppress_transparent_back: bool,
         pen: dict[str, Any] | None,
+        pattern_fill: str | None,
+        pattern_opacity: float | None,
     ) -> list[str] | None:
         if brush is None:
             return ['fill="none"']
@@ -1344,6 +1904,11 @@ class SchGeometrySvgRenderer:
         ):
             return ['fill="none"']
 
+        if pattern_fill is not None:
+            attrs = [f'fill="{pattern_fill}"']
+            if pattern_opacity is not None:
+                attrs.append(f'fill-opacity="{pattern_opacity}"')
+            return attrs
         attrs = [f'fill="{brush.get("color_hex", "#000000")}"']
         if brush_alpha is None:
             return attrs
@@ -1360,6 +1925,9 @@ class SchGeometrySvgRenderer:
         units_per_px: float,
     ) -> list[str]:
         attrs = [f'stroke="{pen.get("color_hex", "#000000")}"']
+        alpha = _style_alpha(pen)
+        if alpha is not None and alpha < 0xFF:
+            attrs.append(f'stroke-opacity="{alpha / 255.0}"')
         stroke_width = _pen_width_to_svg(pen, units_per_px=units_per_px)
         attrs.append(f'stroke-width="{_fmt_num(stroke_width)}px"')
         if stroke_width <= 0.5 + 1e-9:
@@ -1408,13 +1976,22 @@ class SchGeometrySvgRenderer:
 
         transform_attr = None
         if abs(rotation) > 1e-9:
-            transform_attr = f"rotate({_fmt_num(rotation)} {_fmt_num(baseline_x)} {_fmt_num(baseline_y)})"
+            rotation_coord_formatter = (
+                _fmt_native_text_rotation_coord
+                if self.options.text_mode == "native_svg_export"
+                else _fmt_num
+            )
+            transform_attr = (
+                f"rotate({_fmt_num(rotation)} "
+                f"{rotation_coord_formatter(baseline_x)} "
+                f"{rotation_coord_formatter(baseline_y)})"
+            )
 
         raw_text = str(payload.get("text", ""))
         if self.options.text_mode != "native_svg_export":
             raw_text = raw_text.rstrip("\r\n")
         text = html.escape(raw_text)
-        resolved_font_family = self._resolve_svg_font_family(font)
+        resolved_font_family, font_resolution = self._resolve_svg_font(font)
         if self.options.text_as_polygons:
             poly_ctx = self._build_text_render_context(document)
             return [
@@ -1434,9 +2011,19 @@ class SchGeometrySvgRenderer:
                 )
             ]
 
+        if raw_text and font_resolution is not None:
+            bundled_face = self._bundled_font_face_key(font_resolution.to_dict())
+            if bundled_face is not None:
+                self._painted_bundled_font_faces.add(bundled_face)
+
+        coord_formatter = (
+            _fmt_native_text_coord
+            if self.options.text_mode == "native_svg_export"
+            else _fmt_num
+        )
         attrs = [
-            f'x="{_fmt_num(baseline_x)}"',
-            f'y="{_fmt_num(baseline_y)}"',
+            f'x="{coord_formatter(baseline_x)}"',
+            f'y="{coord_formatter(baseline_y)}"',
             f'font-size="{_fmt_num(font_size)}px"',
             f'font-family="{html.escape(resolved_font_family)}"',
             f'fill="{brush.get("color_hex", "#000000")}"',

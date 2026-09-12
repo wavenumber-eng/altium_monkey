@@ -2,6 +2,7 @@
 
 from typing import Any, Protocol
 
+from ._sch_managed_defaults import BOX_BORDER_COLOR, RECT_FILL_COLOR
 from .altium_sch_enums import Rotation90
 from .altium_record_types import (
     ColorValue,
@@ -13,7 +14,15 @@ from .altium_record_types import (
     color_to_hex,
     rgb_to_win32_color,
 )
-from .altium_serializer import AltiumSerializer, Fields
+from .altium_serializer import (
+    AltiumSerializer,
+    FieldDef,
+    Fields,
+    _remove_dynamic_string_field,
+    format_param_n3,
+    read_dynamic_string_field,
+    write_dynamic_string_field,
+)
 from .altium_sch_image_payload import (
     SchEmbeddedImageFormat,
     decode_bmp_rgba,
@@ -216,11 +225,14 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self.corner = CoordPoint()
+        self.corner = CoordPoint(50, 50)
+        self.color = BOX_BORDER_COLOR
+        self.area_color = RECT_FILL_COLOR
         self.embed_image: bool = False
         self.filename: str = ""
         self.keep_aspect: bool = True
         self.orientation: Rotation90 = Rotation90.DEG_0
+        self.rotation_angle: float = 0.0
 
         # Border properties
         self.is_solid: bool = False  # Draw border when True
@@ -235,8 +247,38 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
         self._has_corner_y: bool = False
         self._has_embed_image: bool = False
         self._has_keep_aspect: bool = False
+        self._has_orientation: bool = False
         self._has_is_solid: bool = False
         self._has_line_width: bool = False
+        self._has_filename: bool = False
+        self._used_utf8_filename: bool = False
+        self._has_unique_id: bool = True
+        self._used_utf8_unique_id: bool = False
+        self._has_rotation_angle: bool = False
+        self._rotation_angle_text: str | None = None
+        self._capture_image_source_state()
+
+    def _capture_image_source_state(self) -> None:
+        self._source_corner = CoordPoint(
+            self.corner.x,
+            self.corner.y,
+            self.corner.x_frac,
+            self.corner.y_frac,
+        )
+        self._source_location = CoordPoint(
+            self.location.x,
+            self.location.y,
+            self.location.x_frac,
+            self.location.y_frac,
+        )
+        self._source_embed_image = self.embed_image
+        self._source_filename = self.filename
+        self._source_keep_aspect = self.keep_aspect
+        self._source_orientation = self.orientation
+        self._source_is_solid = self.is_solid
+        self._source_line_width = self.line_width
+        self._source_rotation_angle = self.rotation_angle
+        self._source_unique_id = str(self.unique_id or "")
 
     @property
     def record_type(self) -> SchRecordType:
@@ -250,18 +292,24 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
         return self.embed_image
 
     @property
-    def width(self) -> int:
+    def width(self) -> float:
         """
-        Width of image in internal units.
+        Width in low-level schematic record units (10 mil per whole unit).
         """
-        return abs(self.corner.x - self.location.x)
+        return abs(
+            (self.corner.x - self.location.x)
+            + (self.corner.x_frac - self.location.x_frac) / 100_000
+        )
 
     @property
-    def height(self) -> int:
+    def height(self) -> float:
         """
-        Height of image in internal units.
+        Height in low-level schematic record units (10 mil per whole unit).
         """
-        return abs(self.corner.y - self.location.y)
+        return abs(
+            (self.corner.y - self.location.y)
+            + (self.corner.y_frac - self.location.y_frac) / 100_000
+        )
 
     @property
     def bounds_mils(self) -> SchRectMils:
@@ -319,11 +367,19 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
         self.embed_image, self._has_embed_image = s.read_bool(
             record, Fields.EMBED_IMAGE, default=False
         )
-        self.filename, _ = s.read_str(record, Fields.FILENAME, default="")
+        (
+            self.filename,
+            self._has_filename,
+            self._used_utf8_filename,
+        ) = read_dynamic_string_field(
+            s, record, self._record, Fields.FILENAME, default=""
+        )
         self.keep_aspect, self._has_keep_aspect = s.read_bool(
             record, Fields.KEEP_ASPECT, default=False
         )
-        orient_val, _ = s.read_int(record, Fields.ORIENTATION, default=0)
+        orient_val, self._has_orientation = s.read_int(
+            record, Fields.ORIENTATION, default=0
+        )
         self.orientation = Rotation90(orient_val)
 
         # Existing SchDoc/SchLib image records can omit IsSolid while still
@@ -336,75 +392,280 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
         )
         self.line_width = LineWidth(line_width_val)
 
+        unique_id, self._has_unique_id, self._used_utf8_unique_id = (
+            read_dynamic_string_field(s, record, self._record, "UniqueID", default="")
+        )
+        self.unique_id = unique_id
+
+        rotation_text, self._has_rotation_angle = s.read_str(
+            record, "RotationAngle", default=""
+        )
+        self._rotation_angle_text = rotation_text if rotation_text else None
+        try:
+            self.rotation_angle = float(rotation_text) if rotation_text else 0.0
+        except (TypeError, ValueError):
+            self.rotation_angle = 0.0
+
+        # Import_Color overwrites its local initializer with zero when Color is absent.
+        if not self._has_color:
+            self.color = 0
+        self._area_color = RECT_FILL_COLOR
+        self._capture_graphical_source_state()
+        self._capture_image_source_state()
+
     def serialize_to_record(self) -> dict[str, Any]:
         record = super().serialize_to_record()
+        serializer = AltiumSerializer(self._detect_case_mode())
+        self._write_corner(record, serializer)
+        self._write_family_fields(record, serializer)
+        self._remove_unsupported_shape_fields(record, serializer)
+        if self._raw_record is None:
+            return self._authored_managed_order(record)
+        return record
 
-        # Determine case mode from raw record
-        mode = self._detect_case_mode()
-        s = AltiumSerializer(mode)
-        raw = self._raw_record
+    def _write_corner(
+        self, record: dict[str, object], serializer: AltiumSerializer
+    ) -> None:
+        self._serialize_managed_family_coord(
+            record,
+            serializer,
+            "Corner",
+            "X",
+            self.corner.x,
+            self.corner.x_frac,
+        )
+        self._serialize_managed_family_coord(
+            record,
+            serializer,
+            "Corner",
+            "Y",
+            self.corner.y,
+            self.corner.y_frac,
+        )
 
-        # Corner - only write if present or non-zero
-        if self._has_corner_x or self.corner.x != 0:
-            s.write_coord(record, "Corner", "X", self.corner.x, self.corner.x_frac, raw)
-        if self._has_corner_y or self.corner.y != 0:
-            s.write_coord(record, "Corner", "Y", self.corner.y, self.corner.y_frac, raw)
-
-        # Remove fields that the base class may have written but Image
-        # handles explicitly below.
-        s.remove_field(record, Fields.IS_SOLID)
-        s.remove_field(record, Fields.LINE_WIDTH)
-
-        # Image core fields: only write if the field was explicitly present
-        # in the original record (_has_* flag) or the value is non-default.
-        s.write_bool(
+    def _write_family_fields(
+        self, record: dict[str, object], serializer: AltiumSerializer
+    ) -> None:
+        self._remove_stale_zero_fractions(record, serializer)
+        self._write_omitted_false(
+            serializer,
             record,
             Fields.EMBED_IMAGE,
             self.embed_image,
-            raw,
-            force=(self._has_embed_image or self.embed_image),
+            self._source_embed_image,
+            self._has_embed_image,
         )
-        if self.filename:
-            s.write_str(record, Fields.FILENAME, self.filename, raw)
-        s.write_bool(
+        self._write_omitted_false(
+            serializer,
             record,
             Fields.KEEP_ASPECT,
             self.keep_aspect,
-            raw,
-            force=(self._has_keep_aspect or self.keep_aspect),
+            self._source_keep_aspect,
+            self._has_keep_aspect,
         )
-        s.write_int(
+        self._write_omitted_zero(
+            serializer,
             record,
             Fields.ORIENTATION,
             self.orientation.value,
-            raw,
-            force=(self.orientation != Rotation90.DEG_0),
+            self._source_orientation.value,
+            self._has_orientation,
         )
-        # Synthesized image records should emit the native default border fields,
-        # while parsed sparse records stay sparse unless those fields were present
-        # or intentionally changed.
-        s.write_bool(
+        self._write_omitted_false(
+            serializer,
             record,
             Fields.IS_SOLID,
             self.is_solid,
-            raw,
-            force=(self._has_is_solid or self.is_solid),
+            self._source_is_solid,
+            self._has_is_solid,
         )
-        s.write_int(
+        self._write_omitted_zero(
+            serializer,
             record,
             Fields.LINE_WIDTH,
             self.line_width.value,
-            raw,
-            force=(self._has_line_width or self.line_width.value != 0),
+            self._source_line_width.value,
+            self._has_line_width,
         )
 
-        # Image records do not own the inherited shape-only fields below.
-        s.remove_field(record, Fields.AREA_COLOR)
-        s.remove_field(record, Fields.TRANSPARENT)
-        s.remove_field(record, Fields.LINE_STYLE)
-        s.remove_field(record, Fields.LINE_STYLE_EXT)
+        if self.color == 0 and (
+            not self._has_color or self._source_color not in (0, None)
+        ):
+            serializer.remove_field(record, "Color")
 
-        return record
+        self._write_dynamic_field(
+            serializer,
+            record,
+            "FileName",
+            self.filename,
+            self._source_filename,
+            self._used_utf8_filename,
+            self._has_filename,
+        )
+        self._write_dynamic_unique_id(serializer, record)
+        self._write_rotation_angle(serializer, record)
+
+    @staticmethod
+    def _remove_unsupported_shape_fields(
+        record: dict[str, object], serializer: AltiumSerializer
+    ) -> None:
+        for field in (
+            Fields.AREA_COLOR,
+            Fields.TRANSPARENT,
+            Fields.LINE_STYLE,
+            Fields.LINE_STYLE_EXT,
+        ):
+            serializer.remove_field(record, field)
+
+    def _remove_stale_zero_fractions(
+        self, record: dict[str, object], serializer: AltiumSerializer
+    ) -> None:
+        for prefix, value, source in (
+            ("Location.X", self.location.x_frac, self._source_location.x_frac),
+            ("Location.Y", self.location.y_frac, self._source_location.y_frac),
+            ("Corner.X", self.corner.x_frac, self._source_corner.x_frac),
+            ("Corner.Y", self.corner.y_frac, self._source_corner.y_frac),
+        ):
+            if value == 0 and source != 0:
+                serializer.remove_field(record, f"{prefix}_Frac")
+
+    def _write_omitted_false(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        field: FieldDef | str,
+        value: bool,
+        source: bool,
+        was_present: bool,
+    ) -> None:
+        if self._raw_record is not None and value == source:
+            return
+        if value:
+            serializer.write_bool(
+                record, field, value, self._raw_record, force=not was_present
+            )
+        else:
+            serializer.remove_field(record, field)
+
+    def _write_omitted_zero(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        field: FieldDef | str,
+        value: int,
+        source: int,
+        was_present: bool,
+    ) -> None:
+        if self._raw_record is not None and value == source:
+            return
+        if value != 0:
+            serializer.write_int(
+                record, field, value, self._raw_record, force=not was_present
+            )
+        else:
+            serializer.remove_field(record, field)
+
+    def _write_dynamic_unique_id(
+        self, serializer: AltiumSerializer, record: dict[str, object]
+    ) -> None:
+        raw = self._raw_record
+        unique_id = str(self.unique_id or "")
+        if self._used_utf8_unique_id and raw is not None:
+            for key, value in raw.items():
+                if key.lower() == "uniqueid":
+                    record[key] = value
+                    break
+        self._write_dynamic_field(
+            serializer,
+            record,
+            "UniqueID",
+            unique_id,
+            self._source_unique_id,
+            self._used_utf8_unique_id,
+            self._has_unique_id,
+        )
+
+    def _write_dynamic_field(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        field: str,
+        value: str,
+        source: str,
+        used_utf8: bool,
+        was_present: bool,
+    ) -> None:
+        changed = value != source
+        if changed and not value:
+            _remove_dynamic_string_field(record, field)
+            return
+        write_dynamic_string_field(
+            serializer,
+            record,
+            field,
+            value,
+            raw_record=self._raw_record,
+            used_utf8_sidecar=used_utf8,
+            was_present=was_present,
+            force=changed,
+        )
+
+    def _write_rotation_angle(
+        self, serializer: AltiumSerializer, record: dict[str, object]
+    ) -> None:
+        if (
+            self._raw_record is not None
+            and self.rotation_angle == self._source_rotation_angle
+        ):
+            return
+        if self.rotation_angle == 0.0:
+            serializer.remove_field(record, "RotationAngle")
+            return
+        serializer.write_str(
+            record,
+            "RotationAngle",
+            format_param_n3(self.rotation_angle),
+            self._raw_record,
+            force=not self._has_rotation_angle,
+        )
+
+    @staticmethod
+    def _authored_managed_order(record: dict[str, object]) -> dict[str, object]:
+        family_order = (
+            "Location.X",
+            "Location.X_Frac",
+            "Location.Y",
+            "Location.Y_Frac",
+            "Corner.X",
+            "Corner.X_Frac",
+            "Corner.Y",
+            "Corner.Y_Frac",
+            "Orientation",
+            "LineWidth",
+            "Color",
+            "IsSolid",
+            "KeepAspect",
+            "EmbedImage",
+            "FileName",
+            "%UTF8%FileName",
+            "UniqueID",
+            "%UTF8%UniqueID",
+            "RotationAngle",
+        )
+        family_names = {name.lower(): name for name in family_order}
+        family_values: dict[str, tuple[str, object]] = {}
+        result: dict[str, Any] = {}
+        for key, value in record.items():
+            family_name = family_names.get(key.lower())
+            if family_name is None:
+                result[key] = value
+            else:
+                family_values[family_name] = (key, value)
+        for family_name in family_order:
+            if family_name in family_values:
+                key, value = family_values[family_name]
+                result[key] = value
+        return result
 
     _detect_case_mode = detect_case_mode_method_from_dotted_uppercase_fields
 
@@ -721,8 +982,10 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
     ) -> Any:
         from .altium_sch_geometry_oracle import (
             SchGeometryBounds,
-            SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
+            _make_image_operations,
+            make_rounded_rectangle_operation,
             make_pen,
             svg_coord_to_geometry,
             wrap_record_operations,
@@ -737,8 +1000,6 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
         top_px = min(y1, y2)
         right_px = max(x1, x2)
         bottom_px = max(y1, y2)
-        if abs(right_px - left_px) <= 1e-9 or abs(bottom_px - top_px) <= 1e-9:
-            return None
 
         dest_x1, dest_y1 = svg_coord_to_geometry(
             left_px,
@@ -760,17 +1021,16 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
         else:
             source_x2, source_y2 = image_size
 
-        operations = [
-            SchGeometryOp.image(
-                dest_x1=dest_x1,
-                dest_y1=dest_y1,
-                dest_x2=dest_x2,
-                dest_y2=dest_y2,
-                source_x2=source_x2,
-                source_y2=source_y2,
-                alpha=1.0,
-            )
-        ]
+        geometry_rotation = float(-ctx.rotation)
+        if ctx.mirror:
+            geometry_rotation = float(180 - ctx.rotation)
+        operations = _make_image_operations(
+            source=(0.0, 0.0, float(source_x2), float(source_y2)),
+            dest=(dest_x1, dest_y1, dest_x2, dest_y2),
+            alpha=1.0,
+            draw_rect=ctx._geometry_draw_rect,
+            rotation=geometry_rotation,
+        )
 
         if self.is_solid:
             border_color_raw = int(self.color) if self.color is not None else 0
@@ -783,18 +1043,25 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
                 int(border_hex[3:5], 16),
                 int(border_hex[5:7], 16),
             )
-            pen_width = {
-                LineWidth.SMALLEST: 0,
-                LineWidth.SMALL: units_per_px,
-                LineWidth.MEDIUM: units_per_px * 3,
-                LineWidth.LARGE: units_per_px * 5,
-            }.get(self.line_width, units_per_px)
+            pen_width_mils = {
+                LineWidth.SMALLEST: 0.0,
+                LineWidth.SMALL: 1.0,
+                LineWidth.MEDIUM: 3.0,
+                LineWidth.LARGE: 5.0,
+            }.get(self.line_width, 1.0)
+            pen_width = _geometry_item_length(
+                pen_width_mils * ctx.get_stroke_scale(),
+                units_per_px=units_per_px,
+            )
             operations.append(
-                SchGeometryOp.rounded_rectangle(
-                    x1=dest_x1,
-                    y1=dest_y1,
-                    x2=dest_x2,
-                    y2=dest_y2,
+                make_rounded_rectangle_operation(
+                    x1_px=left_px,
+                    y1_px=top_px,
+                    x2_px=right_px,
+                    y2_px=bottom_px,
+                    sheet_height_px=float(ctx.sheet_height or 0.0),
+                    units_per_px=units_per_px,
+                    source_rotation=ctx.rotation,
                     pen=make_pen(
                         border_color_raw,
                         width=pen_width,
@@ -802,10 +1069,10 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
                 )
             )
 
-        left_units = min(dest_x1, dest_x2)
-        right_units = max(dest_x1, dest_x2)
-        top_units = min(dest_y1, dest_y2)
-        bottom_units = max(dest_y1, dest_y2)
+        location_x = self.location.x * 100_000 + self.location.x_frac
+        location_y = self.location.y * 100_000 + self.location.y_frac
+        corner_x = self.corner.x * 100_000 + self.corner.x_frac
+        corner_y = self.corner.y * 100_000 + self.corner.y_frac
         unique_id = str(self.unique_id or "")
         extras = (
             {"image_key": self.runtime_image_key(document_id)} if not unique_id else {}
@@ -816,10 +1083,10 @@ class AltiumSchImage(CornerMilsMixin, SchGraphicalObject):
             kind="image",
             object_id="eImage",
             bounds=SchGeometryBounds(
-                left=int(round(left_units)),
-                top=int(round(top_units)),
-                right=int(round(right_units)),
-                bottom=int(round(bottom_units)),
+                left=min(location_x, corner_x) - 200_000,
+                top=max(location_y, corner_y) + 200_000,
+                right=max(location_x, corner_x) + 200_000,
+                bottom=min(location_y, corner_y) - 200_000,
             ),
             operations=wrap_record_operations(
                 self.unique_id,

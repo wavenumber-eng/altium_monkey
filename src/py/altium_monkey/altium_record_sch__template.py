@@ -8,7 +8,8 @@ if TYPE_CHECKING:
     from .altium_sch_geometry_oracle import SchGeometryRecord
     from .altium_sch_svg_renderer import SchSvgRenderContext
 
-from .altium_record_types import SchGraphicalObject, SchRecordType
+from ._sch_managed_defaults import GRAPHICAL_BORDER_COLOR, GRAPHICAL_FILL_COLOR
+from .altium_record_types import SchGraphicalObject, SchPrimitive, SchRecordType
 from .altium_serializer import AltiumSerializer, Fields
 from .altium_sch_record_helpers import detect_case_mode_method_from_uppercase_fields
 
@@ -23,10 +24,16 @@ class AltiumSchTemplate(SchGraphicalObject):
 
     def __init__(self) -> None:
         super().__init__()
+        self.unique_id = None
         self.filename: str = "*.dot"
         self.is_not_accessible = True
+        self.color = GRAPHICAL_BORDER_COLOR
+        self._area_color = GRAPHICAL_FILL_COLOR
+        self._capture_graphical_source_state()
+        self._capture_primitive_source_state()
         # Track field presence
         self._has_filename: bool = False
+        self._source_filename: str = self.filename
 
     @property
     def record_type(self) -> SchRecordType:
@@ -37,21 +44,29 @@ class AltiumSchTemplate(SchGraphicalObject):
         record: dict[str, Any],
         font_manager: "FontIDManager | None" = None,
     ) -> None:
-        super().parse_from_record(record, font_manager)
+        SchPrimitive.parse_from_record(self, record, font_manager)
+        self.unique_id = None
+        self._apply_imported_graphical_metadata_defaults()
         s = AltiumSerializer()
 
         # Template filename
         self.filename, self._has_filename = s.read_str(
-            record, Fields.FILENAME, default="*.dot"
+            record, Fields.FILENAME, default=""
         )
+        self._source_filename = self.filename
 
     def serialize_to_record(self) -> dict[str, Any]:
-        record = super().serialize_to_record()
-        mode = self._detect_case_mode()
-        s = AltiumSerializer(mode)
-        raw = self._raw_record
-
-        s.write_str(record, Fields.FILENAME, self.filename, raw)
+        record = SchPrimitive.serialize_to_record(self)
+        self._serialize_managed_string(
+            record,
+            Fields.FILENAME.pascal,
+            [Fields.FILENAME.pascal, Fields.FILENAME.upper],
+            self.filename,
+            self._source_filename,
+        )
+        for key in tuple(record):
+            if key.lower() in {"uniqueid", "%utf8%uniqueid"}:
+                record.pop(key)
         return record
 
     _detect_case_mode = detect_case_mode_method_from_uppercase_fields

@@ -14,6 +14,7 @@ class TextAlignment(IntEnum):
     """
     Text alignment flags used by the pin text placement helpers.
     """
+
     UNKNOWN = 0
     LEFT = 1
     RIGHT = 2
@@ -28,6 +29,7 @@ class TextPositionResult:
     """
     Result of pin text position calculation.
     """
+
     x: float
     y: float
     rotation: Rotation90
@@ -38,10 +40,10 @@ class TextPositionResult:
 def is_rotation_vertical(rotation: Rotation90) -> bool:
     """
     Check if rotation is vertical (90 or 270 degrees).
-    
+
     Args:
         rotation: The rotation to check
-    
+
     Returns:
         True if rotation is 90 or 270 degrees (vertical)
     """
@@ -52,24 +54,26 @@ def calculate_text_rotation(
     custom_rotation: Rotation90,
     anchor: PinTextAnchor,
     pin_orientation: Rotation90,
-    component_orientation: Rotation90 | None = None
+    component_orientation: Rotation90 | None = None,
 ) -> Rotation90:
     """
     Calculate final text rotation from the text anchor and pin orientation.
-    
+
     Args:
         custom_rotation: The custom rotation setting from pin text settings
         anchor: Whether rotation is relative to pin or component
         pin_orientation: The pin's orientation (world-space)
         component_orientation: The component's orientation (if anchor is COMPONENT)
-    
+
     Returns:
         DEG_90 if text should be rotated (perpendicular), DEG_0 otherwise
     """
     if anchor == PinTextAnchor.PIN:
         anchor_rotation = pin_orientation
     else:
-        anchor_rotation = component_orientation if component_orientation else Rotation90.DEG_0
+        anchor_rotation = (
+            component_orientation if component_orientation else Rotation90.DEG_0
+        )
 
     # XOR of vertical status determines if text is perpendicular
     custom_is_vertical = is_rotation_vertical(custom_rotation)
@@ -87,11 +91,11 @@ def calculate_pin_text_position(
     margin: float,
     custom_rotation: Rotation90 = Rotation90.DEG_0,
     anchor: PinTextAnchor = PinTextAnchor.PIN,
-    component_orientation: Rotation90 | None = None
+    component_orientation: Rotation90 | None = None,
 ) -> TextPositionResult:
     """
     Calculate pin text position and alignment.
-    
+
     Args:
         pin_orientation: The pin's orientation (world-space, already transformed)
         inner_bounds: Pin's bounding rectangle (left, top, right, bottom) in SVG coords
@@ -100,7 +104,7 @@ def calculate_pin_text_position(
         custom_rotation: Custom rotation setting (from pin text settings)
         anchor: Whether rotation is relative to pin or component
         component_orientation: Component orientation (if anchor is COMPONENT)
-    
+
     Returns:
         TextPositionResult with x, y, rotation, and alignment
     """
@@ -142,30 +146,33 @@ def calculate_pin_text_position(
     # Determine alignment (native line 81-100)
     # Vertical alignment
     if rotates_with_pin and pin_orientation in (Rotation90.DEG_90, Rotation90.DEG_180):
-        v_align = 'top'
+        v_align = "top"
     else:
-        v_align = 'bottom'
+        v_align = "bottom"
 
     # Horizontal alignment
     if rotates_with_pin:
-        h_align = 'center'
+        h_align = "center"
     elif pin_orientation in (Rotation90.DEG_0, Rotation90.DEG_90):
-        h_align = 'right'
+        h_align = "right"
     else:
-        h_align = 'left'
+        h_align = "left"
 
     return TextPositionResult(x, y, text_rotation, h_align, v_align)
 
 
 def apply_text_alignment(
-    x: float, y: float,
-    text_width: float, text_height: float,
-    h_align: str, v_align: str,
-    rotation: Rotation90
+    x: float,
+    y: float,
+    text_width: float,
+    text_height: float,
+    h_align: str,
+    v_align: str,
+    rotation: Rotation90,
 ) -> tuple[float, float, str | None]:
     """
     Apply text alignment and return the final position and SVG transform.
-    
+
     Args:
         x: Base X position
         y: Base Y position
@@ -174,7 +181,7 @@ def apply_text_alignment(
         h_align: Horizontal alignment ('left', 'center', 'right')
         v_align: Vertical alignment ('top', 'bottom')
         rotation: Text rotation
-    
+
     Returns:
         Tuple of (draw_x, draw_y, transform_string or None)
     """
@@ -182,12 +189,12 @@ def apply_text_alignment(
     y_offset = 0.0
 
     # Calculate alignment offsets (native line 1923-1935)
-    if h_align == 'center':
+    if h_align == "center":
         x_offset = text_width / 2
-    elif h_align == 'right':
+    elif h_align == "right":
         x_offset = text_width
 
-    if v_align == 'bottom':
+    if v_align == "bottom":
         y_offset = text_height
 
     # Apply offset
@@ -215,20 +222,18 @@ def apply_text_alignment(
 
 
 def rotate_by_90_transform(
-    x: float, y: float,
-    origin_x: float, origin_y: float,
-    rotation: Rotation90
+    x: float, y: float, origin_x: float, origin_y: float, rotation: Rotation90
 ) -> tuple[float, float]:
     """
     Rotate a point around an origin using 90-degree steps.
-    
+
     Args:
         x: Input X coordinate
         y: Input Y coordinate
         origin_x: Rotation origin X
         origin_y: Rotation origin Y
         rotation: Rotation angle
-    
+
     Returns:
         Transformed (x, y) coordinates
     """

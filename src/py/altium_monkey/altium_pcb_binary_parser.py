@@ -19,32 +19,35 @@ from .altium_ole import AltiumOleFile
 
 log = logging.getLogger(__name__)
 
-def parse_pcb_binary_stream(data: bytes, parse_subrecords_flag: bool = True) -> list[dict[str, Any]]:
+
+def parse_pcb_binary_stream(
+    data: bytes, parse_subrecords_flag: bool = True
+) -> list[dict[str, Any]]:
     """
     Parse raw binary PCB stream into records.
-    
+
     PCB streams (from PcbDoc/PcbLib) are raw binary data without length prefixes.
     Format:
         [type byte] [SubRecord1] [SubRecord2] ... [next type byte] [SubRecord1] ...
-    
+
     Each record starts with a type byte (1=ARC, 2=PAD, 3=VIA, 4=TRACK, etc.)
     followed by SubRecords.
-    
+
     SubRecord format:
         [4 bytes] Length (content length, NOT including this field)
         [N bytes] Content
-    
+
     Args:
         data: Raw binary stream data
         parse_subrecords_flag: If True, parse SubRecords (default: True)
-    
+
     Returns:
         List of record dictionaries with keys:
             'RECORD': Record type byte
             '__BINARY_RECORD__': True
             '__BINARY_DATA__': Raw binary data for this record
             '__SUBRECORDS__': List of SubRecord objects (if parse_subrecords_flag=True)
-    
+
         for rec in records:
             if rec['RECORD'] == 4:  # TRACK
                 subrecords = rec['__SUBRECORDS__']
@@ -75,7 +78,7 @@ def parse_pcb_binary_stream(data: bytes, parse_subrecords_flag: bool = True) -> 
                 break
 
             # Peek at SubRecord length
-            subrecord_length = struct.unpack('<I', data[offset:offset+4])[0]
+            subrecord_length = struct.unpack("<I", data[offset : offset + 4])[0]
 
             # Sanity check: SubRecord length should be reasonable
             # If length is > 10MB or negative, probably not a SubRecord
@@ -90,7 +93,7 @@ def parse_pcb_binary_stream(data: bytes, parse_subrecords_flag: bool = True) -> 
 
             # Read SubRecord
             offset += 4  # Skip length field
-            content = data[offset:offset+subrecord_length]
+            content = data[offset : offset + subrecord_length]
             offset += subrecord_length
 
             subrecords.append(SubRecord(content))
@@ -109,42 +112,43 @@ def parse_pcb_binary_stream(data: bytes, parse_subrecords_flag: bool = True) -> 
 
         # Create record dictionary
         record = {
-            'RECORD': record_type,
-            '__BINARY_RECORD__': True,
-            '__BINARY_DATA__': binary_data
+            "RECORD": record_type,
+            "__BINARY_RECORD__": True,
+            "__BINARY_DATA__": binary_data,
         }
 
         # Add parsed SubRecords if requested
         if parse_subrecords_flag:
-            record['__SUBRECORDS__'] = subrecords
+            record["__SUBRECORDS__"] = subrecords
 
         records.append(record)
 
     return records
 
+
 def serialize_pcb_binary_stream(records: list[dict[str, Any]]) -> bytes:
     """
     Serialize PCB records back to raw binary stream.
-    
+
     Inverse of parse_pcb_binary_stream().
-    
+
     Args:
         records: List of record dictionaries (from parse_pcb_binary_stream)
-    
+
     Returns:
         Raw binary stream data
     """
     result = bytearray()
 
     for record in records:
-        if '__BINARY_DATA__' in record:
+        if "__BINARY_DATA__" in record:
             # Use original binary data
-            result.extend(record['__BINARY_DATA__'])
+            result.extend(record["__BINARY_DATA__"])
 
-        elif '__SUBRECORDS__' in record:
+        elif "__SUBRECORDS__" in record:
             # Re-serialize from SubRecords
-            record_type = record.get('RECORD', 0)
-            subrecord_data = serialize_subrecords(record['__SUBRECORDS__'])
+            record_type = record.get("RECORD", 0)
+            subrecord_data = serialize_subrecords(record["__SUBRECORDS__"])
 
             # Format: [type byte] + [subrecords]
             result.append(record_type)
@@ -155,18 +159,20 @@ def serialize_pcb_binary_stream(records: list[dict[str, Any]]) -> bytes:
 
     return bytes(result)
 
-def parse_pcb_stream_from_ole(ole: AltiumOleFile, stream_path: list[str],
-                              parse_subrecords_flag: bool = True) -> list[dict[str, Any]]:
+
+def parse_pcb_stream_from_ole(
+    ole: AltiumOleFile, stream_path: list[str], parse_subrecords_flag: bool = True
+) -> list[dict[str, Any]]:
     """
     Parse PCB binary stream from OLE file.
-    
+
     Convenience wrapper around parse_pcb_binary_stream().
-    
+
     Args:
         ole: Open OLE file object
         stream_path: Stream path (e.g., ['Tracks6', 'Data'])
         parse_subrecords_flag: If True, parse SubRecords
-    
+
     Returns:
         List of record dictionaries
     """

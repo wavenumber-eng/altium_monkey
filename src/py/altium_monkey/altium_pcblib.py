@@ -2289,14 +2289,16 @@ class AltiumPcbLib:
         """
         Create an AltiumPcbLib.
 
-        The constructor creates an empty in-memory object and stores `filepath`
-        metadata only. Use `AltiumPcbLib.from_file(...)` to parse an existing
-        binary library.
+        With no path, the constructor creates an empty in-memory library. An
+        existing regular file is parsed immediately, matching `from_file(...)`.
+        A nonexistent path is retained as destination metadata for compatible
+        authoring workflows.
 
         Args:
-            filepath: Optional source or destination `.PcbLib` path metadata.
-                If omitted, creates an empty library.
-            debug: Reserved compatibility flag for older constructor call sites.
+            filepath: Optional existing source or nonexistent destination
+                `.PcbLib` path. Omit it to create an empty library without an
+                associated destination.
+            debug: Enable parser debug logging for an existing source file.
         """
         self.filepath: Path | None = Path(filepath) if filepath is not None else None
         self.footprints: list[AltiumPcbFootprint] = []
@@ -2330,6 +2332,12 @@ class AltiumPcbLib:
         self.raw_section_keys: bytes | None = None
         self.combine_provenance: dict[str, object] | None = None
         self._authoring_builder: Any | None = None
+
+        if self.filepath is not None:
+            if self.filepath.is_dir():
+                raise IsADirectoryError(self.filepath)
+            if self.filepath.is_file():
+                self._parse_existing_file(debug)
 
     def _sync_footprint_svg_layer_cache(self) -> None:
         names_by_v7_id: dict[int, str] = {}
@@ -3384,19 +3392,9 @@ class AltiumPcbLib:
         filepath = Path(filepath)
         if not filepath.exists():
             raise FileNotFoundError(f"PcbLib file not found: {filepath}")
-
-        log.info(f"Parsing PcbLib file: {filepath.name}")
-        pcblib = cls(filepath)
-        with AltiumOleFile(str(filepath)) as ole:
-            cls._load_raw_library_streams(ole, pcblib)
-            section_key_map = cls._load_section_key_map(ole, pcblib, debug)
-            footprint_names = cls._load_library_data_and_footprint_names(ole, pcblib)
-            cls._parse_footprints(ole, pcblib, footprint_names, section_key_map, debug)
-            cls._load_3d_models(ole, pcblib)
-            pcblib._sync_footprint_svg_layer_cache()
-
-        log.info(f"Parsed successfully: {len(pcblib.footprints)} footprint(s)")
-        return pcblib
+        if not filepath.is_file():
+            raise IsADirectoryError(filepath)
+        return cls(filepath, debug=debug)
 
     @classmethod
     def from_bytes(
@@ -3416,7 +3414,8 @@ class AltiumPcbLib:
         Returns:
             Parsed `AltiumPcbLib` instance.
         """
-        pcblib = cls(filename)
+        pcblib = cls()
+        pcblib.filepath = Path(filename)
         with AltiumOleFile(bytes(data)) as ole:
             cls._load_raw_library_streams(ole, pcblib)
             section_key_map = cls._load_section_key_map(ole, pcblib, debug)
@@ -3427,6 +3426,23 @@ class AltiumPcbLib:
 
         log.info(f"Parsed byte-backed PcbLib: {len(pcblib.footprints)} footprint(s)")
         return pcblib
+
+    def _parse_existing_file(self, debug: bool) -> None:
+        filepath = self.filepath
+        if filepath is None:
+            raise ValueError("PcbLib source path is required")
+
+        log.info(f"Parsing PcbLib file: {filepath.name}")
+        cls = type(self)
+        with AltiumOleFile(str(filepath)) as ole:
+            cls._load_raw_library_streams(ole, self)
+            section_key_map = cls._load_section_key_map(ole, self, debug)
+            footprint_names = cls._load_library_data_and_footprint_names(ole, self)
+            cls._parse_footprints(ole, self, footprint_names, section_key_map, debug)
+            cls._load_3d_models(ole, self)
+            self._sync_footprint_svg_layer_cache()
+
+        log.info(f"Parsed successfully: {len(self.footprints)} footprint(s)")
 
     def filename(self) -> str:
         """

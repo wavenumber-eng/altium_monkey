@@ -2,24 +2,42 @@
 
 from __future__ import annotations
 
+import math
 from enum import IntEnum
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from .altium_record_types import (
+    CaseInsensitiveDict,
     SchPrimitive,
     SchRecordType,
     parse_bool,
-    serialize_bool,
 )
+from .altium_serializer import (
+    AltiumSerializer,
+    read_dynamic_string_field,
+    write_dynamic_string_field,
+)
+from .altium_sch_record_helpers import validate_record_enum_value
+from ._sch_managed_defaults import SHEET_AREA_COLOR
 
 if TYPE_CHECKING:
-    from .altium_font_manager import FontIDManager
+    from .altium_font_manager import FontIDManager, _FontSpec
     from .altium_sch_svg_renderer import SchSvgRenderContext
 
 
 def _sheet_x_to_svg(ctx: "SchSvgRenderContext", scale: float, x: float) -> float:
     return (x + ctx.offset_x) * scale
+
+
+def _migrate_display_unit(value: int) -> int:
+    """Apply AD26 MigrationMinorV2.MigrateTUnit to a byte-backed value."""
+    return 0 if value in {0, 2, 4, 6} else 1
+
+
+def _split_record_coordinate(value: int) -> tuple[int, int]:
+    whole = value // 100_000 if value >= 0 else -((-value) // 100_000)
+    return whole, value - whole * 100_000
 
 
 class SheetStyle(IntEnum):
@@ -134,6 +152,16 @@ ONSCREEN_SHEET_ZONES: dict[int, tuple[int, int, int]] = {
     2: (8, 4, 30),  # A2 on-screen/oracle
 }
 
+_MAX_SHEET_FONT_COUNT = 999
+_TRACKING_FIELD_NAMES = {
+    "releasevaultguid",
+    "releaseitemguid",
+    "itemrevisionguid",
+    "propsvaultguid",
+    "propsrevisionguid",
+    "fileversioninfo",
+}
+
 
 class DocumentBorderStyle(IntEnum):
     """
@@ -178,7 +206,7 @@ class AltiumSchSheet(SchPrimitive):
         # Fonts stored as dict: {font_id: {'name': str, 'size': int, 'rotation': int,
         #                                   'underline': bool, 'italic': bool, 'bold': bool, 'strikeout': bool}}
         # Default: Font 1 = Times New Roman 10pt (matches Altium File->New)
-        self.fonts: dict[int, dict[str, Any]] = {
+        self.fonts: dict[int, _FontSpec] = {
             1: {
                 "name": "Times New Roman",
                 "size": 10,
@@ -192,7 +220,7 @@ class AltiumSchSheet(SchPrimitive):
 
         # === Grid & Display Properties ===
         self.use_mbcs: bool = True
-        self.is_boc: bool = False
+        self.is_boc: bool = True
         self.hot_spot_grid_on: bool = True
         self.hot_spot_grid_size: int = 4  # Internal units (8 / 2)
         self.hot_spot_grid_size_frac: int | None = (
@@ -200,24 +228,24 @@ class AltiumSchSheet(SchPrimitive):
         )
         self.snap_grid_on: bool = True
         self.snap_grid_size: int = 10
+        self.snap_grid_size_frac: int = 0
         self.visible_grid_on: bool = True
         self.visible_grid_size: int = 10
+        self.visible_grid_size_frac: int = 0
 
         # === Sheet Style & Size ===
-        self.sheet_style: int = SheetStyle.B  # Default: B size (6)
+        self.sheet_style: int = SheetStyle.A
         self.system_font: int = 1
         self.document_border_style: int = DocumentBorderStyle.STANDARD
         self.workspace_orientation: int = WorkspaceOrientation.LANDSCAPE
 
         # === Border & Title Block ===
         self.border_on: bool = True
-        # NOTE: Default is False per Altium source (sheet binary importer implementation)
-        # When importing, argN11 is initialized to false and only set to true if file contains TitleBlockOn=T
-        self.title_block_on: bool = False
+        self.title_block_on: bool = True
 
         # === Colors (Win32 BBGGRR format) ===
         self.color: int = 0  # Sheet border color (from preferences)
-        self.area_color: int = 16317695  # Sheet area color (light yellow default)
+        self.area_color: int = SHEET_AREA_COLOR
 
         # === Sheet Numbering ===
         self.sheet_number_space_size: int = 12  # Range: 1-16
@@ -225,11 +253,14 @@ class AltiumSchSheet(SchPrimitive):
 
         # === Custom Sheet Size ===
         self.custom_x: int = 1500  # Default width
+        self.custom_x_frac: int = 0
         self.custom_y: int = 950  # Default height
+        self.custom_y_frac: int = 0
         self.use_custom_sheet: bool = False
         self.custom_x_zones: int = 6
         self.custom_y_zones: int = 4
         self.custom_margin_width: int = 20
+        self.custom_margin_width_frac: int = 0
 
         # === Reference Zones ===
         self.reference_zones_on: bool = True
@@ -255,6 +286,9 @@ class AltiumSchSheet(SchPrimitive):
         self.props_revision_guid: str = ""
         self.file_version_info: str = ""
 
+        self._dynamic_tracking_state: dict[str, tuple[str, bool, bool]] = {}
+        self._ordinary_tracking_source: dict[str, str] = {}
+
         # === Additional Properties ===
         self.show_hidden_pins: bool = False
 
@@ -265,6 +299,7 @@ class AltiumSchSheet(SchPrimitive):
         self.organization: str = ""
         self.revision: str = ""
         self.date: str = ""
+        self._source_canonical_record: dict[str, Any] | None = None
 
     @property
     def record_type(self) -> SchRecordType:
@@ -282,16 +317,23 @@ class AltiumSchSheet(SchPrimitive):
                 Single source of truth for the combined grid-size value.
         """
         frac = self.hot_spot_grid_size_frac or 0
-        return self.hot_spot_grid_size + frac / 100000.0
+        return (self.hot_spot_grid_size + frac / 100000.0) * 10.0
 
     @hot_spot_grid_size_mils.setter
     def hot_spot_grid_size_mils(self, value: float) -> None:
         """
         Set hot spot grid size from mils value, decomposing to base + frac.
         """
-        internal = int(round(value * 100000))
-        self.hot_spot_grid_size = internal // 100000
-        self.hot_spot_grid_size_frac = internal % 100000
+        if not math.isfinite(value):
+            raise ValueError("HotSpotGridSize requires a finite value")
+        internal = int(round(value * 10000))
+        if not -(1 << 31) <= internal <= (1 << 31) - 1:
+            raise ValueError(
+                "HotSpotGridSize exceeds the signed 32-bit coordinate range"
+            )
+        self.hot_spot_grid_size, self.hot_spot_grid_size_frac = (
+            _split_record_coordinate(internal)
+        )
 
     def parse_from_record(
         self,
@@ -305,73 +347,57 @@ class AltiumSchSheet(SchPrimitive):
         self._raw_record = record.copy()
 
         # === Font Table ===
-        self.font_id_count = int(r.get("FontIdCount", 1))
-        self.fonts = {}
-        for i in range(1, self.font_id_count + 1):
-            font_data = {
-                "name": record.get(
-                    f"FontName{i}", record.get(f"FONTNAME{i}", "Times New Roman")
-                ),
-                "size": int(record.get(f"Size{i}", record.get(f"SIZE{i}", 10))),
-                "rotation": int(
-                    record.get(f"Rotation{i}", record.get(f"ROTATION{i}", 0))
-                ),
-                "underline": parse_bool(
-                    record.get(f"Underline{i}", record.get(f"UNDERLINE{i}", False))
-                ),
-                "italic": parse_bool(
-                    record.get(f"Italic{i}", record.get(f"ITALIC{i}", False))
-                ),
-                "bold": parse_bool(
-                    record.get(f"Bold{i}", record.get(f"BOLD{i}", False))
-                ),
-                "strikeout": parse_bool(
-                    record.get(f"StrikeOut{i}", record.get(f"STRIKEOUT{i}", False))
-                ),
-            }
-            self.fonts[i] = font_data
+        self._parse_font_table(r)
 
         # === Grid & Display Properties ===
         self.use_mbcs = parse_bool(r.get("UseMBCS", True))
         self.is_boc = parse_bool(r.get("IsBOC", False))
-        self.hot_spot_grid_on = parse_bool(r.get("HotSpotGridOn", True))
-        # If _Frac exists but main field doesn't, the integer part is 0 (not default 4)
-        if "HotSpotGridSize" in r:
-            self.hot_spot_grid_size = int(r.get("HotSpotGridSize"))
-        elif "HotSpotGridSize_Frac" in r:
-            self.hot_spot_grid_size = 0  # Frac-only means integer part is 0
-        else:
-            self.hot_spot_grid_size = 4  # Altium default
-        # Store _Frac separately for round-trip preservation
-        if "HotSpotGridSize_Frac" in r:
-            self.hot_spot_grid_size_frac = int(r.get("HotSpotGridSize_Frac"))
-        self.snap_grid_on = parse_bool(r.get("SnapGridOn", True))
-        self.snap_grid_size = int(r.get("SnapGridSize", 10))
-        self.visible_grid_on = parse_bool(r.get("VisibleGridOn", True))
-        self.visible_grid_size = int(r.get("VisibleGridSize", 10))
+        self.hot_spot_grid_on = parse_bool(r.get("HotSpotGridOn", False))
+        serializer = AltiumSerializer()
+        self.hot_spot_grid_size, hot_spot_fraction, _ = serializer.read_coord(
+            r, "HotSpotGridSize"
+        )
+        self.hot_spot_grid_size_frac = hot_spot_fraction
+        self.snap_grid_on = parse_bool(r.get("SnapGridOn", False))
+        self.snap_grid_size, self.snap_grid_size_frac, _ = serializer.read_coord(
+            r, "SnapGridSize"
+        )
+        self.visible_grid_on = parse_bool(r.get("VisibleGridOn", False))
+        self.visible_grid_size, self.visible_grid_size_frac, _ = serializer.read_coord(
+            r, "VisibleGridSize"
+        )
 
         # === Sheet Style & Size ===
-        self.sheet_style = int(r.get("SheetStyle", SheetStyle.B))
-        self.system_font = int(r.get("SystemFont", 1))
+        self.sheet_style = int(r.get("SheetStyle", 0))
+        validate_record_enum_value("SheetStyle", self.sheet_style, 17)
+        raw_system_font, _ = serializer.read_font_id(r, "SystemFont", default=1)
+        self.system_font = (
+            raw_system_font if 1 <= raw_system_font <= self.font_id_count else 1
+        )
         self.document_border_style = int(r.get("DocumentBorderStyle", 0))
+        validate_record_enum_value("DocumentBorderStyle", self.document_border_style, 1)
         self.workspace_orientation = int(r.get("WorkspaceOrientation", 0))
+        validate_record_enum_value(
+            "WorkspaceOrientation", self.workspace_orientation, 1
+        )
 
         # === Border & Title Block ===
-        self.border_on = parse_bool(r.get("BorderOn", True))
-        # Default is False per Altium source (sheet binary importer implementation)
+        self.border_on = parse_bool(r.get("BorderOn", False))
         self.title_block_on = parse_bool(r.get("TitleBlockOn", False))
 
         # === Colors ===
-        self.color = int(r.get("Color", 0))
-        self.area_color = int(r.get("AreaColor", 16317695))
+        color, _ = serializer.read_color(r, "Color", default=0)
+        area_color, _ = serializer.read_color(r, "AreaColor", default=0)
+        self.color = color if color is not None else 0
+        self.area_color = area_color if area_color is not None else 0
 
         # === Sheet Numbering ===
-        self.sheet_number_space_size = int(r.get("SheetNumberSpaceSize", 12))
+        self.sheet_number_space_size = 12
         self.sheet_number = int(r.get("SheetNumber", 1))
 
         # === Custom Sheet Size ===
-        self.custom_x = int(r.get("CustomX", 1500))
-        self.custom_y = int(r.get("CustomY", 950))
+        self.custom_x, self.custom_x_frac, _ = serializer.read_coord(r, "CustomX")
+        self.custom_y, self.custom_y_frac, _ = serializer.read_coord(r, "CustomY")
         self.use_custom_sheet = parse_bool(r.get("UseCustomSheet", False))
         # Track presence: native exports 0 for missing fields, but Altium defaults are 6, 4, 20
         # We need to match native export behavior: only write if present in original
@@ -380,25 +406,23 @@ class AltiumSchSheet(SchPrimitive):
         self._has_custom_margin_width = (
             "CustomMarginWidth" in record or "CUSTOMMARGINWIDTH" in record
         )
-        self.custom_x_zones = int(
-            r.get("CustomXZones", 0)
-        )  # Default 0 to match native export
-        self.custom_y_zones = int(
-            r.get("CustomYZones", 0)
-        )  # Default 0 to match native export
-        self.custom_margin_width = int(
-            r.get("CustomMarginWidth", 0)
-        )  # Default 0 to match native export
+        self.custom_x_zones, _ = serializer.read_int(r, "CustomXZones", default=0)
+        self.custom_y_zones, _ = serializer.read_int(r, "CustomYZones", default=0)
+        (
+            self.custom_margin_width,
+            self.custom_margin_width_frac,
+            _,
+        ) = serializer.read_coord(r, "CustomMarginWidth")
 
         # === Reference Zones ===
         # NOTE: ReferenceZonesOn is INVERTED when stored in file
         # When reading, we need to invert it back
         raw_ref_zones = r.get("ReferenceZonesOn")
-        if raw_ref_zones is not None:
-            self.reference_zones_on = not parse_bool(raw_ref_zones)
-        else:
-            self.reference_zones_on = True  # Default
+        self.reference_zones_on = (
+            not parse_bool(raw_ref_zones) if raw_ref_zones is not None else True
+        )
         self.reference_zone_style = int(r.get("ReferenceZoneStyle", 0))
+        validate_record_enum_value("ReferenceZoneStyle", self.reference_zone_style, 1)
 
         # === Template Graphics ===
         self.show_template_graphics = parse_bool(r.get("ShowTemplateGraphics", False))
@@ -410,16 +434,13 @@ class AltiumSchSheet(SchPrimitive):
         self.template_revision_hrid = r.get("TemplateRevisionHRID", "")
 
         # === Display Unit ===
-        # Try both naming conventions (DisplayUnit in JSON, Display_Unit in binary)
-        self.display_unit = int(r.get("DisplayUnit", r.get("Display_Unit", 0)))
+        raw_display_unit = int(r.get("Display_Unit", 0))
+        validate_record_enum_value("Display_Unit", raw_display_unit, 255)
+        self.display_unit = _migrate_display_unit(raw_display_unit)
+        self._normalize_legacy_hot_spot_grid()
 
         # === Version/Revision Tracking ===
-        self.release_vault_guid = r.get("ReleaseVaultGUID", "")
-        self.release_item_guid = r.get("ReleaseItemGUID", "")
-        self.item_revision_guid = r.get("ItemRevisionGUID", "")
-        self.props_vault_guid = r.get("PropsVaultGUID", "")
-        self.props_revision_guid = r.get("PropsRevisionGUID", "")
-        self.file_version_info = r.get("FileVersionInfo", "")
+        self._parse_tracking_fields(record, r)
 
         # === Additional Properties ===
         self.show_hidden_pins = parse_bool(r.get("ShowHiddenPins", False))
@@ -431,6 +452,72 @@ class AltiumSchSheet(SchPrimitive):
         self.organization = r.get("Organization", "")
         self.revision = r.get("Revision", "")
         self.date = r.get("Date", "")
+        self._source_canonical_record = self._canonical_record()
+
+    def _normalize_legacy_hot_spot_grid(self) -> None:
+        combined = self.hot_spot_grid_size * 100_000 + (
+            self.hot_spot_grid_size_frac or 0
+        )
+        if combined not in {800_000, 1_000_000}:
+            return
+        normalized = 400_000 if self.display_unit == 0 else 787_402
+        self.hot_spot_grid_size, self.hot_spot_grid_size_frac = (
+            _split_record_coordinate(normalized)
+        )
+
+    def _parse_font_table(self, fields: CaseInsensitiveDict) -> None:
+        self.font_id_count = int(fields.get("FontIdCount", 0))
+        if not 0 <= self.font_id_count <= _MAX_SHEET_FONT_COUNT:
+            raise ValueError(
+                f"FontIdCount must be between 0 and {_MAX_SHEET_FONT_COUNT}"
+            )
+        self.fonts = {
+            font_id: self._parse_font(fields, font_id)
+            for font_id in range(1, self.font_id_count + 1)
+        }
+
+    @staticmethod
+    def _parse_font(fields: CaseInsensitiveDict, font_id: int) -> _FontSpec:
+        def value(name: str, default: object) -> object:
+            return fields.get(f"{name}{font_id}", default)
+
+        font_name = str(value("FontName", ""))
+        return {
+            "name": font_name or "Times New Roman",
+            "size": int(str(value("Size", 0))),
+            "rotation": int(str(value("Rotation", 0))),
+            "underline": parse_bool(value("Underline", False)),
+            "italic": parse_bool(value("Italic", False)),
+            "bold": parse_bool(value("Bold", False)),
+            "strikeout": parse_bool(value("StrikeOut", False)),
+        }
+
+    def _parse_tracking_fields(
+        self, record: dict[str, object], fields: CaseInsensitiveDict
+    ) -> None:
+        serializer = AltiumSerializer()
+        self._dynamic_tracking_state = {}
+        for field_name, attribute_name in (
+            ("ReleaseVaultGUID", "release_vault_guid"),
+            ("ReleaseItemGUID", "release_item_guid"),
+            ("ItemRevisionGUID", "item_revision_guid"),
+            ("FileVersionInfo", "file_version_info"),
+        ):
+            value, was_present, used_utf8 = read_dynamic_string_field(
+                serializer, record, fields, field_name, default=""
+            )
+            setattr(self, attribute_name, value)
+            self._dynamic_tracking_state[field_name] = (
+                value,
+                was_present,
+                used_utf8,
+            )
+        self.props_vault_guid = str(fields.get("PropsVaultGUID", ""))
+        self.props_revision_guid = str(fields.get("PropsRevisionGUID", ""))
+        self._ordinary_tracking_source = {
+            "PropsVaultGUID": self.props_vault_guid,
+            "PropsRevisionGUID": self.props_revision_guid,
+        }
 
     def serialize_to_record(self) -> dict[str, Any]:
         # IMPORTANT: Sheet record should NOT have OWNERINDEX, OWNERPARTID,
@@ -438,82 +525,260 @@ class AltiumSchSheet(SchPrimitive):
         # to child objects, not the root Sheet object.
         # Therefore, we do NOT call super().serialize_to_record() here.
 
-        # Start with just the RECORD type
+        canonical = self._canonical_record()
+        if self._raw_record is None:
+            return canonical
+        source = self._source_canonical_record
+        if source is None or (
+            source == canonical and not self._tracking_fields_changed()
+        ):
+            return self._raw_record.copy()
+        record = self._merge_changed_fields(self._raw_record, source, canonical)
+        self._write_changed_tracking_fields(record)
+        return record
+
+    def _canonical_record(self) -> dict[str, object]:
+        validate_record_enum_value("SheetStyle", int(self.sheet_style), 17)
+        validate_record_enum_value(
+            "DocumentBorderStyle", int(self.document_border_style), 1
+        )
+        validate_record_enum_value(
+            "WorkspaceOrientation", int(self.workspace_orientation), 1
+        )
+        validate_record_enum_value("Display_Unit", int(self.display_unit), 1)
+        validate_record_enum_value(
+            "ReferenceZoneStyle", int(self.reference_zone_style), 1
+        )
         record: dict[str, Any] = {"RECORD": str(self.record_type.value)}
         self._serialize_font_table(record)
-        self._serialize_grid_and_display(record)
-        self._serialize_sheet_style_and_numbering(record)
+        self._serialize_document_prefix(record)
         self._serialize_custom_sheet_fields(record)
-        self._serialize_template_and_tracking_fields(record)
-        self._serialize_legacy_document_fields(record)
+        self._serialize_template_fields(record)
+        record["Display_Unit"] = str(self.display_unit)
+        if self.reference_zone_style != 0:
+            record["ReferenceZoneStyle"] = str(self.reference_zone_style)
+        self._serialize_tracking_fields(record)
         return record
+
+    @staticmethod
+    def _normalized_field_name(name: str) -> str:
+        return "".join(character.lower() for character in name if character.isalnum())
+
+    @classmethod
+    def _merge_changed_fields(
+        cls,
+        raw: dict[str, object],
+        source: dict[str, object],
+        current: dict[str, object],
+    ) -> dict[str, object]:
+        record = raw.copy()
+        ordered_keys = list(current)
+        ordered_keys.extend(key for key in source if key not in current)
+        for key in ordered_keys:
+            cls._merge_changed_field(record, source, current, key)
+        return record
+
+    @classmethod
+    def _merge_changed_field(
+        cls,
+        record: dict[str, object],
+        source: dict[str, object],
+        current: dict[str, object],
+        key: str,
+    ) -> None:
+        if key.lower() in _TRACKING_FIELD_NAMES:
+            return
+        if cls._field_state_is_unchanged(source, current, key):
+            return
+        existing = cls._matching_raw_field(record, key)
+        if key not in current:
+            if existing is not None:
+                record.pop(existing)
+            return
+        if key == "Display_Unit" and existing is not None:
+            record.pop(existing)
+            existing = None
+        record[existing or key] = current[key]
+
+    @staticmethod
+    def _field_state_is_unchanged(
+        source: dict[str, object], current: dict[str, object], key: str
+    ) -> bool:
+        return source.get(key) == current.get(key) and (key in source) == (
+            key in current
+        )
+
+    @classmethod
+    def _matching_raw_field(cls, record: dict[str, object], key: str) -> str | None:
+        normalized = cls._normalized_field_name(key)
+        return next(
+            (
+                candidate
+                for candidate in record
+                if cls._normalized_field_name(candidate) == normalized
+                and not candidate.lower().startswith("%utf8%")
+            ),
+            None,
+        )
 
     def _serialize_font_table(self, record: dict[str, Any]) -> None:
         # === Font Table ===
-        record["FontIdCount"] = str(self.font_id_count)
+        if not 0 <= self.font_id_count <= _MAX_SHEET_FONT_COUNT:
+            raise ValueError(
+                f"FontIdCount must be between 0 and {_MAX_SHEET_FONT_COUNT}"
+            )
+        if self.font_id_count != 0:
+            record["FontIdCount"] = str(self.font_id_count)
         for font_id, font_data in self.fonts.items():
-            record[f"Size{font_id}"] = str(font_data.get("size", 10))
-            record[f"FontName{font_id}"] = font_data.get("name", "Times New Roman")
-            if font_data.get("rotation", 0) != 0:
-                record[f"Rotation{font_id}"] = str(font_data["rotation"])
-            if font_data.get("underline", False):
-                record[f"Underline{font_id}"] = "T"
-            if font_data.get("italic", False):
-                record[f"Italic{font_id}"] = "T"
-            if font_data.get("bold", False):
-                record[f"Bold{font_id}"] = "T"
-            if font_data.get("strikeout", False):
-                record[f"StrikeOut{font_id}"] = "T"
+            record.update(self._serialized_font(font_id, font_data))
 
-    def _serialize_grid_and_display(self, record: dict[str, Any]) -> None:
-        # === Grid & Display Properties ===
-        record["UseMBCS"] = serialize_bool(self.use_mbcs)
-        record["IsBOC"] = serialize_bool(self.is_boc)
-        record["HotSpotGridOn"] = serialize_bool(self.hot_spot_grid_on)
-        record["HotSpotGridSize"] = str(self.hot_spot_grid_size)
-        if self.hot_spot_grid_size_frac is not None:
-            record["HotSpotGridSize_Frac"] = str(self.hot_spot_grid_size_frac)
-        record["SnapGridOn"] = serialize_bool(self.snap_grid_on)
-        record["SnapGridSize"] = str(self.snap_grid_size)
-        record["VisibleGridOn"] = serialize_bool(self.visible_grid_on)
-        record["VisibleGridSize"] = str(self.visible_grid_size)
-        record["DisplayUnit"] = str(self.display_unit)
+    @staticmethod
+    def _serialized_font(font_id: int, font: _FontSpec) -> dict[str, str]:
+        result = {
+            f"{name}{font_id}": str(value)
+            for name, value in (
+                ("Size", int(font.get("size", 0))),
+                ("Rotation", int(font.get("rotation", 0))),
+            )
+            if value != 0
+        }
+        result.update(
+            {
+                f"{name}{font_id}": "T"
+                for name, value in (
+                    ("Underline", bool(font.get("underline", False))),
+                    ("Italic", bool(font.get("italic", False))),
+                    ("Bold", bool(font.get("bold", False))),
+                    ("StrikeOut", bool(font.get("strikeout", False))),
+                )
+                if value
+            }
+        )
+        name = str(font.get("name", ""))
+        if name:
+            result[f"FontName{font_id}"] = name
+        return result
 
-    def _serialize_sheet_style_and_numbering(self, record: dict[str, Any]) -> None:
-        # === Sheet Style & Size ===
-        record["SheetStyle"] = str(self.sheet_style)
-        record["SystemFont"] = str(self.system_font)
-        record["DocumentBorderStyle"] = str(self.document_border_style)
-        record["WorkspaceOrientation"] = str(self.workspace_orientation)
+    def _serialize_document_prefix(self, record: dict[str, object]) -> None:
+        serializer = AltiumSerializer()
+        record["UseMBCS"] = "T"
+        record["IsBOC"] = "T"
+        self._write_true_fields(record, (("HotSpotGridOn", self.hot_spot_grid_on),))
+        self._write_coordinate_field(
+            record,
+            "HotSpotGridSize",
+            self.hot_spot_grid_size,
+            self.hot_spot_grid_size_frac or 0,
+        )
+        self._write_nonzero_fields(record, (("SheetStyle", self.sheet_style),))
+        if self.system_font != 0:
+            serializer.write_font_id(record, "SystemFont", self.system_font)
+        self._write_nonzero_fields(
+            record,
+            (
+                ("DocumentBorderStyle", self.document_border_style),
+                ("WorkspaceOrientation", self.workspace_orientation),
+            ),
+        )
+        self._write_true_fields(
+            record,
+            (("BorderOn", self.border_on), ("TitleBlockOn", self.title_block_on)),
+        )
+        if self.sheet_number_space_size != 0:
+            serializer.write_int(
+                record, "SheetNumberSpaceSize", self.sheet_number_space_size, force=True
+            )
+        if self.color != 0:
+            serializer.write_color(record, "Color", self.color, force=True)
+        if self.area_color != 0:
+            serializer.write_color(record, "AreaColor", self.area_color, force=True)
+        self._write_true_fields(record, (("SnapGridOn", self.snap_grid_on),))
+        self._write_coordinate_field(
+            record, "SnapGridSize", self.snap_grid_size, self.snap_grid_size_frac
+        )
+        self._write_true_fields(record, (("VisibleGridOn", self.visible_grid_on),))
+        self._write_coordinate_field(
+            record,
+            "VisibleGridSize",
+            self.visible_grid_size,
+            self.visible_grid_size_frac,
+        )
 
-        record["BorderOn"] = serialize_bool(self.border_on)
-        record["TitleBlockOn"] = serialize_bool(self.title_block_on)
+    @staticmethod
+    def _write_true_fields(
+        record: dict[str, object], fields: tuple[tuple[str, bool], ...]
+    ) -> None:
+        record.update({name: "T" for name, enabled in fields if enabled})
 
-        record["Color"] = str(self.color)
-        record["AreaColor"] = str(self.area_color)
+    @staticmethod
+    def _write_nonzero_fields(
+        record: dict[str, object], fields: tuple[tuple[str, int], ...]
+    ) -> None:
+        record.update({name: str(value) for name, value in fields if value != 0})
 
-        record["SheetNumberSpaceSize"] = str(self.sheet_number_space_size)
-        record["SheetNumber"] = str(self.sheet_number)
-        record["ReferenceZonesOn"] = serialize_bool(not self.reference_zones_on)
-        record["ReferenceZoneStyle"] = str(self.reference_zone_style)
+    @staticmethod
+    def _write_coordinate_field(
+        record: dict[str, object], name: str, whole: int, fraction: int
+    ) -> None:
+        if whole != 0 or fraction != 0:
+            AltiumSerializer().write_coord(
+                record,
+                name,
+                "",
+                whole,
+                fraction,
+                force=True,
+            )
 
     def _serialize_custom_sheet_fields(self, record: dict[str, Any]) -> None:
+        serializer = AltiumSerializer()
         # === Custom Sheet Size ===
-        record["CustomX"] = str(self.custom_x)
-        record["CustomY"] = str(self.custom_y)
-        if self.use_custom_sheet:
-            record["UseCustomSheet"] = "T"
-        if getattr(self, "_has_custom_x_zones", False) or self.custom_x_zones != 0:
-            record["CustomXZones"] = str(self.custom_x_zones)
-        if getattr(self, "_has_custom_y_zones", False) or self.custom_y_zones != 0:
-            record["CustomYZones"] = str(self.custom_y_zones)
-        if (
-            getattr(self, "_has_custom_margin_width", False)
-            or self.custom_margin_width != 0
+        self._write_coordinate_field(
+            record, "CustomX", self.custom_x, self.custom_x_frac
+        )
+        self._write_coordinate_field(
+            record, "CustomY", self.custom_y, self.custom_y_frac
+        )
+        record.update(
+            {
+                name: "T"
+                for name, enabled in (
+                    ("UseCustomSheet", self.use_custom_sheet),
+                    ("ShowHiddenPins", self.show_hidden_pins),
+                    ("ReferenceZonesOn", not self.reference_zones_on),
+                )
+                if enabled
+            }
+        )
+        for name, value, fraction, was_present in (
+            (
+                "CustomXZones",
+                self.custom_x_zones,
+                0,
+                getattr(self, "_has_custom_x_zones", False),
+            ),
+            (
+                "CustomYZones",
+                self.custom_y_zones,
+                0,
+                getattr(self, "_has_custom_y_zones", False),
+            ),
+            (
+                "CustomMarginWidth",
+                self.custom_margin_width,
+                self.custom_margin_width_frac,
+                getattr(self, "_has_custom_margin_width", False),
+            ),
         ):
-            record["CustomMarginWidth"] = str(self.custom_margin_width)
+            if fraction != 0:
+                self._write_coordinate_field(record, name, value, fraction)
+            elif was_present or value != 0:
+                if name in {"CustomXZones", "CustomYZones"}:
+                    serializer.write_int(record, name, value, force=True)
+                else:
+                    record[name] = str(value)
 
-    def _serialize_template_and_tracking_fields(self, record: dict[str, Any]) -> None:
+    def _serialize_template_fields(self, record: dict[str, object]) -> None:
         if self.show_template_graphics:
             record["ShowTemplateGraphics"] = "T"
         if self.template_filename:
@@ -529,35 +794,91 @@ class AltiumSchSheet(SchPrimitive):
         if self.template_revision_hrid:
             record["TemplateRevisionHRID"] = self.template_revision_hrid
 
-        if self.release_vault_guid:
-            record["ReleaseVaultGUID"] = self.release_vault_guid
-        if self.release_item_guid:
-            record["ReleaseItemGUID"] = self.release_item_guid
-        if self.item_revision_guid:
-            record["ItemRevisionGUID"] = self.item_revision_guid
-        if self.props_vault_guid:
-            record["PropsVaultGUID"] = self.props_vault_guid
-        if self.props_revision_guid:
-            record["PropsRevisionGUID"] = self.props_revision_guid
-        if self.file_version_info:
-            record["FileVersionInfo"] = self.file_version_info
+    def _serialize_tracking_fields(self, record: dict[str, object]) -> None:
+        serializer = AltiumSerializer()
+        for field_name, attribute_name in (
+            ("ReleaseVaultGUID", "release_vault_guid"),
+            ("ReleaseItemGUID", "release_item_guid"),
+            ("ItemRevisionGUID", "item_revision_guid"),
+        ):
+            value = str(getattr(self, attribute_name))
+            if value:
+                serializer.write_str(record, field_name, value, None)
+        for field_name, attribute_name in (
+            ("PropsVaultGUID", "props_vault_guid"),
+            ("PropsRevisionGUID", "props_revision_guid"),
+            ("FileVersionInfo", "file_version_info"),
+        ):
+            value = str(getattr(self, attribute_name))
+            if value:
+                serializer.write_str(record, field_name, value, None)
 
-        if self.show_hidden_pins:
-            record["ShowHiddenPins"] = "T"
+    def _tracking_fields_changed(self) -> bool:
+        for field_name, attribute_name in (
+            ("ReleaseVaultGUID", "release_vault_guid"),
+            ("ReleaseItemGUID", "release_item_guid"),
+            ("ItemRevisionGUID", "item_revision_guid"),
+            ("FileVersionInfo", "file_version_info"),
+        ):
+            source_value = self._dynamic_tracking_state.get(
+                field_name, ("", False, False)
+            )[0]
+            if str(getattr(self, attribute_name)) != source_value:
+                return True
+        return any(
+            str(getattr(self, attribute_name))
+            != self._ordinary_tracking_source.get(field_name, "")
+            for field_name, attribute_name in (
+                ("PropsVaultGUID", "props_vault_guid"),
+                ("PropsRevisionGUID", "props_revision_guid"),
+            )
+        )
 
-    def _serialize_legacy_document_fields(self, record: dict[str, Any]) -> None:
-        if self.sheet_name:
-            record["SheetName"] = self.sheet_name
-        if self.file_name:
-            record["FileName"] = self.file_name
-        if self.title:
-            record["Title"] = self.title
-        if self.organization:
-            record["Organization"] = self.organization
-        if self.revision:
-            record["Revision"] = self.revision
-        if self.date:
-            record["Date"] = self.date
+    def _write_changed_tracking_fields(self, record: dict[str, object]) -> None:
+        serializer = AltiumSerializer()
+        for field_name, attribute_name in (
+            ("ReleaseVaultGUID", "release_vault_guid"),
+            ("ReleaseItemGUID", "release_item_guid"),
+            ("ItemRevisionGUID", "item_revision_guid"),
+            ("FileVersionInfo", "file_version_info"),
+        ):
+            source_value, was_present, used_utf8 = self._dynamic_tracking_state.get(
+                field_name, ("", False, False)
+            )
+            value = str(getattr(self, attribute_name))
+            if value == source_value:
+                continue
+            write_dynamic_string_field(
+                serializer,
+                record,
+                field_name,
+                value,
+                raw_record=self._raw_record,
+                used_utf8_sidecar=used_utf8,
+                was_present=was_present,
+                force=True,
+            )
+        for field_name, attribute_name in (
+            ("PropsVaultGUID", "props_vault_guid"),
+            ("PropsRevisionGUID", "props_revision_guid"),
+        ):
+            source_value = self._ordinary_tracking_source.get(field_name, "")
+            value = str(getattr(self, attribute_name))
+            if value == source_value:
+                continue
+            for key in tuple(record):
+                if key.lower() == f"%utf8%{field_name}".lower():
+                    record.pop(key)
+            if value:
+                serializer.write_str(
+                    record,
+                    field_name,
+                    value,
+                    self._raw_record,
+                    force=True,
+                )
+            else:
+                serializer.remove_field(record, field_name)
 
     def clear_template_references(self) -> None:
         """
@@ -586,7 +907,7 @@ class AltiumSchSheet(SchPrimitive):
     # SVG RENDERING
     # =========================================================================
 
-    def get_sheet_size_units(self) -> tuple[int, int]:
+    def get_sheet_size_units(self) -> tuple[float, float]:
         """
         Get sheet dimensions in internal schematic document units.
 
@@ -596,8 +917,8 @@ class AltiumSchSheet(SchPrimitive):
             (width, height) in document units
         """
         if self.use_custom_sheet:
-            width = int(self.custom_x)
-            height = int(self.custom_y)
+            width = self.custom_x + self.custom_x_frac / 100_000.0
+            height = self.custom_y + self.custom_y_frac / 100_000.0
         else:
             size = SHEET_SIZES.get(self.sheet_style, (1000, 800))
             width = int(size[0])
@@ -607,7 +928,7 @@ class AltiumSchSheet(SchPrimitive):
             return (height, width)
         return (width, height)
 
-    def get_sheet_size_mils(self) -> tuple[int, int]:
+    def get_sheet_size_mils(self) -> tuple[float, float]:
         """
         Get sheet dimensions in mils.
 
@@ -621,7 +942,7 @@ class AltiumSchSheet(SchPrimitive):
         width, height = self.get_sheet_size_units()
         return (width * 10, height * 10)
 
-    def get_margin_units(self) -> int:
+    def get_margin_units(self) -> float:
         """
         Get sheet margin in internal schematic document units.
 
@@ -629,12 +950,12 @@ class AltiumSchSheet(SchPrimitive):
             Margin in document units
         """
         if self.use_custom_sheet:
-            return int(self.custom_margin_width)
+            return self.custom_margin_width + self.custom_margin_width_frac / 100_000.0
 
         zones = SHEET_ZONES.get(self.sheet_style, (6, 4, 20))
         return int(zones[2])
 
-    def get_margin_mils(self) -> int:
+    def get_margin_mils(self) -> float:
         """
         Get sheet margin in mils.
 

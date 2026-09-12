@@ -15,6 +15,10 @@
 
 SchLib follows the same `ObjectCollection` ownership rules as SchDoc at the
 symbol level. `AltiumSchLib` owns symbols, and each symbol owns its records.
+`AltiumSchLib.symbols`, `AltiumSymbol.objects`, and the symbol's typed accessors
+are read-only live query views. Do not append to or replace those views; use
+`AltiumSchLib.add_symbol()` / `remove_symbol()` and
+`AltiumSymbol.add_object()` / `remove_object()` for structural changes.
 Typed views are live filtered views, not independent mutable lists.
 
 Use symbol-owned mutation APIs such as `add_object(...)` for pins, component

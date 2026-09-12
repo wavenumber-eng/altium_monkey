@@ -4,9 +4,71 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .altium_record_types import CoordPoint, SchPointMils, SchRectMils, color_to_hex
-from .altium_serializer import CaseMode
+from .altium_record_types import (
+    CoordPoint,
+    LineStyle,
+    SchPointMils,
+    SchRectMils,
+    color_to_hex,
+)
+from .altium_serializer import (
+    AltiumSerializer,
+    CaseMode,
+    require_coordinate_wire_parts,
+)
 from .altium_sch_geometry_oracle import svg_coord_to_geometry
+
+_RecordFields = dict[str, Any]
+
+_MAX_SIGNED_SHORT_VERTEX_COUNT = 32_767
+_PRIMARY_VERTEX_WRITE_COUNT = 50
+_MAX_CANONICAL_VERTEX_TOTAL = (
+    _PRIMARY_VERTEX_WRITE_COUNT + _MAX_SIGNED_SHORT_VERTEX_COUNT
+)
+
+
+class _LineStyleDirtyMixin:
+    """Share the managed line-style mutation invariant across shape records."""
+
+    _line_style: LineStyle
+    _line_style_dirty: bool
+
+    @property
+    def line_style(self) -> LineStyle:
+        return self._line_style
+
+    @line_style.setter
+    def line_style(self, value: LineStyle) -> None:
+        self._set_line_style(value)
+
+    def _set_line_style(self, value: LineStyle) -> None:
+        self._line_style = value
+        self._line_style_dirty = True
+
+
+def validate_record_enum_value(field_name: str, value: int, maximum: int) -> int:
+    """Reject values outside a managed byte-backed enum's declared range."""
+    if not 0 <= value <= maximum:
+        raise ValueError(f"{field_name} must be between 0 and {maximum}")
+    return value
+
+
+def _validate_schematic_vertex_counts(primary: int, extended: int) -> None:
+    """Reject vertex counts that cannot be re-emitted by the V5 writer."""
+    if not 0 <= primary <= _MAX_SIGNED_SHORT_VERTEX_COUNT:
+        raise ValueError("LocationCount must be 0..=32767")
+    if not 0 <= extended <= _MAX_SIGNED_SHORT_VERTEX_COUNT:
+        raise ValueError("ExtraLocationCount must be 0..=32767")
+    if primary + extended > _MAX_CANONICAL_VERTEX_TOTAL:
+        raise ValueError("combined vertex count must be 0..=32817")
+
+
+def _validate_schematic_vertex_total(count: int) -> None:
+    """Reject authored vertex lists whose canonical extra count overflows."""
+    if not 0 <= count <= _MAX_CANONICAL_VERTEX_TOTAL:
+        raise ValueError("combined vertex count must be 0..=32817")
+    primary = min(count, _PRIMARY_VERTEX_WRITE_COUNT)
+    _validate_schematic_vertex_counts(primary, count - primary)
 
 
 def detect_case_mode_from_uppercase_fields(
@@ -44,6 +106,50 @@ def detect_case_mode_method_from_dotted_uppercase_fields(self: Any) -> CaseMode:
         getattr(self, "_raw_record", None),
         require_dot=True,
     )
+
+
+def serialize_present_coord_point(
+    record: _RecordFields,
+    serializer: AltiumSerializer,
+    raw_record: _RecordFields | None,
+    point: CoordPoint,
+    *,
+    prefix: str,
+    has_x: bool,
+    has_y: bool,
+) -> None:
+    """Write only coordinate axes present in raw state or changed from zero."""
+    for axis, whole, frac, present in (
+        ("X", point.x, point.x_frac, has_x),
+        ("Y", point.y, point.y_frac, has_y),
+    ):
+        if present or whole != 0 or frac != 0:
+            axis_raw = raw_record if present else None
+            serializer.write_coord(
+                record,
+                prefix,
+                axis,
+                whole,
+                frac,
+                axis_raw,
+            )
+
+
+def read_indexed_coord(record: _RecordFields, field: str) -> tuple[int, int]:
+    """Read an indexed vertex coordinate through the shared Param codec."""
+    whole, fraction, _ = AltiumSerializer().read_coord(record, field)
+    return whole, fraction
+
+
+def indexed_coord_has_invalid_wire_value(record: _RecordFields, field: str) -> bool:
+    """Return whether a present indexed coordinate part violates Param width."""
+    return AltiumSerializer().coordinate_has_invalid_wire_value(record, field)
+
+
+def validate_indexed_coord(point: CoordPoint, x_field: str, y_field: str) -> None:
+    """Reject vertex parts that cannot be represented by Export_Coord."""
+    require_coordinate_wire_parts(point.x, point.x_frac, x_field)
+    require_coordinate_wire_parts(point.y, point.y_frac, y_field)
 
 
 def bound_schematic_owner(record: object) -> object | None:
@@ -248,6 +354,29 @@ def _effective_basic_entry_distance_frac1(value: object) -> int:
     if frac != 0:
         return frac * 10
     return int(getattr(value, "distance_from_top_frac1", 0))
+
+
+def validate_basic_entry_distance_fields(
+    whole: int,
+    legacy_fraction: int,
+    fraction1: int,
+) -> None:
+    """Validate the persisted widths and composed basic-entry distance."""
+    if not -32768 <= whole <= 32767:
+        raise ValueError("DistanceFromTop must fit a signed 16-bit field")
+    for name, value in (
+        ("DistanceFromTop_Frac", legacy_fraction),
+        ("DistanceFromTop_Frac1", fraction1),
+    ):
+        if not -(2**31) <= value <= 2**31 - 1:
+            raise ValueError(f"{name} must fit a signed 32-bit field")
+    effective = (
+        (whole * 100_000 + legacy_fraction) * 10
+        if legacy_fraction != 0
+        else whole * 1_000_000 + fraction1
+    )
+    if not -(2**31) <= effective <= 2**31 - 1:
+        raise ValueError("effective DistanceFromTop must fit a signed 32-bit value")
 
 
 def _coord_scalar_with_basic_entry_distance_to_rounded_native_units(

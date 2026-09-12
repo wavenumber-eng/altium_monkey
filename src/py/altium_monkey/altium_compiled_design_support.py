@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key, dotnet_trim
+from ._sch_source_projection import (
+    _component_bound_field_slots,
+    _hierarchy_bound_field_slots,
+    _hierarchy_field_role,
+    _component_object_list_owner as _compiler_part_owner,
+)
+from .altium_managed_alpha_numeric import managed_designator_prefix
+from .altium_record_sch__designator import AltiumSchDesignator
+from .altium_record_sch__parameter import AltiumSchParameter
+from .altium_record_types import SchPrimitive
+from .altium_schdoc_info import SchComponentInfo, SchPinInfo, SchSheetSymbolInfo
 from .altium_sch_record_helpers import (
     _effective_basic_entry_distance_frac1,
     _coord_scalar_to_native_parts,
@@ -20,6 +32,35 @@ from .altium_netlist_wire_connectivity import (
 
 if TYPE_CHECKING:
     from .altium_schdoc import AltiumSchDoc
+
+
+def _compiler_source_rows[T](
+    rows: Iterable[T], *, start: int = 0
+) -> Iterator[tuple[int, T]]:
+    for ordinal, row in enumerate(rows):
+        yield int(getattr(row, "_source_ordinal", ordinal)) + start, row
+
+
+def _compiler_entry_rows[T](owner: object, entries: list[T]) -> Iterator[tuple[int, T]]:
+    ordinals = getattr(owner, "_source_entry_ordinals", range(len(entries)))
+    return zip(ordinals, entries, strict=True)
+
+
+def _compiler_harness_entries(schdoc: object, connector: object) -> Iterable[object]:
+    from ._compiler_source import _CompilerDocumentSource
+
+    if isinstance(schdoc, _CompilerDocumentSource):
+        return schdoc.harness_entries(connector)
+    return getattr(connector, "entries", ())
+
+
+def _compiler_hidden_net_name(value: object) -> str | None:
+    pin = getattr(value, "pin", value)
+    component = getattr(value, "component", None)
+    names = getattr(component, "_source_hidden_net_names", {})
+    if isinstance(names, Mapping) and id(pin) in names:
+        return names[id(pin)]
+    return getattr(pin, "hidden_net_name", None)
 
 
 @dataclass
@@ -139,18 +180,28 @@ def _harness_entry_connection_point(
     return _normalize_precise_point(x_total, y_total)
 
 
-def _build_port_location_map(schdoc: AltiumSchDoc) -> dict[_PrecisePoint, str]:
+def _build_port_location_map(
+    schdoc: object,
+    *,
+    port_filter: Callable[[object], bool] | None = None,
+    entry_filter: Callable[[object], bool] | None = None,
+) -> dict[_PrecisePoint, str]:
     """Build a full-coordinate port/entry lookup for harness matching."""
     port_location_map: dict[_PrecisePoint, str] = {}
 
-    for port in schdoc.get_ports():
+    get_ports = getattr(schdoc, "get_ports")
+    for port in get_ports():
+        if port_filter is not None and not port_filter(port):
+            continue
         if port.name and port.location:
             for point in port._precise_connection_points:
                 port_location_map[_point_key(point)] = port.name
 
-    for sheet_symbol in schdoc.get_sheet_symbols():
+    for sheet_symbol in _compiler_sheet_symbol_sources(schdoc):
         record = sheet_symbol.record
         for entry in sheet_symbol.entries:
+            if entry_filter is not None and not entry_filter(entry):
+                continue
             if not getattr(entry, "harness_type", ""):
                 continue
             entry_name = entry.display_name or ""
@@ -374,31 +425,37 @@ def _build_child_harness_entry_map(
         if harness_port:
             child_harness_entries[harness_port.lower()] = [
                 {
-                    "name": entry.name,
+                    "name": str(getattr(entry, "name", "") or ""),
                     "object_id": getattr(entry, "unique_id", "") or "",
                 }
-                for entry in harness_connector.entries
-                if entry.name
+                for entry in _compiler_harness_entries(child_schdoc, harness_connector)
+                if getattr(entry, "name", "")
             ]
     return child_harness_entries
 
 
-_ENTRY_REPEAT_PATTERN = re.compile(r"^REPEAT\s*\(\s*([^,)]+)\s*\)$", re.IGNORECASE)
 _DIFF_PAIR_SUFFIXES = ("_P", "_N")
 
 
 def _strip_diff_pair_suffix(name: str) -> tuple[str, str]:
     """Strip a differential-pair suffix from a net name."""
     index = name.rfind("_")
-    if index > 0 and name[index:] in _DIFF_PAIR_SUFFIXES:
+    if index >= 0 and name[index:].upper() in _DIFF_PAIR_SUFFIXES:
         return name[:index], name[index:]
     return name, ""
 
 
 def _parse_entry_repeat(entry_name: str) -> str | None:
     """Parse ``REPEAT(portName)`` from a sheet-entry name."""
-    match = _ENTRY_REPEAT_PATTERN.match(entry_name.strip())
-    return match.group(1).strip() if match else None
+    opening = entry_name.find("(")
+    if opening < 0 or dotnet_ordinal_ignore_case_key(
+        dotnet_trim(entry_name[:opening])
+    ) != dotnet_ordinal_ignore_case_key("REPEAT"):
+        return None
+    closing = entry_name.find(")", opening + 1)
+    if closing < 0:
+        return None
+    return dotnet_trim(entry_name[opening + 1 : closing])
 
 
 def _build_room_details(
@@ -436,6 +493,29 @@ def apply_channel_pattern(
     designator: str,
 ) -> str:
     """Apply an Altium channel designator format string."""
+    result = _replace_room_details(format_str, room)
+    return _replace_component_details(
+        result, designator, managed_designator_prefix(designator)
+    )
+
+
+def _format_part_physical_designator(
+    format_str: str,
+    room: RoomDetails | None,
+    designator: str,
+    suffix: str,
+) -> str:
+    """Format a prepared physical part name with its suffix inside the index."""
+    full_designator = designator + suffix
+    pattern = "" if room is None else _replace_room_details(format_str, room)
+    if not pattern:
+        return full_designator
+    return _replace_component_details(
+        pattern, full_designator, managed_designator_prefix(designator)
+    )
+
+
+def _replace_room_details(format_str: str, room: RoomDetails) -> str:
     result = format_str
     result = result.replace("$RoomName", room.room_name)
     result = result.replace("$ChannelPrefix", room.channel_prefix)
@@ -443,14 +523,174 @@ def apply_channel_pattern(
     result = result.replace("$ChannelAlpha", room.channel_alpha)
     result = result.replace("$SheetDesignator", room.sheet_designator)
     result = result.replace("$SheetNumber", room.sheet_number)
-    result = result.replace("$DocumentNumber", room.document_number)
+    return result.replace("$DocumentNumber", room.document_number)
 
-    match = re.match(r"^(.*?)(\d+)$", designator)
-    component_prefix = match.group(1) if match else designator
-    component_index = match.group(2) if match else ""
+
+def _replace_component_details(
+    result: str, designator: str, component_prefix: str
+) -> str:
+    component_index = designator[len(component_prefix) :]
     result = result.replace("$ComponentPrefix", component_prefix)
     result = result.replace("$ComponentIndex", component_index)
     return result.replace("$Component", designator)
+
+
+@dataclass
+class _CompilerSheetSymbolSource(SchSheetSymbolInfo):
+    _source_sheet_name: str = ""
+    _source_file_name: str = ""
+
+    @property
+    def designator(self) -> str:
+        return self._source_sheet_name
+
+    @property
+    def file_name(self) -> str:
+        return self._source_file_name
+
+
+def _compiler_sheet_symbol_sources(schdoc: object) -> list[SchSheetSymbolInfo]:
+    result: list[SchSheetSymbolInfo] = []
+    get_sheet_symbols = getattr(schdoc, "get_sheet_symbols")
+    for symbol in get_sheet_symbols():
+        if not isinstance(symbol, SchSheetSymbolInfo) or isinstance(
+            symbol, _CompilerSheetSymbolSource
+        ):
+            result.append(symbol)
+            continue
+        fields = _hierarchy_bound_field_slots(symbol.record, symbol.record.children)
+        result.append(
+            _CompilerSheetSymbolSource(
+                record=symbol.record,
+                entries=symbol.entries,
+                _source_sheet_name=_compiler_sheet_symbol_text(
+                    symbol, fields, "sheet_name"
+                ),
+                _source_file_name=_compiler_sheet_symbol_text(
+                    symbol, fields, "file_name"
+                ),
+            )
+        )
+    return result
+
+
+def _compiler_sheet_symbol_text(
+    symbol: SchSheetSymbolInfo, fields: dict[str, SchPrimitive], role: str
+) -> str:
+    if role in fields:
+        return str(getattr(fields[role], "text", "") or "")
+    candidates = (*symbol.record.children, getattr(symbol.record, role, None))
+    if any(_hierarchy_field_role(symbol.record, child) == role for child in candidates):
+        return ""
+    # Legacy in-memory sources may expose direct strings, but an ignored-only
+    # actual field must not resurrect that raw field through the public getter.
+    return symbol.designator if role == "sheet_name" else symbol.file_name
+
+
+@dataclass
+class _CompilerComponentSource(SchComponentInfo):
+    _source_designator: AltiumSchDesignator | None
+    _source_parameters: tuple[AltiumSchParameter, ...]
+
+    @property
+    def designator(self) -> str:
+        return self._source_designator.text or "" if self._source_designator else ""
+
+    @property
+    def parameters(self) -> list[AltiumSchParameter]:
+        return list(self._source_parameters)
+
+
+def _component_source_fields(
+    component: SchComponentInfo,
+) -> tuple[AltiumSchDesignator | None, tuple[AltiumSchParameter, ...]]:
+    children = component.record.children or component.record.parameters
+    fields = _component_bound_field_slots(children)
+    designator = fields.get("designator")
+    comment = fields.get("comment")
+    parameters = tuple(
+        parameter
+        for parameter in component.parameters
+        if (
+            dotnet_ordinal_ignore_case_key(parameter.name) != "COMMENT"
+            or parameter is comment
+        )
+    )
+    return designator if isinstance(
+        designator, AltiumSchDesignator
+    ) else None, parameters
+
+
+def _compiler_component_sources(schdoc: object) -> list[_CompilerComponentSource]:
+    result: list[_CompilerComponentSource] = []
+    get_components = getattr(schdoc, "get_components")
+    for component in get_components():
+        if isinstance(component, _CompilerComponentSource):
+            result.append(component)
+            continue
+        if not isinstance(component, SchComponentInfo):
+            continue
+        designator, parameters = _component_source_fields(component)
+        result.append(
+            _CompilerComponentSource(
+                record=component.record,
+                _source_designator=designator,
+                _source_parameters=parameters,
+            )
+        )
+    return result
+
+
+def _compiler_source_pins(schdoc: object) -> list[SchPinInfo]:
+    from .altium_schdoc import AltiumSchDoc
+
+    if not isinstance(schdoc, AltiumSchDoc):
+        get_all_pins = getattr(schdoc, "get_all_pins")
+        return list(get_all_pins())
+    return [
+        SchPinInfo(pin=pin, component=component)
+        for component in _compiler_component_sources(schdoc)
+        for pin in component.pins
+    ]
+
+
+def _compiler_implemented_part_counts(
+    objects: Iterable[object], components: Iterable[SchComponentInfo]
+) -> dict[int, int]:
+    """Count compiler ObjectList parts from normalized modeled source ownership."""
+    counts, modes = _compiler_part_count_defaults(components)
+    if not modes:
+        return counts
+    seen: set[tuple[int, int]] = set()
+    for obj in objects:
+        if not isinstance(obj, SchPrimitive):
+            continue
+        owner = _compiler_part_owner(obj)
+        owner_id = id(owner)
+        part_id = obj.owner_part_id or 0
+        if owner_id not in modes or part_id in (-1, 0):
+            continue
+        if (obj.owner_part_display_mode or 0) != modes[owner_id]:
+            continue
+        key_pair = (owner_id, part_id)
+        if key_pair not in seen:
+            seen.add(key_pair)
+            counts[owner_id] += 1
+    return counts
+
+
+def _compiler_part_count_defaults(
+    components: Iterable[SchComponentInfo],
+) -> tuple[dict[int, int], dict[int, int]]:
+    counts: dict[int, int] = {}
+    modes: dict[int, int] = {}
+    for component in components:
+        record = component.record
+        key = id(record)
+        counts[key] = record.part_count - 1 if record.part_count <= 2 else 0
+        if record.part_count > 2:
+            modes[key] = record.display_mode
+    return counts, modes
 
 
 __all__ = [

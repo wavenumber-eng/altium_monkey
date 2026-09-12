@@ -61,6 +61,11 @@ class SchJsonObjectType(StrEnum):
     HARNESS_ENTRY = "Harness Entry"
     HARNESS_TYPE = "Harness Type"
     SIGNAL_HARNESS = "Signal Harness"
+    HARNESS_SPLICE = "Harness Splice"
+    HARNESS_LAYOUT_LABEL = "Harness Layout Label"
+    HARNESS_LAYOUT_CONNECTION_POINT = "Harness Layout Connection Point"
+    HARNESS_BUNDLE = "Harness Bundle"
+    HARNESS_COVERING = "Harness Covering"
     TEMPLATE = "Template"
     PARAMETER_SET = "Parameter Set"
     COMPILE_MASK = "Compile Mask"
@@ -216,6 +221,36 @@ SCH_JSON_OBJECT_TYPE_BINDINGS: tuple[SchJsonObjectTypeBinding, ...] = (
         SchJsonObjectType.SIGNAL_HARNESS,
         SchRecordType.SIGNAL_HARNESS,
         "eSignalHarness",
+        True,
+    ),
+    SchJsonObjectTypeBinding(
+        SchJsonObjectType.HARNESS_SPLICE,
+        SchRecordType.HARNESS_SPLICE,
+        "eHarnessSplice",
+        True,
+    ),
+    SchJsonObjectTypeBinding(
+        SchJsonObjectType.HARNESS_LAYOUT_LABEL,
+        SchRecordType.HARNESS_LAYOUT_LABEL,
+        "eHarnessLayoutLabel",
+        True,
+    ),
+    SchJsonObjectTypeBinding(
+        SchJsonObjectType.HARNESS_LAYOUT_CONNECTION_POINT,
+        SchRecordType.HARNESS_LAYOUT_CONNECTION_POINT,
+        "eHarnessLayoutConnectionPoint",
+        True,
+    ),
+    SchJsonObjectTypeBinding(
+        SchJsonObjectType.HARNESS_BUNDLE,
+        SchRecordType.HARNESS_BUNDLE,
+        "eHarnessBundle",
+        True,
+    ),
+    SchJsonObjectTypeBinding(
+        SchJsonObjectType.HARNESS_COVERING,
+        SchRecordType.HARNESS_LAYOUT_COVERING,
+        "eHarnessCovering",
         True,
     ),
     SchJsonObjectTypeBinding(

@@ -13,6 +13,7 @@ from typing import Any
 
 from .altium_api_markers import public_api
 from .altium_common_enums import ComponentKind
+from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
 from .altium_record_sch__component import AltiumSchComponent
 from .altium_record_sch__designator import AltiumSchDesignator
 from .altium_record_sch__harness_connector import AltiumSchHarnessConnector
@@ -30,7 +31,7 @@ from .altium_record_sch__power_port import AltiumSchPowerPort
 from .altium_record_sch__sheet_entry import AltiumSchSheetEntry
 from .altium_record_sch__sheet_symbol import AltiumSchSheetSymbol
 from .altium_record_types import SchRectMils
-from .altium_sch_display_mode import record_belongs_to_display_mode
+from .altium_sch_display_mode import pin_belongs_to_component_view
 from .altium_sch_enums import OffSheetConnectorStyle, PinElectrical
 
 
@@ -101,20 +102,11 @@ class SchComponentInfo(_RecordLocationInfoMixin):
         """
         Pins for this component, filtered for the active part and display mode.
         """
-        current_part = getattr(self.record, "current_part_id", 1)
-        active_display_mode = self.display_mode
-        result: list[AltiumSchPin] = []
-        for pin in self.record.pins:
-            owner_part = getattr(pin, "owner_part_id", None)
-            part_matches = (
-                owner_part is None or owner_part <= 0 or owner_part == current_part
-            )
-            if part_matches and record_belongs_to_display_mode(
-                pin,
-                active_display_mode,
-            ):
-                result.append(pin)
-        return result
+        return [
+            pin
+            for pin in self.record.pins
+            if pin_belongs_to_component_view(pin, self.record)
+        ]
 
     @property
     def parameters(self) -> list[AltiumSchParameter]:
@@ -128,10 +120,7 @@ class SchComponentInfo(_RecordLocationInfoMixin):
         """
         Component value from the Value parameter.
         """
-        for param in self.parameters:
-            if param.name == "Value":
-                return param.text or ""
-        return ""
+        return self.get_parameter("Value") or ""
 
     @property
     def description(self) -> str:
@@ -139,7 +128,7 @@ class SchComponentInfo(_RecordLocationInfoMixin):
         Component description.
         """
         desc = self.get_parameter("Description")
-        if desc:
+        if desc is not None:
             return desc
         if (
             hasattr(self.record, "component_description")
@@ -153,9 +142,9 @@ class SchComponentInfo(_RecordLocationInfoMixin):
         """
         Component comment from the Comment parameter or design_item_id.
         """
-        for param in self.parameters:
-            if param.name == "Comment":
-                return param.text or ""
+        comment = self.get_parameter("Comment")
+        if comment is not None:
+            return comment
         return getattr(self.record, "design_item_id", "") or ""
 
     @property
@@ -207,8 +196,9 @@ class SchComponentInfo(_RecordLocationInfoMixin):
         """
         Get a parameter value by name.
         """
+        key = dotnet_ordinal_ignore_case_key(name)
         for param in self.parameters:
-            if param.name == name:
+            if dotnet_ordinal_ignore_case_key(param.name) == key:
                 return param.text
         return None
 

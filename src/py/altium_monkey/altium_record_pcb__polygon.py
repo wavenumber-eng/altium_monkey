@@ -33,41 +33,43 @@ class PcbPolygonVertex:
     """
     Single vertex in polygon outline or cutout.
     """
+
     x_mils: float
     y_mils: float
     kind: int = 0  # 0=line, 1=arc (to next vertex)
     radius_mils: float = 0.0  # Arc radius if kind=1
     start_angle: float = 0.0  # Arc start angle (degrees)
-    end_angle: float = 0.0    # Arc end angle (degrees)
+    end_angle: float = 0.0  # Arc end angle (degrees)
     center_x_mils: float = 0.0
     center_y_mils: float = 0.0
     has_center: bool = False
+
 
 @dataclass
 class AltiumPcbPolygon:
     """
     PCB polygon pour definition.
-    
+
     Represents a copper pour region with outline, cutouts, and pour settings.
     The polygon is NOT rendered - just the definition. Actual copper fill
     is computed by Altium based on these settings and stored in ShapeBasedRegions6.
-    
+
     Attributes:
         # Geometry
         outline: List of vertices defining polygon outline
         cutouts: List of vertex lists defining cutout regions
-    
+
         # Properties
         net: Net index (0 = no net)
         layer: Layer name ("TOP", "BOTTOM", "MID1", etc.)
         polygon_type: "Polygon" or "Cutout"
         name: Polygon name
-    
+
         # Pour settings
         track_width_mils: Copper track width for hatched fills
         hatch_style: "Solid", "Hatched", "None"
         arc_resolution_mils: Arc approximation resolution
-    
+
         # Thermal relief settings
         min_prim_length_mils: Minimum primitive length
         neck_width_threshold_mils: Neck width threshold
@@ -75,21 +77,21 @@ class AltiumPcbPolygon:
         remove_necks: Remove narrow necks
         remove_islands_by_area: Remove small islands
         area_threshold: Area threshold for island removal
-    
+
         # Advanced settings
         pour_index: Pour priority/order
         union_index: Union group index
         keepout: Is this a keepout region
         locked: Is polygon locked
         shelf: Is polygon shelved
-    
+
         # Raw record for passthrough
         _raw_record: Complete raw record dict
-    
+
         # Access geometry
         for v in poly.outline:
             print(f"Vertex: ({v.x_mils}, {v.y_mils})")
-    
+
         # Serialize back
         record = poly.to_record()
     """
@@ -140,76 +142,84 @@ class AltiumPcbPolygon:
     _raw_record: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> 'AltiumPcbPolygon':
+    def from_record(cls, record: dict[str, Any]) -> "AltiumPcbPolygon":
         """
         Parse polygon from Polygons6/Data text record.
-        
+
         Args:
             record: Text record dict from get_records_in_section()
-        
+
         Returns:
             AltiumPcbPolygon instance
         """
         poly = cls(_raw_record=record.copy())
 
         # Parse basic properties
-        poly.net = int(record.get('NET', 0))
-        poly.layer = record.get('LAYER', 'TOP')
-        poly.polygon_type = record.get('POLYGONTYPE', 'Polygon')
+        poly.net = int(record.get("NET", 0))
+        poly.layer = record.get("LAYER", "TOP")
+        poly.polygon_type = record.get("POLYGONTYPE", "Polygon")
 
         # Decode name (comma-separated ASCII values)
-        name_str = record.get('NAME', '')
-        if name_str and ',' in name_str:
+        name_str = record.get("NAME", "")
+        if name_str and "," in name_str:
             try:
-                name_bytes = bytes(int(x) for x in name_str.split(','))
-                poly.name = name_bytes.decode('ascii', errors='ignore')
+                name_bytes = bytes(int(x) for x in name_str.split(","))
+                poly.name = name_bytes.decode("ascii", errors="ignore")
             except (ValueError, UnicodeDecodeError):
                 poly.name = name_str
         else:
             poly.name = name_str
 
         # Parse pour settings
-        poly.track_width_mils = cls._parse_dimension(record.get('TRACKWIDTH', '10mil'))
-        poly.hatch_style = record.get('HATCHSTYLE', 'Solid')
-        poly.arc_resolution_mils = cls._parse_dimension(record.get('ARCRESOLUTION', '0.5mil'))
-        poly.grid_size_mils = cls._parse_dimension(record.get('GRIDSIZE', '20mil'))
+        poly.track_width_mils = cls._parse_dimension(record.get("TRACKWIDTH", "10mil"))
+        poly.hatch_style = record.get("HATCHSTYLE", "Solid")
+        poly.arc_resolution_mils = cls._parse_dimension(
+            record.get("ARCRESOLUTION", "0.5mil")
+        )
+        poly.grid_size_mils = cls._parse_dimension(record.get("GRIDSIZE", "20mil"))
 
         # Parse thermal relief settings
-        poly.min_prim_length_mils = cls._parse_dimension(record.get('MINPRIMLENGTH', '3mil'))
-        poly.neck_width_threshold_mils = cls._parse_dimension(record.get('NECKWIDTHTHRESHOLD', '5mil'))
-        poly.remove_dead = record.get('REMOVEDEAD', 'TRUE') == 'TRUE'
-        poly.remove_necks = record.get('REMOVENECKS', 'TRUE') == 'TRUE'
-        poly.remove_islands_by_area = record.get('REMOVEISLANDSBYAREA', 'TRUE') == 'TRUE'
+        poly.min_prim_length_mils = cls._parse_dimension(
+            record.get("MINPRIMLENGTH", "3mil")
+        )
+        poly.neck_width_threshold_mils = cls._parse_dimension(
+            record.get("NECKWIDTHTHRESHOLD", "5mil")
+        )
+        poly.remove_dead = record.get("REMOVEDEAD", "TRUE") == "TRUE"
+        poly.remove_necks = record.get("REMOVENECKS", "TRUE") == "TRUE"
+        poly.remove_islands_by_area = (
+            record.get("REMOVEISLANDSBYAREA", "TRUE") == "TRUE"
+        )
 
-        area_str = record.get('AREATHRESHOLD', '250000000000.000000')
+        area_str = record.get("AREATHRESHOLD", "250000000000.000000")
         try:
             poly.area_threshold = float(area_str)
         except ValueError:
             poly.area_threshold = 250000000000.0
 
         # Parse advanced settings
-        poly.pour_index = int(record.get('POURINDEX', 0))
-        poly.union_index = int(record.get('UNIONINDEX', 0))
-        poly.keepout = record.get('KEEPOUT', 'FALSE') == 'TRUE'
-        poly.locked = record.get('LOCKED', 'FALSE') == 'TRUE'
-        poly.shelved = record.get('SHELVED', 'FALSE') == 'TRUE'
-        poly.polygon_outline = record.get('POLYGONOUTLINE', 'FALSE') == 'TRUE'
-        poly.primitive_lock = record.get('PRIMITIVELOCK', 'TRUE') == 'TRUE'
-        poly.obey_polygon_cutout = record.get('OBEYPOLYGONCUTOUT', 'TRUE') == 'TRUE'
-        poly.user_routed = record.get('USERROUTED', 'TRUE') == 'TRUE'
-        poly.pour_over = record.get('POUROVER', 'FALSE') == 'TRUE'
-        poly.pour_over_style = int(record.get('POUROVERSTYLE', 2))
-        poly.use_octagons = record.get('USEOCTAGONS', 'FALSE') == 'TRUE'
-        poly.ignore_violations = record.get('IGNOREVIOLATIONS', 'FALSE') == 'TRUE'
-        poly.selection = record.get('SELECTION', 'FALSE') == 'TRUE'
-        poly.restore_layer = record.get('RESTORELAYER', 'UNKNOWN')
-        poly.restore_net = record.get('RESTORENET', '')
+        poly.pour_index = int(record.get("POURINDEX", 0))
+        poly.union_index = int(record.get("UNIONINDEX", 0))
+        poly.keepout = record.get("KEEPOUT", "FALSE") == "TRUE"
+        poly.locked = record.get("LOCKED", "FALSE") == "TRUE"
+        poly.shelved = record.get("SHELVED", "FALSE") == "TRUE"
+        poly.polygon_outline = record.get("POLYGONOUTLINE", "FALSE") == "TRUE"
+        poly.primitive_lock = record.get("PRIMITIVELOCK", "TRUE") == "TRUE"
+        poly.obey_polygon_cutout = record.get("OBEYPOLYGONCUTOUT", "TRUE") == "TRUE"
+        poly.user_routed = record.get("USERROUTED", "TRUE") == "TRUE"
+        poly.pour_over = record.get("POUROVER", "FALSE") == "TRUE"
+        poly.pour_over_style = int(record.get("POUROVERSTYLE", 2))
+        poly.use_octagons = record.get("USEOCTAGONS", "FALSE") == "TRUE"
+        poly.ignore_violations = record.get("IGNOREVIOLATIONS", "FALSE") == "TRUE"
+        poly.selection = record.get("SELECTION", "FALSE") == "TRUE"
+        poly.restore_layer = record.get("RESTORELAYER", "UNKNOWN")
+        poly.restore_net = record.get("RESTORENET", "")
 
         # Parse outline vertices (VX0-VXn, VY0-VYn, KIND0-KINDn, etc.)
-        poly.outline = cls._parse_vertices(record, prefix='V')
+        poly.outline = cls._parse_vertices(record, prefix="V")
 
         # Parse cutout vertices (CX0-CXn, CY0-CYn)
-        cutout_verts = cls._parse_vertices(record, prefix='C')
+        cutout_verts = cls._parse_vertices(record, prefix="C")
         if cutout_verts:
             poly.cutouts = [cutout_verts]  # Single cutout for now
 
@@ -224,7 +234,7 @@ class AltiumPcbPolygon:
             return 0.0
 
         # Remove 'mil' suffix
-        value = value.replace('mil', '').strip()
+        value = value.replace("mil", "").strip()
 
         try:
             return float(value)
@@ -232,14 +242,16 @@ class AltiumPcbPolygon:
             return 0.0
 
     @classmethod
-    def _parse_vertices(cls, record: dict[str, Any], prefix: str) -> list[PcbPolygonVertex]:
+    def _parse_vertices(
+        cls, record: dict[str, Any], prefix: str
+    ) -> list[PcbPolygonVertex]:
         """
         Parse vertices from record.
-        
+
         Args:
             record: Text record dict
             prefix: 'V' for outline, 'C' for cutout
-        
+
         Returns:
             List of PcbPolygonVertex objects
         """
@@ -247,25 +259,25 @@ class AltiumPcbPolygon:
 
         # Find how many vertices we have
         i = 0
-        while f'{prefix}X{i}' in record:
-            x_str = record[f'{prefix}X{i}']
-            y_str = record[f'{prefix}Y{i}']
+        while f"{prefix}X{i}" in record:
+            x_str = record[f"{prefix}X{i}"]
+            y_str = record[f"{prefix}Y{i}"]
 
             x_mils = cls._parse_dimension(x_str)
             y_mils = cls._parse_dimension(y_str)
 
             # Skip zero vertices (unused slots)
-            if prefix == 'C' and x_mils == 0.0 and y_mils == 0.0:
+            if prefix == "C" and x_mils == 0.0 and y_mils == 0.0:
                 i += 1
                 continue
 
             # Parse arc information if present
-            kind = int(record.get(f'KIND{i}', 0))
-            radius_mils = cls._parse_dimension(record.get(f'R{i}', '0mil'))
+            kind = int(record.get(f"KIND{i}", 0))
+            radius_mils = cls._parse_dimension(record.get(f"R{i}", "0mil"))
 
             # Parse angles (format: " 0.00000000000000E+0000")
-            sa_str = record.get(f'SA{i}', '0.0')
-            ea_str = record.get(f'EA{i}', '0.0')
+            sa_str = record.get(f"SA{i}", "0.0")
+            ea_str = record.get(f"EA{i}", "0.0")
 
             try:
                 start_angle = float(sa_str.strip())
@@ -277,11 +289,11 @@ class AltiumPcbPolygon:
             except ValueError:
                 end_angle = 0.0
 
-            cx_key = f'CX{i}'
-            cy_key = f'CY{i}'
+            cx_key = f"CX{i}"
+            cy_key = f"CY{i}"
             has_center = cx_key in record and cy_key in record
-            center_x_mils = cls._parse_dimension(record.get(cx_key, '0mil'))
-            center_y_mils = cls._parse_dimension(record.get(cy_key, '0mil'))
+            center_x_mils = cls._parse_dimension(record.get(cx_key, "0mil"))
+            center_y_mils = cls._parse_dimension(record.get(cy_key, "0mil"))
 
             vertex = PcbPolygonVertex(
                 x_mils=x_mils,
@@ -303,61 +315,63 @@ class AltiumPcbPolygon:
     def to_record(self) -> dict[str, Any]:
         """
         Serialize polygon to Polygons6/Data text record format.
-        
+
         Returns:
             Text record dict
         """
         record = self._raw_record.copy()
 
         # Update basic properties
-        record['NET'] = str(self.net)
-        record['LAYER'] = self.layer
-        record['POLYGONTYPE'] = self.polygon_type
+        record["NET"] = str(self.net)
+        record["LAYER"] = self.layer
+        record["POLYGONTYPE"] = self.polygon_type
 
         # Encode name (to comma-separated ASCII values)
         if self.name:
-            name_bytes = self.name.encode('ascii', errors='ignore')
-            record['NAME'] = ','.join(str(b) for b in name_bytes)
+            name_bytes = self.name.encode("ascii", errors="ignore")
+            record["NAME"] = ",".join(str(b) for b in name_bytes)
 
         # Update pour settings
-        record['TRACKWIDTH'] = f'{self.track_width_mils}mil'
-        record['HATCHSTYLE'] = self.hatch_style
-        record['ARCRESOLUTION'] = f'{self.arc_resolution_mils}mil'
-        record['GRIDSIZE'] = f'{self.grid_size_mils}mil'
+        record["TRACKWIDTH"] = f"{self.track_width_mils}mil"
+        record["HATCHSTYLE"] = self.hatch_style
+        record["ARCRESOLUTION"] = f"{self.arc_resolution_mils}mil"
+        record["GRIDSIZE"] = f"{self.grid_size_mils}mil"
 
         # Update thermal relief
-        record['MINPRIMLENGTH'] = f'{self.min_prim_length_mils}mil'
-        record['NECKWIDTHTHRESHOLD'] = f'{self.neck_width_threshold_mils}mil'
-        record['REMOVEDEAD'] = 'TRUE' if self.remove_dead else 'FALSE'
-        record['REMOVENECKS'] = 'TRUE' if self.remove_necks else 'FALSE'
-        record['REMOVEISLANDSBYAREA'] = 'TRUE' if self.remove_islands_by_area else 'FALSE'
-        record['AREATHRESHOLD'] = f'{self.area_threshold:.14E}'
+        record["MINPRIMLENGTH"] = f"{self.min_prim_length_mils}mil"
+        record["NECKWIDTHTHRESHOLD"] = f"{self.neck_width_threshold_mils}mil"
+        record["REMOVEDEAD"] = "TRUE" if self.remove_dead else "FALSE"
+        record["REMOVENECKS"] = "TRUE" if self.remove_necks else "FALSE"
+        record["REMOVEISLANDSBYAREA"] = (
+            "TRUE" if self.remove_islands_by_area else "FALSE"
+        )
+        record["AREATHRESHOLD"] = f"{self.area_threshold:.14E}"
 
         # Update advanced settings
-        record['POURINDEX'] = str(self.pour_index)
-        record['UNIONINDEX'] = str(self.union_index)
-        record['KEEPOUT'] = 'TRUE' if self.keepout else 'FALSE'
-        record['LOCKED'] = 'TRUE' if self.locked else 'FALSE'
-        record['SHELVED'] = 'TRUE' if self.shelved else 'FALSE'
-        record['POLYGONOUTLINE'] = 'TRUE' if self.polygon_outline else 'FALSE'
-        record['PRIMITIVELOCK'] = 'TRUE' if self.primitive_lock else 'FALSE'
-        record['OBEYPOLYGONCUTOUT'] = 'TRUE' if self.obey_polygon_cutout else 'FALSE'
-        record['USERROUTED'] = 'TRUE' if self.user_routed else 'FALSE'
-        record['POUROVER'] = 'TRUE' if self.pour_over else 'FALSE'
-        record['POUROVERSTYLE'] = str(self.pour_over_style)
-        record['USEOCTAGONS'] = 'TRUE' if self.use_octagons else 'FALSE'
-        record['IGNOREVIOLATIONS'] = 'TRUE' if self.ignore_violations else 'FALSE'
-        record['SELECTION'] = 'TRUE' if self.selection else 'FALSE'
-        record['RESTORELAYER'] = self.restore_layer
-        record['RESTORENET'] = self.restore_net
+        record["POURINDEX"] = str(self.pour_index)
+        record["UNIONINDEX"] = str(self.union_index)
+        record["KEEPOUT"] = "TRUE" if self.keepout else "FALSE"
+        record["LOCKED"] = "TRUE" if self.locked else "FALSE"
+        record["SHELVED"] = "TRUE" if self.shelved else "FALSE"
+        record["POLYGONOUTLINE"] = "TRUE" if self.polygon_outline else "FALSE"
+        record["PRIMITIVELOCK"] = "TRUE" if self.primitive_lock else "FALSE"
+        record["OBEYPOLYGONCUTOUT"] = "TRUE" if self.obey_polygon_cutout else "FALSE"
+        record["USERROUTED"] = "TRUE" if self.user_routed else "FALSE"
+        record["POUROVER"] = "TRUE" if self.pour_over else "FALSE"
+        record["POUROVERSTYLE"] = str(self.pour_over_style)
+        record["USEOCTAGONS"] = "TRUE" if self.use_octagons else "FALSE"
+        record["IGNOREVIOLATIONS"] = "TRUE" if self.ignore_violations else "FALSE"
+        record["SELECTION"] = "TRUE" if self.selection else "FALSE"
+        record["RESTORELAYER"] = self.restore_layer
+        record["RESTORENET"] = self.restore_net
 
         # Serialize outline vertices
-        self._serialize_vertices(record, self.outline, prefix='V')
+        self._serialize_vertices(record, self.outline, prefix="V")
 
         # Serialize cutout vertices
         if self.cutouts:
             for cutout in self.cutouts:
-                self._serialize_vertices(record, cutout, prefix='C')
+                self._serialize_vertices(record, cutout, prefix="C")
 
         return record
 
@@ -369,24 +383,26 @@ class AltiumPcbPolygon:
     ) -> None:
         """
         Serialize vertices to record.
-        
+
         Args:
             record: Text record dict to update
             vertices: List of PcbPolygonVertex objects
             prefix: 'V' for outline, 'C' for cutout
         """
         for i, v in enumerate(vertices):
-            record[f'{prefix}X{i}'] = f'{v.x_mils}mil'
-            record[f'{prefix}Y{i}'] = f'{v.y_mils}mil'
-            record[f'KIND{i}'] = str(v.kind)
-            record[f'R{i}'] = f'{v.radius_mils}mil'
-            record[f'SA{i}'] = f' {v.start_angle:.14E}'
-            record[f'EA{i}'] = f' {v.end_angle:.14E}'
-            record[f'CX{i}'] = f'{v.center_x_mils}mil'
-            record[f'CY{i}'] = f'{v.center_y_mils}mil'
+            record[f"{prefix}X{i}"] = f"{v.x_mils}mil"
+            record[f"{prefix}Y{i}"] = f"{v.y_mils}mil"
+            record[f"KIND{i}"] = str(v.kind)
+            record[f"R{i}"] = f"{v.radius_mils}mil"
+            record[f"SA{i}"] = f" {v.start_angle:.14E}"
+            record[f"EA{i}"] = f" {v.end_angle:.14E}"
+            record[f"CX{i}"] = f"{v.center_x_mils}mil"
+            record[f"CY{i}"] = f"{v.center_y_mils}mil"
 
     @staticmethod
-    def _vertices_without_closing_duplicate(vertices: list[PcbPolygonVertex]) -> list[PcbPolygonVertex]:
+    def _vertices_without_closing_duplicate(
+        vertices: list[PcbPolygonVertex],
+    ) -> list[PcbPolygonVertex]:
         """
         Remove an explicit duplicate closing vertex if present.
         """
@@ -395,9 +411,8 @@ class AltiumPcbPolygon:
 
         first = vertices[0]
         last = vertices[-1]
-        if (
-            math.isclose(first.x_mils, last.x_mils, abs_tol=1e-6)
-            and math.isclose(first.y_mils, last.y_mils, abs_tol=1e-6)
+        if math.isclose(first.x_mils, last.x_mils, abs_tol=1e-6) and math.isclose(
+            first.y_mils, last.y_mils, abs_tol=1e-6
         ):
             return vertices[:-1]
 
@@ -434,8 +449,12 @@ class AltiumPcbPolygon:
 
         if full_circle and current.has_center:
             mid_deg = start_deg + 180.0
-            mx_mils = current.center_x_mils + current.radius_mils * math.cos(math.radians(mid_deg))
-            my_mils = current.center_y_mils + current.radius_mils * math.sin(math.radians(mid_deg))
+            mx_mils = current.center_x_mils + current.radius_mils * math.cos(
+                math.radians(mid_deg)
+            )
+            my_mils = current.center_y_mils + current.radius_mils * math.sin(
+                math.radians(mid_deg)
+            )
             mx_svg = ctx.x_to_svg(mx_mils)
             my_svg = ctx.y_to_svg(my_mils)
             sweep_flag = "1" if raw_delta >= 0.0 else "0"
@@ -474,7 +493,9 @@ class AltiumPcbPolygon:
         ]
 
     @classmethod
-    def _path_from_vertices(cls, ctx: "PcbSvgRenderContext", vertices: list[PcbPolygonVertex]) -> str:
+    def _path_from_vertices(
+        cls, ctx: "PcbSvgRenderContext", vertices: list[PcbPolygonVertex]
+    ) -> str:
         """
         Build a closed SVG path from polygon vertices, preserving arc segments.
         """
@@ -484,14 +505,18 @@ class AltiumPcbPolygon:
 
         parts = []
         first = vertices[0]
-        parts.append(f"M {ctx.fmt(ctx.x_to_svg(first.x_mils))} {ctx.fmt(ctx.y_to_svg(first.y_mils))}")
+        parts.append(
+            f"M {ctx.fmt(ctx.x_to_svg(first.x_mils))} {ctx.fmt(ctx.y_to_svg(first.y_mils))}"
+        )
 
         previous = first
         for current in vertices[1:]:
             if int(current.kind) == 1 and current.radius_mils > 0.0:
                 parts.extend(cls._arc_segment_commands(ctx, previous, current))
             else:
-                parts.append(f"L {ctx.fmt(ctx.x_to_svg(current.x_mils))} {ctx.fmt(ctx.y_to_svg(current.y_mils))}")
+                parts.append(
+                    f"L {ctx.fmt(ctx.x_to_svg(current.x_mils))} {ctx.fmt(ctx.y_to_svg(current.y_mils))}"
+                )
             previous = current
 
         # Closing edge is implied by Z unless the first vertex itself carries
@@ -528,7 +553,7 @@ class AltiumPcbPolygon:
     ) -> list[str]:
         """
         Render polygon pour definition outline (debug view).
-        
+
         Note:
             This renders definition outlines only. Filled copper should use
             REGION/ShapeBasedRegion primitives.
@@ -537,7 +562,11 @@ class AltiumPcbPolygon:
             return []
 
         layer_enum = self._resolve_layer()
-        if for_layer is not None and layer_enum is not None and for_layer.value != layer_enum.value:
+        if (
+            for_layer is not None
+            and layer_enum is not None
+            and for_layer.value != layer_enum.value
+        ):
             return []
         if for_layer is not None and layer_enum is None:
             return []
@@ -586,7 +615,8 @@ class AltiumPcbPolygon:
         """
         String representation.
         """
-        return (f"AltiumPcbPolygon(name='{self.name}', net={self.net}, "
-                f"layer='{self.layer}', vertices={len(self.outline)}, "
-                f"cutouts={len(self.cutouts)})")
-
+        return (
+            f"AltiumPcbPolygon(name='{self.name}', net={self.net}, "
+            f"layer='{self.layer}', vertices={len(self.outline)}, "
+            f"cutouts={len(self.cutouts)})"
+        )

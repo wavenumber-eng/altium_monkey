@@ -27,6 +27,7 @@ COLLECTION_NAMES = (
     "hierarchy_terminal_bindings",
     "graphical_artifact_links",
 )
+_ROOT_FIELDS = frozenset({"schema", "type", "identity_namespace", *COLLECTION_NAMES})
 _COLLECTION_TYPES = {name: f"sch.{name.removesuffix('s')}" for name in COLLECTION_NAMES}
 _COLLECTION_TYPES.update(
     {
@@ -301,6 +302,11 @@ class AltiumPhysicalPageMetadata:
 
 
 def _validate_payload_header(payload: dict[str, object]) -> None:
+    unexpected = sorted(payload.keys() - _ROOT_FIELDS)
+    if unexpected:
+        raise ValueError(
+            "compiled schematic graph root has unknown fields: " + ", ".join(unexpected)
+        )
     if payload.get("schema") != ALTIUM_COMPILED_SCHEMATIC_GRAPH_SCHEMA:
         raise ValueError("unsupported compiled schematic graph schema")
     if payload.get("type") != ALTIUM_COMPILED_SCHEMATIC_GRAPH_TYPE:

@@ -19,7 +19,7 @@ dependencies = [
     "pillow==12.3.0",
     "freetype-py",
     "uharfbuzz",
-    "wn-geometer==2026.9.7",
+    "wn-geometer==2026.9.11",
     "lxml==6.0.2",
     "lz4>=4.4.5",
 ]
@@ -29,12 +29,12 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "Operating System :: OS Independent",
 ]
 
 [project.optional-dependencies]
 examples = [
     "cadquery",
+    "casadi<3.8; sys_platform == 'win32' and python_version >= '3.14'",
 ]
 release = [
     "build>=1.2",
@@ -43,6 +43,7 @@ release = [
 ]
 test = [
     "cadquery",
+    "casadi<3.8; sys_platform == 'win32' and python_version >= '3.14'",
     "jsonschema>=4.20",
     "pytest>=8.0",
 ]

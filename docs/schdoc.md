@@ -17,10 +17,11 @@ Use it when you need to:
 `AltiumSchDoc` owns a single `ObjectCollection`. Typed properties such as
 `schdoc.notes`, `schdoc.ports`, `schdoc.net_labels`, `schdoc.components`,
 `schdoc.sheet_symbols`, and `schdoc.harness_connectors` are live filtered views
-over that collection.
+over that collection. `schdoc.objects` and `schdoc.all_objects` are also
+read-only live views.
 
-Use filtered views for query and traversal. Do not append to filtered views.
-Change membership through the document:
+Use these views for query and traversal. Do not append to a view or assign
+`all_objects`. Change membership through the document:
 
 ```python
 note = make_sch_note(...)
@@ -163,6 +164,9 @@ viewBox by default so comparison lanes can preserve the native export shape.
 Set `SchSvgRenderOptions(include_view_box=False)` when a caller needs the
 normal renderer profile without a root viewBox.
 
+`SchSvgRenderOptions.paint_color_mode` accepts the public `SchPaintColorMode`
+values `COLOR`, `GRAYSCALE`, and `MONOCHROME` for managed painter color policy.
+
 Schematic SVG rendering resolves text fonts before measuring and placing text.
 Installed system fonts are preferred. On macOS, the resolver searches the
 standard system font directories, including Supplemental fonts; callers can add
@@ -171,8 +175,13 @@ directories through `ALTIUM_FONT_DIRS`.
 When a requested Altium/Windows family is unavailable, common families fall
 back to bundled open-source fonts: Arimo for Arial and Microsoft Sans
 Serif-style fonts, Tinos for Times New Roman-style fonts, and Cousine for
-Courier New or monospace fonts. Bundled fallback faces are embedded into SVG
-output when used so browser text rendering matches the measured metrics.
+Courier New or monospace fonts. The fallback remains automatic for resolution
+and measurement, but its font bytes are not embedded by default. Use
+`SchSvgRenderOptions(embed_bundled_fallback_fonts=True)` when the output must be
+self-contained. Only package-owned Arimo, Tinos, or Cousine faces actually used
+by painted SVG text are eligible; system and configured fonts are never
+embedded, and no font sidecars are written. Without embedding, a viewer that
+lacks the fallback face may lay out text differently.
 
 `AltiumSchDoc.to_ir(profile="onscreen")` includes font-resolution diagnostics
 for substitutions and fallbacks. Exact system matches are intentionally quiet.

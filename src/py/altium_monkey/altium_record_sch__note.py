@@ -1,10 +1,17 @@
 """Schematic record model for SchRecordType.NOTE."""
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .altium_record_sch__text_frame import AltiumSchTextFrame
-from .altium_record_types import SchRecordType
-from .altium_serializer import AltiumSerializer, Fields
+from ._sch_managed_defaults import LONG_TEXT_COLOR, NOTE_BORDER_COLOR, NOTE_FILL_COLOR
+from .altium_record_types import LineWidth, SchRecordType
+from .altium_sch_record_helpers import _RecordFields
+from .altium_serializer import (
+    AltiumSerializer,
+    Fields,
+    read_dynamic_string_field,
+    write_dynamic_string_field,
+)
 
 if TYPE_CHECKING:
     from .altium_font_manager import FontIDManager
@@ -22,9 +29,27 @@ class AltiumSchNote(AltiumSchTextFrame):
 
     def __init__(self) -> None:
         super().__init__()
+        self.color = NOTE_BORDER_COLOR
+        self.area_color = NOTE_FILL_COLOR
+        self.text_color = LONG_TEXT_COLOR
+        self._init_family_dynamic_unique_id()
         self.author: str = "Author"
         self.collapsed: bool = False
-        self.show_border = True  # Notes always have visible border
+        self.text = "Type @ to refer to a designator"
+        self.alignment = 1
+        self.word_wrap = True
+        self.clip_to_rect = True
+        self.show_border = True
+        self.is_solid = True
+        self.text_margin = 5
+        self.text_margin_frac = 0
+        self._has_author: bool = False
+        self._used_utf8_author: bool = False
+        self._has_collapsed: bool = False
+        self._source_author = self.author
+        self._source_collapsed = self.collapsed
+        self._capture_graphical_source_state()
+        self._capture_text_frame_source_state()
 
     @property
     def record_type(self) -> SchRecordType:
@@ -32,7 +57,7 @@ class AltiumSchNote(AltiumSchTextFrame):
 
     def parse_from_record(
         self,
-        record: dict[str, Any],
+        record: _RecordFields,
         font_manager: "FontIDManager | None" = None,
     ) -> None:
         """
@@ -46,11 +71,40 @@ class AltiumSchNote(AltiumSchTextFrame):
 
         # Use serializer for field reading (case-insensitive)
         s = AltiumSerializer()
+        self._parse_family_dynamic_unique_id(s, record)
 
-        self.author, _ = s.read_str(record, Fields.AUTHOR, default="Author")
-        self.collapsed, _ = s.read_bool(record, Fields.COLLAPSED, default=False)
+        # ImportNote reads these fields but deliberately normalizes the object
+        # state to the managed note invariants.
+        self.line_width = LineWidth.SMALLEST
+        self.is_solid = True
+        self.show_border = True
+        if not self._has_text_margin:
+            self.text_margin = 5
+            self.text_margin_frac = 0
+        if self.color is None:
+            self.color = 0
+        if self.area_color is None:
+            self.area_color = 0
+        if self.text_color is None:
+            self.text_color = 0
 
-    def serialize_to_record(self) -> dict[str, Any]:
+        self.author, self._has_author, self._used_utf8_author = (
+            read_dynamic_string_field(
+                s,
+                record,
+                self._record,
+                Fields.AUTHOR,
+                default="",
+            )
+        )
+        self.collapsed, self._has_collapsed = s.read_bool(
+            record, Fields.COLLAPSED, default=False
+        )
+        self._source_author = self.author
+        self._source_collapsed = self.collapsed
+        self._capture_text_frame_source_state()
+
+    def serialize_to_record(self) -> _RecordFields:
         """
         Serialize to a record.
         """
@@ -58,12 +112,87 @@ class AltiumSchNote(AltiumSchTextFrame):
 
         s = AltiumSerializer(self._detect_case_mode())
         raw = self._raw_record
+        self._serialize_managed_family_color(
+            record, s, Fields.COLOR.canonical, int(self.color or 0)
+        )
+        self._serialize_managed_family_color(
+            record, s, Fields.AREA_COLOR.canonical, int(self.area_color or 0)
+        )
+        self._serialize_managed_family_color(
+            record, s, Fields.TEXT_COLOR.canonical, int(self.text_color or 0)
+        )
+        self._serialize_note_fields(record, s, raw)
+        self._remove_absent_note_colors(record, s, raw)
+        self._serialize_managed_family_int(
+            record, s, Fields.LINE_WIDTH.canonical, self.line_width.value
+        )
+        self._serialize_family_dynamic_unique_id(record, s)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Corner.X",
+                "Corner.X_Frac",
+                "Corner.Y",
+                "Corner.Y_Frac",
+                "LineWidth",
+                "Color",
+                "AreaColor",
+                "TextColor",
+                "FontID",
+                "IsSolid",
+                "ShowBorder",
+                "Alignment",
+                "WordWrap",
+                "ClipToRect",
+                "Text",
+                "TextMargin",
+                "TextMargin_Frac",
+                "Collapsed",
+                "Author",
+                "UniqueID",
+            ),
+        )
 
-        s.write_str(record, Fields.AUTHOR, self.author, raw)
-        if self.collapsed:
-            s.write_bool(record, Fields.COLLAPSED, self.collapsed, raw)
+    def _serialize_note_fields(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        if self.author != self._source_author and not self.author:
+            self._remove_fields_case_insensitively(record, ["Author", "%UTF8%Author"])
+        else:
+            write_dynamic_string_field(
+                serializer,
+                record,
+                Fields.AUTHOR,
+                self.author,
+                raw_record=raw_record,
+                used_utf8_sidecar=self._used_utf8_author,
+                was_present=self._has_author,
+                force=self.author != self._source_author,
+            )
+        self._serialize_managed_family_bool(
+            record, serializer, Fields.COLLAPSED.canonical, self.collapsed
+        )
 
-        return record
+    def _remove_absent_note_colors(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        for field, value, source_value in (
+            (Fields.COLOR, self.color, 0),
+            (Fields.AREA_COLOR, self.area_color, 0),
+        ):
+            _, was_present = field.find_in_record(raw_record or {})
+            if raw_record is not None and not was_present and value == source_value:
+                serializer.remove_field(record, field)
 
     def __repr__(self) -> str:
         return f"<AltiumSchNote by '{self.author}' collapsed={self.collapsed}>"
@@ -94,8 +223,6 @@ class AltiumSchNote(AltiumSchTextFrame):
         frame_y = min(float(y1), float(y2))
         frame_width = abs(float(x2) - float(x1))
         frame_height = abs(float(y2) - float(y1))
-        if frame_width == 0 or frame_height == 0:
-            return None
 
         dog_ear_size = 10.0
         if self.collapsed:
@@ -123,9 +250,14 @@ class AltiumSchNote(AltiumSchTextFrame):
         def modify_color(
             percent: int, color: tuple[int, int, int], bg: tuple[int, int, int]
         ) -> tuple[int, int, int]:
-            r = color[0] + (bg[0] - color[0]) * percent // 100
-            g = color[1] + (bg[1] - color[1]) * percent // 100
-            b = color[2] + (bg[2] - color[2]) * percent // 100
+            def blend_channel(value: int, background: int) -> int:
+                delta = (background - value) * percent
+                quotient = delta // 100 if delta >= 0 else -((-delta) // 100)
+                return value + quotient
+
+            r = blend_channel(color[0], bg[0])
+            g = blend_channel(color[1], bg[1])
+            b = blend_channel(color[2], bg[2])
             return (r, g, b)
 
         def rgb_to_win32(rgb: tuple[int, int, int]) -> int:
@@ -178,6 +310,7 @@ class AltiumSchNote(AltiumSchTextFrame):
             )
         collapse_fill_rgb = color_split(fill_rgb, note_collapse_rgb, 0.8)
         collapse_stroke_rgb = color_split(border_rgb, note_collapse_rgb, 0.2)
+        pen_width = self._get_geometry_pen_width(units_per_px)
 
         operations: list[SchGeometryOp] = []
         shadow_points = geometry_points(
@@ -194,7 +327,11 @@ class AltiumSchNote(AltiumSchTextFrame):
         operations.append(
             SchGeometryOp.polygons(
                 [shadow_points],
-                pen=make_pen(rgb_to_win32(shadow_stroke_rgb), width=0),
+                pen=make_pen(
+                    rgb_to_win32(shadow_stroke_rgb),
+                    alpha=125,
+                    width=pen_width,
+                ),
             )
         )
 
@@ -214,16 +351,34 @@ class AltiumSchNote(AltiumSchTextFrame):
         operations.append(
             SchGeometryOp.polygons(
                 [body_points],
-                pen=make_pen(int(self.color) if self.color is not None else 0, width=0),
+                pen=make_pen(
+                    int(self.color) if self.color is not None else 0,
+                    width=pen_width,
+                ),
             )
         )
 
         if not self.collapsed and self.text:
-            margin_svg = self.text_margin_mils * ctx.scale
-            text_area_x = frame_x + margin_svg
-            text_area_y = frame_y + margin_svg
-            text_area_width = frame_width - 2 * margin_svg
-            text_area_height = frame_height - 2 * margin_svg
+            from .altium_sch_svg_renderer import LINE_WIDTH_MILS
+
+            border_width = 0.0
+            if self.line_width != LineWidth.SMALLEST:
+                border_width = (
+                    LINE_WIDTH_MILS.get(self.line_width, 1.0) * ctx.get_stroke_scale()
+                )
+            margin_svg = self._text_margin_record_units * ctx.scale + border_width
+            (
+                text_area_x,
+                text_area_y,
+                text_area_width,
+                text_area_height,
+            ) = self._get_note_text_rect(
+                frame_x,
+                frame_y,
+                frame_width,
+                frame_height,
+                margin_svg,
+            )
             operations.extend(
                 self._build_text_geometry_ops(
                     ctx,
@@ -256,7 +411,7 @@ class AltiumSchNote(AltiumSchTextFrame):
         operations.append(
             SchGeometryOp.polygons(
                 [dog_ear_points],
-                pen=make_pen(rgb_to_win32(dog_ear_stroke_rgb), width=0),
+                pen=make_pen(rgb_to_win32(dog_ear_stroke_rgb), width=pen_width),
             )
         )
 
@@ -288,14 +443,18 @@ class AltiumSchNote(AltiumSchTextFrame):
         operations.append(
             SchGeometryOp.polygons(
                 [collapse_points],
-                pen=make_pen(rgb_to_win32(collapse_stroke_rgb), width=0),
+                pen=make_pen(rgb_to_win32(collapse_stroke_rgb), width=pen_width),
             )
         )
 
         left = min(float(self.location.x), float(self.corner.x))
-        right = max(float(self.location.x), float(self.corner.x))
-        bottom = min(float(self.location.y), float(self.corner.y))
         top = max(float(self.location.y), float(self.corner.y))
+        if self.collapsed:
+            right = left + dog_ear_size
+            bottom = top - dog_ear_size
+        else:
+            right = max(float(self.location.x), float(self.corner.x))
+            bottom = min(float(self.location.y), float(self.corner.y))
         return SchGeometryRecord(
             handle=f"{document_id}\\{self.unique_id}",
             unique_id=self.unique_id,
@@ -314,6 +473,21 @@ class AltiumSchNote(AltiumSchTextFrame):
             ),
         )
 
+    @staticmethod
+    def _get_note_text_rect(
+        frame_x: float,
+        frame_y: float,
+        frame_width: float,
+        frame_height: float,
+        margin: float,
+    ) -> tuple[float, float, float, float]:
+        return (
+            min(frame_x + margin, frame_x + frame_width / 2),
+            min(frame_y + margin, frame_y + frame_height / 2),
+            max(0.0, frame_width - 2 * margin),
+            max(0.0, frame_height - 2 * margin),
+        )
+
     def _render_note_text(
         self,
         ctx: "SchSvgRenderContext",
@@ -325,8 +499,7 @@ class AltiumSchNote(AltiumSchTextFrame):
         """
         Render note text content.
 
-        Note text uses a fixed 5-pixel margin from the frame edge (not configurable).
-        This is different from TextFrame which uses text_margin + line_width.
+        Note text uses the record's split-coordinate text margin from the frame edge.
 
         Args:
             ctx: Render context
@@ -357,16 +530,27 @@ class AltiumSchNote(AltiumSchTextFrame):
             color_to_hex(self.text_color) if self.text_color is not None else "#000000"
         )
 
-        # Note margin: just text_margin (not line_width + text_margin like TextFrame).
-        # Notes use only text_margin regardless of border thickness.
-        # The pentagon shape already accounts for the border visually.
-        # Uses text_margin_mils, which combines base and fractional parts.
-        margin_svg = self.text_margin_mils * ctx.scale
+        from .altium_sch_svg_renderer import LINE_WIDTH_MILS
 
-        text_area_x = frame_x + margin_svg
-        text_area_y = frame_y + margin_svg
-        text_area_width = frame_width - 2 * margin_svg
-        text_area_height = frame_height - 2 * margin_svg
+        border_width = 0.0
+        if self.line_width != LineWidth.SMALLEST:
+            border_width = (
+                LINE_WIDTH_MILS.get(self.line_width, 1.0) * ctx.get_stroke_scale()
+            )
+        margin_svg = self._text_margin_record_units * ctx.scale + border_width
+
+        (
+            text_area_x,
+            text_area_y,
+            text_area_width,
+            text_area_height,
+        ) = self._get_note_text_rect(
+            frame_x,
+            frame_y,
+            frame_width,
+            frame_height,
+            margin_svg,
+        )
 
         # ClipPath dimensions (same as text area)
         clip_x = text_area_x

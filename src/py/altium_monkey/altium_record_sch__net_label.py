@@ -17,6 +17,7 @@ from .altium_record_types import (
     TextOrientation,
     color_to_hex,
 )
+from ._sch_managed_defaults import GRAPHICAL_FILL_COLOR, NET_LABEL_COLOR
 from .altium_sch_binding import SingleFontBindableRecordMixin
 from .altium_sch_record_helpers import rotate_point_about_origin
 from .altium_serializer import (
@@ -43,15 +44,22 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
 
     def __init__(self) -> None:
         super().__init__()
+        self.color = NET_LABEL_COLOR
+        self.area_color = GRAPHICAL_FILL_COLOR
+        self._init_family_dynamic_unique_id()
         self._init_single_font_binding()
         self._use_pascal_case: bool = True
-        self.text: str = ""
+        self.text: str = "NetLabel1"
         self.font_id: int = 1
         self.orientation: TextOrientation = TextOrientation.DEGREES_0
         self.justification: TextJustification = TextJustification.BOTTOM_LEFT
         self.is_mirrored: bool = False
         self.is_hidden: bool = False
         self._used_utf8_text: bool = False
+        self._has_text: bool = False
+        self._has_font_id: bool = False
+        self._source_state: tuple[object, ...] = ()
+        self._capture_graphical_source_state()
 
     @property
     def record_type(self) -> SchRecordType:
@@ -79,8 +87,9 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         # Use serializer for field reading (case-insensitive)
         s = AltiumSerializer()
         r = self._record
+        self._parse_family_dynamic_unique_id(s, record)
 
-        self.text, _, self._used_utf8_text = read_dynamic_string_field(
+        self.text, self._has_text, self._used_utf8_text = read_dynamic_string_field(
             s,
             record,
             r,
@@ -88,7 +97,7 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
             default="",
         )
         # Use read_font_id for translation support
-        self.font_id, _ = s.read_font_id(
+        self.font_id, self._has_font_id = s.read_font_id(
             record, Fields.FONT_ID, font_manager, default=1
         )
         orient_val, _ = s.read_int(record, Fields.ORIENTATION, default=0)
@@ -96,7 +105,22 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         justify_val, _ = s.read_int(record, Fields.JUSTIFICATION, default=0)
         self.justification = TextJustification(justify_val)
         self.is_mirrored, _ = s.read_bool(record, Fields.IS_MIRRORED, default=False)
-        self.is_hidden, _ = s.read_bool(record, Fields.IS_HIDDEN, default=False)
+        # V5 net-label import/export has no IsHidden field. Keep this as
+        # runtime presentation state, but do not consume stale raw data.
+        self.is_hidden = False
+        self._apply_imported_color_defaults(area_color=False)
+        self._apply_nonpersisted_area_color_default()
+        self._source_state = self._semantic_state()
+
+    def _semantic_state(self) -> tuple[object, ...]:
+        return (
+            self.text,
+            self.font_id,
+            self.orientation,
+            self.justification,
+            self.is_mirrored,
+            self.is_hidden,
+        )
 
     def serialize_to_record(self) -> dict[str, Any]:
         """
@@ -113,35 +137,81 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         )
         s = AltiumSerializer(mode)
         raw = self._raw_record
+        source_state = self._source_state
 
-        write_dynamic_string_field(
-            s,
-            record,
-            Fields.TEXT,
-            self.text,
-            raw_record=raw,
-            used_utf8_sidecar=self._used_utf8_text,
-            was_present=True,
+        self._serialize_managed_family_color(
+            record, s, Fields.COLOR.canonical, int(self.color or 0)
         )
-        s.write_int(record, Fields.FONT_ID, self.font_id, raw)
+
+        text_changed = bool(source_state) and self.text != source_state[0]
+        if text_changed and not self.text:
+            self._remove_fields_case_insensitively(record, ["Text", "%UTF8%Text"])
+        else:
+            write_dynamic_string_field(
+                s,
+                record,
+                Fields.TEXT,
+                self.text,
+                raw_record=raw,
+                used_utf8_sidecar=self._used_utf8_text,
+                was_present=self._has_text,
+                force=text_changed,
+            )
+        self._serialize_managed_font_id(
+            record,
+            s,
+            Fields.FONT_ID.canonical,
+            self.font_id,
+            self._get_fallback_font_manager(),
+        )
         if self.orientation.value != 0:
-            s.write_int(record, Fields.ORIENTATION, self.orientation.value, raw)
+            s.write_int(
+                record,
+                Fields.ORIENTATION,
+                self.orientation.value,
+                raw,
+                force=bool(source_state) and self.orientation != source_state[2],
+            )
         else:
             s.remove_field(record, Fields.ORIENTATION)
         if self.justification.value != 0:
-            s.write_int(record, Fields.JUSTIFICATION, self.justification.value, raw)
+            s.write_int(
+                record,
+                Fields.JUSTIFICATION,
+                self.justification.value,
+                raw,
+                force=bool(source_state) and self.justification != source_state[3],
+            )
         else:
             s.remove_field(record, Fields.JUSTIFICATION)
         if self.is_mirrored:
-            s.write_bool(record, Fields.IS_MIRRORED, self.is_mirrored, raw)
+            s.write_bool(
+                record,
+                Fields.IS_MIRRORED,
+                self.is_mirrored,
+                raw,
+                force=bool(source_state) and self.is_mirrored != source_state[4],
+            )
         else:
             s.remove_field(record, Fields.IS_MIRRORED)
-        if self.is_hidden:
-            s.write_bool(record, Fields.IS_HIDDEN, self.is_hidden, raw)
-        else:
-            s.remove_field(record, Fields.IS_HIDDEN)
-
-        return record
+        s.remove_field(record, Fields.IS_HIDDEN)
+        self._serialize_family_dynamic_unique_id(record, s)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Orientation",
+                "Justification",
+                "Color",
+                "FontID",
+                "Text",
+                "IsMirrored",
+                "UniqueID",
+            ),
+        )
 
     def to_geometry(
         self,
@@ -174,13 +244,15 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
             return None
 
         baseline_x, baseline_y = ctx.transform_coord_precise(self.location)
-        baseline_x, baseline_y = round(baseline_x, 3), round(baseline_y, 3)
 
         font_name, font_size_px, is_bold, is_italic, is_underline = ctx.get_font_info(
             self.font_id
         )
         line_height = ctx.get_font_line_height(self.font_id)
-        clean_text, _ = split_overline_text(display_text)
+        clean_text, _ = split_overline_text(
+            display_text,
+            single_slash_negation=ctx.options.single_slash_negation,
+        )
         if not clean_text:
             return None
 
@@ -243,6 +315,7 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
             brush_color_raw=fill_color_raw,
             rotation_deg=rotation_deg,
             units_per_px=units_per_px,
+            single_slash_negation=ctx.options.single_slash_negation,
         )
         connection_point = svg_coord_to_geometry(
             *ctx.transform_coord_precise(self.location),
@@ -450,43 +523,42 @@ class AltiumSchNetLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         make_solid_brush: Any,
         svg_coord_to_geometry: Any,
     ) -> tuple[list[Any], tuple[float, float, float, float] | None]:
+        from .altium_sch_geometry_oracle import _geometry_item_length
+
         if not (
             getattr(ctx, "native_svg_export", False)
             and (self.location.x, self.location.y) in ctx.connection_points
         ):
             return [], None
 
-        junction_x, junction_y = ctx.transform_point(self.location.x, self.location.y)
-        junction_x1, junction_y1 = svg_coord_to_geometry(
-            junction_x - 2 * ctx.scale,
-            junction_y - 2 * ctx.scale,
+        junction_x, junction_y = ctx.transform_coord_precise(self.location)
+        junction_geometry_x, junction_geometry_y = svg_coord_to_geometry(
+            junction_x,
+            junction_y,
             sheet_height_px=float(ctx.sheet_height or 0.0),
             units_per_px=units_per_px,
         )
-        junction_x2, junction_y2 = svg_coord_to_geometry(
-            junction_x + 2 * ctx.scale,
-            junction_y + 2 * ctx.scale,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
+        junction_radius = _geometry_item_length(
+            2 * ctx.scale, units_per_px=units_per_px
         )
         junction_color_raw = 0x000000
         ops = [
-            geometry_op_cls.rounded_rectangle(
-                x1=junction_x1,
-                y1=junction_y1,
-                x2=junction_x2,
-                y2=junction_y2,
-                corner_x_radius=2 * ctx.scale * units_per_px,
-                corner_y_radius=2 * ctx.scale * units_per_px,
+            geometry_op_cls.rounded_rectangle_from_item(
+                center_x=junction_geometry_x,
+                center_y=junction_geometry_y,
+                half_width=junction_radius,
+                half_height=junction_radius,
+                corner_x_radius=junction_radius,
+                corner_y_radius=junction_radius,
                 brush=make_solid_brush(junction_color_raw),
             ),
-            geometry_op_cls.rounded_rectangle(
-                x1=junction_x1,
-                y1=junction_y1,
-                x2=junction_x2,
-                y2=junction_y2,
-                corner_x_radius=2 * ctx.scale * units_per_px,
-                corner_y_radius=2 * ctx.scale * units_per_px,
+            geometry_op_cls.rounded_rectangle_from_item(
+                center_x=junction_geometry_x,
+                center_y=junction_geometry_y,
+                half_width=junction_radius,
+                half_height=junction_radius,
+                corner_x_radius=junction_radius,
+                corner_y_radius=junction_radius,
                 pen=make_pen(junction_color_raw, width=0),
             ),
         ]

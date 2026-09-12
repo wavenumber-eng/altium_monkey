@@ -18,7 +18,7 @@
 ## Schema Contracts
 
 JSON payloads include explicit schema ids such as `altium_monkey.design.b0` and
-`altium_monkey.netlist.a0`. Every payload-shape change requires a new schema ID:
+`altium_monkey.netlist.b0`. Every payload-shape change requires a new schema ID:
 breaking changes advance the leading major letter, while additive changes that
 preserve existing field meaning advance the trailing minor number. Consumers
 should match supported schema IDs exactly unless they implement an explicit
@@ -27,6 +27,13 @@ migration or compatibility range.
 Design b0 requires `compiled_schematic_graph` with schema
 `altium_monkey.compiled_schematic_graph.a0`. It intentionally removes the
 Design a2 `physical_pages` projection rather than reusing its schema id.
+Its embedded `nets` retain the established Design b0 `source_sheets` shape;
+they are not standalone Netlist b0 rows, which use structured `source_pages`
+and stable component identities.
+
+`AltiumDesign.to_bom_payload()` emits the versioned
+`altium_monkey.schematic_bom.a0` transport. `AltiumDesign.to_bom()` remains the
+list-returning compatibility API.
 
 ## Netlist Connectivity
 

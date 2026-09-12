@@ -105,6 +105,22 @@ def _design_b0_schema_validator() -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
+def _netlist_b0_schema_validator() -> Draft202012Validator:
+    schema = json.loads(
+        (CONTRACTS_ROOT / "netlist_b0.schema.json").read_text(encoding="utf-8")
+    )
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
+
+
+def _schematic_bom_a0_schema_validator() -> Draft202012Validator:
+    schema = json.loads(
+        (CONTRACTS_ROOT / "schematic_bom_a0.schema.json").read_text(encoding="utf-8")
+    )
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
+
+
 def _assert_schema_valid(
     validator: Draft202012Validator, payload: object, context: str
 ) -> None:
@@ -124,10 +140,17 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
 
     for schema_id in (
         "altium_monkey.design.b0",
+        "altium_monkey.compiled_schematic_graph.a0",
+        "altium_monkey.schematic_hierarchy.a1",
+        "altium_monkey.sch.compiled_design_model.b0",
         "altium_monkey.design.a2",
         "altium_monkey.design.a1",
         "altium_monkey.design.a0",
         "altium_monkey.netlist.a0",
+        "altium_monkey.netlist.b0",
+        "altium_monkey.schematic_bom.a0",
+        "altium_monkey.schdoc.interop.a0",
+        "altium_monkey.schlib.interop.a0",
         "altium_monkey.pcb.svg.enrichment.a0",
         "altium_monkey.pcb.embedded_assets.a0",
         "altium_monkey.extractable_assets.a0",
@@ -145,10 +168,21 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
     assert "Moving from `a2` to `b0`" in docs_text
     assert "docs/schemas/altium_monkey" in docs_text
     assert "design_b0.schema.json" in docs_text
+    assert "compiled_schematic_graph_a0.schema.json" in docs_text
+    assert "schematic_hierarchy_a1.schema.json" in docs_text
+    assert "compiled_design_model_b0.schema.json" in docs_text
     assert "design_a2.schema.json" in docs_text
     assert "design_a1.schema.json" in docs_text
     assert "design_a0.schema.json" in docs_text
     assert "netlist_a0.schema.json" in docs_text
+    assert "netlist_b0.schema.json" in docs_text
+    assert "schematic_bom_a0.schema.json" in docs_text
+    assert "schdoc_interop_a0.schema.json" in docs_text
+    assert "schlib_interop_a0.schema.json" in docs_text
+    assert "typespec/main.tsp" in docs_text
+    assert "SchematicBomPayload" in docs_text
+    assert "SchematicContractLimits" in docs_text
+    assert "SchematicContractError" in docs_text
     assert "pcb_svg_enrichment_a0.schema.json" in docs_text
     assert "embedded_assets_a0.schema.json" in docs_text
     assert "extractable_assets_a0.schema.json" in docs_text
@@ -159,10 +193,19 @@ def test_schema_contract_docs_list_public_schema_ids() -> None:
 def test_altium_monkey_contract_schemas_are_parseable() -> None:
     schemas = {
         "design_b0.schema.json": "altium_monkey.design.b0",
+        "compiled_schematic_graph_a0.schema.json": (
+            "altium_monkey.compiled_schematic_graph.a0"
+        ),
+        "schematic_hierarchy_a1.schema.json": ("altium_monkey.schematic_hierarchy.a1"),
+        "compiled_design_model_b0.schema.json": (
+            "altium_monkey.sch.compiled_design_model.b0"
+        ),
         "design_a2.schema.json": "altium_monkey.design.a2",
         "design_a1.schema.json": "altium_monkey.design.a1",
         "design_a0.schema.json": "altium_monkey.design.a0",
         "netlist_a0.schema.json": "altium_monkey.netlist.a0",
+        "netlist_b0.schema.json": "altium_monkey.netlist.b0",
+        "schematic_bom_a0.schema.json": "altium_monkey.schematic_bom.a0",
         "pcb_svg_enrichment_a0.schema.json": ("altium_monkey.pcb.svg.enrichment.a0"),
         "embedded_assets_a0.schema.json": "altium_monkey.pcb.embedded_assets.a0",
         "extractable_assets_a0.schema.json": "altium_monkey.extractable_assets.a0",
@@ -176,6 +219,55 @@ def test_altium_monkey_contract_schemas_are_parseable() -> None:
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
         assert schema["properties"]["schema"]["const"] == schema_id
         assert schema_id in spec_text
+
+
+def test_schematic_schema_inventory_and_frozen_predecessors_are_exact() -> None:
+    assert {path.name for path in CONTRACTS_ROOT.glob("*.schema.json")} == {
+        "compiled_design_model_b0.schema.json",
+        "compiled_schematic_graph_a0.schema.json",
+        "design_a0.schema.json",
+        "design_a1.schema.json",
+        "design_a2.schema.json",
+        "design_b0.schema.json",
+        "embedded_assets_a0.schema.json",
+        "extractable_assets_a0.schema.json",
+        "netlist_a0.schema.json",
+        "netlist_b0.schema.json",
+        "pcb_svg_enrichment_a0.schema.json",
+        "schdoc_interop_a0.schema.json",
+        "schematic_bom_a0.schema.json",
+        "schematic_hierarchy_a1.schema.json",
+        "schlib_interop_a0.schema.json",
+    }
+    frozen_hashes = {
+        "design_b0.schema.json": (
+            "97a4888953ef71a937102bebe15f4cdfa79f3d4ee83954883d29f3a8abd644e5"
+        ),
+        "netlist_a0.schema.json": (
+            "b429ad532fe308c5f9584d0678505df627b3715c6a01dc5826ef3dc67b927109"
+        ),
+    }
+    for filename, expected_hash in frozen_hashes.items():
+        assert hashlib.sha256((CONTRACTS_ROOT / filename).read_bytes()).hexdigest() == (
+            expected_hash
+        )
+
+
+def test_schematic_typespec_sources_are_published() -> None:
+    source_root = CONTRACTS_ROOT / "typespec"
+    assert {path.name for path in source_root.glob("*.tsp")} == {
+        "common.tsp",
+        "compiled-graph-a0.tsp",
+        "design-b0.tsp",
+        "hierarchy-a1.tsp",
+        "main.tsp",
+        "netlist-a0.tsp",
+        "netlist-b0.tsp",
+        "schematic-bom-a0.tsp",
+    }
+    main_text = (source_root / "main.tsp").read_text(encoding="utf-8")
+    assert "./netlist-b0.tsp" in main_text
+    assert "./schematic-bom-a0.tsp" in main_text
 
 
 @pytest.mark.parametrize(
@@ -196,21 +288,29 @@ def test_altium_monkey_contract_schemas_are_parseable() -> None:
     [False, True],
     ids=["compact", "compile_metadata"],
 )
+@pytest.mark.parametrize(
+    "include_pnp",
+    [True, False],
+    ids=["with_pnp", "schematic_only"],
+)
 def test_altium_design_b0_schema_validates_real_to_json_payloads(
     project_path: str,
     case_id: str,
     include_compile_metadata: bool,
+    include_pnp: bool,
 ) -> None:
     from altium_monkey import AltiumDesign
 
     validator = _design_b0_schema_validator()
     payload = AltiumDesign.from_prjpcb(PUBLIC_ROOT / project_path).to_json(
-        include_compile_metadata=include_compile_metadata
+        include_compile_metadata=include_compile_metadata,
+        include_pnp=include_pnp,
     )
 
     assert payload["schema"] == "altium_monkey.design.b0"
     assert ("compile" in payload) is include_compile_metadata
     assert ("diagnostics" in payload) is include_compile_metadata
+    assert ("pnp" in payload) is include_pnp
     assert "physical_pages" not in payload
     assert payload["compiled_schematic_graph"]["schema"] == (
         "altium_monkey.compiled_schematic_graph.a0"
@@ -219,6 +319,65 @@ def test_altium_design_b0_schema_validates_real_to_json_payloads(
         payload["compiled_schematic_graph"]["page_occurrences"]
     )
     _assert_schema_valid(validator, payload, case_id)
+
+
+@pytest.mark.parametrize(
+    ("project_path", "case_id"),
+    [
+        (
+            "examples/assets/projects/bunny_brain/bunny_brain_D.PrjPcb",
+            "bunny_brain",
+        ),
+        (
+            "examples/assets/projects/hydroscope/Hydroscope.PrjPcb",
+            "hydroscope",
+        ),
+    ],
+)
+def test_current_netlist_and_schematic_bom_schemas_validate_real_payloads(
+    project_path: str,
+    case_id: str,
+) -> None:
+    from altium_monkey import AltiumDesign
+
+    design = AltiumDesign.from_prjpcb(PUBLIC_ROOT / project_path)
+    netlist = design.to_netlist().to_json()
+    bom = design.to_bom_payload().to_json()
+
+    assert netlist["schema"] == "altium_monkey.netlist.b0"
+    assert bom["schema"] == "altium_monkey.schematic_bom.a0"
+    _assert_schema_valid(_netlist_b0_schema_validator(), netlist, case_id)
+    _assert_schema_valid(_schematic_bom_a0_schema_validator(), bom, case_id)
+
+
+def test_project_metadata_only_mode_is_public_and_keeps_documents_lazy() -> None:
+    from altium_monkey import (
+        AltiumDesign,
+        AltiumProjectCapabilityError,
+        AltiumProjectLoadMode,
+    )
+
+    project_path = (
+        PUBLIC_ROOT
+        / "examples"
+        / "assets"
+        / "projects"
+        / "bunny_brain"
+        / "bunny_brain_D.PrjPcb"
+    )
+    design = AltiumDesign.from_prjpcb(
+        project_path,
+        load_mode=AltiumProjectLoadMode.METADATA_ONLY,
+    )
+
+    assert design.load_mode is AltiumProjectLoadMode.METADATA_ONLY
+    assert design.schdocs == []
+    assert design.pcbdoc is None
+    assert design.get_pcbdoc_paths() == [
+        (project_path.parent / "bunny_brain_D.PCBdoc").resolve()
+    ]
+    with pytest.raises(AltiumProjectCapabilityError, match="metadata-only project"):
+        design.to_netlist()
 
 
 def test_public_gitignore_tracks_lockfile_and_ignores_example_outputs() -> None:
@@ -242,8 +401,13 @@ def test_public_python_and_dependency_metadata_contract() -> None:
     assert project["requires-python"] == EXPECTED_REQUIRES_PYTHON
     assert _dependency_names(project["dependencies"]) == EXPECTED_RUNTIME_DEPENDENCIES
     assert _dependency_names(project["optional-dependencies"]["examples"]) == {
-        "cadquery"
+        "cadquery",
+        "casadi",
     }
+    assert any(
+        requirement.startswith("casadi<3.8;")
+        for requirement in project["optional-dependencies"]["examples"]
+    )
     direct_names = _dependency_names(project["dependencies"])
     optional_names = {
         name
@@ -433,7 +597,8 @@ def test_domain_docs_list_public_workflow_examples() -> None:
         "altium_monkey.design.b0",
         "altium_monkey.design.a2",
         "altium_monkey.design.a1",
-        "altium_monkey.netlist.a0",
+        "altium_monkey.netlist.b0",
+        "altium_monkey.schematic_bom.a0",
         "altium_monkey.pcb.embedded_assets.a0",
         "altium_monkey.extractable_assets.a0",
         "embedded_asset_inventory",
@@ -460,6 +625,7 @@ def test_format_contract_docs_are_published() -> None:
         "index.md",
         "schdoc.md",
         "schlib.md",
+        "schematic_interop.md",
         "pcbdoc.md",
         "pcblib.md",
         "prjpcb.md",
@@ -494,6 +660,53 @@ def test_format_contract_docs_are_published() -> None:
     assert "layerstack_id" in pcbdoc_contract
     assert "branches_for_stack_ref" in pcbdoc_contract
     assert "with or without braces" in pcbdoc_contract
+
+
+def test_schematic_svg_bundled_fallback_embedding_is_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from altium_monkey import (
+        AltiumSchDoc,
+        ColorValue,
+        SchFontSpec,
+        SchPointMils,
+        SchSvgRenderOptions,
+        make_sch_text_string,
+    )
+    from altium_monkey.altium_font_resolver import clear_font_resolution_result_cache
+
+    monkeypatch.setenv("ALTIUM_FONT_DISABLE_SYSTEM", "1")
+    monkeypatch.delenv("ALTIUM_FONT_DIRS", raising=False)
+    clear_font_resolution_result_cache()
+    document = AltiumSchDoc()
+    assert document.sheet is not None
+    document.sheet.use_custom_sheet = True
+    document.sheet.custom_x = 1200
+    document.sheet.custom_y = 800
+    document.sheet.reference_zones_on = False
+    document.sheet.title_block_on = False
+    document.sheet.border_on = False
+    document.add_object(
+        make_sch_text_string(
+            location_mils=SchPointMils.from_mils(200, 200),
+            text="Portable SVG",
+            font=SchFontSpec(name="Arial", size=10),
+            color=ColorValue.from_hex("#000000"),
+        )
+    )
+
+    try:
+        compact_svg = document.to_svg()
+        embedded_svg = document.to_svg(
+            options=SchSvgRenderOptions(embed_bundled_fallback_fonts=True)
+        )
+    finally:
+        clear_font_resolution_result_cache()
+
+    assert "@font-face" not in compact_svg
+    assert "data:font/ttf;base64," not in compact_svg
+    assert embedded_svg.count("@font-face") == 1
+    assert "data:font/ttf;base64," in embedded_svg
 
 
 def test_public_v7_layer_docs_match_current_contract() -> None:
@@ -2296,7 +2509,22 @@ def test_schlib_library_examples_write_parseable_outputs(
     assert merge_manifest["input_schlib_dir"] == "assets/schlib"
     assert merge_manifest["input_library_count"] == find_manifest["library_count"]
     assert merge_manifest["input_symbol_count"] == find_manifest["symbol_count"]
-    assert merge_manifest["merged_symbol_count"] == merge_manifest["input_symbol_count"]
+    assert (
+        merge_manifest["merged_symbol_count"]
+        == merge_manifest["mergeable_symbol_count"]
+    )
+    assert merge_manifest["mergeable_library_count"] == (
+        merge_manifest["input_library_count"] - len(merge_manifest["skipped_libraries"])
+    )
+    assert {
+        Path(item["schlib"]).name for item in merge_manifest["skipped_libraries"]
+    } == {
+        "204-211ST.Schlib",
+        "3FSH9.Schlib",
+        "47346-0001.Schlib",
+        "502.Schlib",
+        "CHS-01TA.Schlib",
+    }
     assert {"MIMXRT685SFVKB", "R_2P", "L_2P"}.issubset(
         set(merge_manifest["merged_symbols"])
     )

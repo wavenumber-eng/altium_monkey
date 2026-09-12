@@ -2,17 +2,19 @@
 
 Merge a folder of SchLib files into one combined SchLib.
 
-This sample scans the shared schematic-library assets, merges every SchLib it
-finds, and writes a manifest showing the input libraries, source symbols, and
-the final merged symbol names. Duplicate source names are handled with the
-default rename behavior.
+This sample scans the shared schematic-library assets, inspects every SchLib,
+and merges the inputs that pass full parsing. The manifest reports advertised
+source symbols, mergeable counts, and any parser-rejected legacy libraries with
+their error messages. Duplicate source names in mergeable libraries are handled
+with the default rename behavior.
 
 ## What It Shows
 
 1. Discovering SchLib files by case-insensitive `.SchLib` extension
 2. `AltiumSchLib.get_symbol_names(...)`
-3. `AltiumSchLib.merge(input_paths, output_path, handle_conflicts="rename")`
-4. Reopening the merged library through `AltiumSchLib`
+3. Separating fast-index discovery from full parseability
+4. `AltiumSchLib.merge(input_paths, output_path, handle_conflicts="rename")`
+5. Reopening the merged library through `AltiumSchLib`
 
 ## Run
 

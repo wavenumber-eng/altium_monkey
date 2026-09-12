@@ -113,7 +113,9 @@ def find_text_records(data: bytes) -> list[int]:
     return records
 
 
-def parse_text_record(data: bytes, offset: int, string_table: dict[int, str]) -> PcbDocText | None:
+def parse_text_record(
+    data: bytes, offset: int, string_table: dict[int, str]
+) -> PcbDocText | None:
     """
     Parse a single Texts6 record from binary data.
     """
@@ -201,7 +203,9 @@ def parse_text_record(data: bytes, offset: int, string_table: dict[int, str]) ->
         return None
 
 
-def parse_texts_from_pcbdoc(pcbdoc_path: Path, verbose: bool = False) -> list[PcbDocText]:
+def parse_texts_from_pcbdoc(
+    pcbdoc_path: Path, verbose: bool = False
+) -> list[PcbDocText]:
     """
     Parse all text records from a PcbDoc file.
     """

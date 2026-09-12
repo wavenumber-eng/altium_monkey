@@ -8,9 +8,14 @@ FontIDManager, and embedded images are copied with their symbol data.
 """
 
 import logging
+from copy import deepcopy
 from pathlib import Path
 
-from .altium_schlib import AltiumSchLib
+from .altium_schlib import (
+    AltiumSchLib,
+    AltiumSymbol,
+    _copy_symbol_storage_dialect,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +60,145 @@ def _normalize_merge_raw_records(
     return normalized
 
 
+def _resolve_storage_name(
+    name: str,
+    seen_names: set[str],
+    conflict_policy: str,
+) -> str | None:
+    folded = name.casefold()
+    if folded not in seen_names:
+        seen_names.add(folded)
+        return name
+    if conflict_policy == "skip":
+        return None
+    if conflict_policy == "error":
+        raise ValueError(f"Duplicate symbol name: {name}")
+
+    suffix = 1
+    candidate = f"{name}_{suffix}"
+    while candidate.casefold() in seen_names:
+        suffix += 1
+        candidate = f"{name}_{suffix}"
+    seen_names.add(candidate.casefold())
+    return candidate
+
+
+def _resolve_original_name(
+    original_name: str,
+    storage_name: str,
+    seen_librefs: set[str],
+) -> str:
+    candidate = original_name
+    suffix = 1
+    while candidate.casefold() in seen_librefs:
+        candidate = storage_name if suffix == 1 else f"{storage_name}_{suffix - 1}"
+        suffix += 1
+    seen_librefs.add(candidate.casefold())
+    return candidate
+
+
+def _copy_symbol(
+    merged: AltiumSchLib,
+    source: AltiumSchLib,
+    symbol: AltiumSymbol,
+    storage_name: str,
+    original_name: str,
+) -> None:
+    new_symbol = merged.add_symbol(
+        storage_name,
+        symbol.description,
+        original_name=original_name,
+    )
+    new_symbol.part_count = symbol.part_count
+    new_symbol.component_record = deepcopy(symbol.component_record)
+    new_symbol._copy_objects_from(symbol)
+    new_symbol.raw_records = _normalize_merge_raw_records(deepcopy(symbol.raw_records))
+    new_symbol._additional_raw_records = deepcopy(symbol._additional_raw_records)
+    new_symbol._additional_terminal_record = deepcopy(
+        symbol._additional_terminal_record
+    )
+    _copy_symbol_storage_dialect(symbol, new_symbol)
+    if original_name != str(symbol.original_name or symbol.name):
+        new_symbol._uses_implicit_storage_mapping = False
+        new_symbol._header_display_name = None
+        new_symbol._set_component_identity(original_name)
+    new_symbol._original_streams = dict(symbol._original_streams)
+
+    for image in symbol.images:
+        filename = getattr(image, "filename", None)
+        if filename and filename in source.embedded_images:
+            merged.embedded_images[filename] = source.embedded_images[filename]
+
+
+def _load_merge_source(path: Path) -> AltiumSchLib | None:
+    if not path.exists():
+        log.warning(f"Skipping missing file: {path}")
+        return None
+    try:
+        return AltiumSchLib(path)
+    except Exception as exc:
+        log.error(f"Failed to parse {path.name}: {exc}")
+        return None
+
+
+def _has_additional_stream(library: AltiumSchLib) -> bool:
+    return any(
+        stream_name.casefold() == "additional"
+        for symbol in library.symbols
+        for stream_name in symbol._original_streams
+    )
+
+
+def _validate_additional_announcement_merge(
+    merged: AltiumSchLib,
+    source: AltiumSchLib,
+) -> None:
+    merged_has_header = merged._lib_additional_header is not None
+    source_has_header = source._lib_additional_header is not None
+    merged_has_opaque = not merged_has_header and _has_additional_stream(merged)
+    source_has_opaque = not source_has_header and _has_additional_stream(source)
+    if (merged_has_header and source_has_opaque) or (
+        source_has_header and merged_has_opaque
+    ):
+        raise ValueError(
+            "cannot merge announced and unannounced SchLib Additional streams"
+        )
+
+
+def _merge_source(
+    merged: AltiumSchLib,
+    source: AltiumSchLib,
+    seen_names: set[str],
+    seen_librefs: set[str],
+    conflict_policy: str,
+    verbose: bool,
+) -> None:
+    _validate_additional_announcement_merge(merged, source)
+    if merged.font_manager is None and source.font_manager:
+        merged.font_manager = source.font_manager
+    if merged._lib_additional_header is None and source._lib_additional_header:
+        merged._lib_additional_header = deepcopy(source._lib_additional_header)
+
+    for symbol in source.symbols:
+        storage_name = _resolve_storage_name(
+            symbol.name,
+            seen_names,
+            conflict_policy,
+        )
+        if storage_name is None:
+            if verbose:
+                log.info(f"  SKIP: {symbol.name} (duplicate)")
+            continue
+        if verbose and storage_name != symbol.name:
+            log.info(f"  Renamed: {symbol.name} -> {storage_name}")
+        original_name = _resolve_original_name(
+            str(symbol.original_name or symbol.name),
+            storage_name,
+            seen_librefs,
+        )
+        _copy_symbol(merged, source, symbol, storage_name, original_name)
+
+
 def merge_schlibs(
     input_paths: list[Path],
     output_path: Path,
@@ -80,62 +224,22 @@ def merge_schlibs(
         log.info(f"Merging {len(input_paths)} SchLib files -> {output_path.name}")
 
     merged = AltiumSchLib()
-    seen_names: dict[str, int] = {}
+    seen_names: set[str] = set()
+    seen_librefs: set[str] = set()
 
     for path in input_paths:
         path = Path(path)
-        if not path.exists():
-            log.warning(f"Skipping missing file: {path}")
+        source = _load_merge_source(path)
+        if source is None:
             continue
-
-        try:
-            source = AltiumSchLib(path)
-        except Exception as e:
-            log.error(f"Failed to parse {path.name}: {e}")
-            continue
-
-        # Merge font manager: use the first source's font manager,
-        # then subsequent sources reuse it (font IDs are preserved
-        # since save() writes the complete font table)
-        if merged.font_manager is None and source.font_manager:
-            merged.font_manager = source.font_manager
-
-        for symbol in source.symbols:
-            name = symbol.name
-
-            # Handle name conflicts
-            if name in seen_names:
-                if handle_conflicts == "skip":
-                    if verbose:
-                        log.info(f"  SKIP: {name} (duplicate)")
-                    continue
-                elif handle_conflicts == "error":
-                    raise ValueError(f"Duplicate symbol name: {name}")
-                else:  # rename
-                    seen_names[name] += 1
-                    name = f"{name}_{seen_names[name]}"
-                    if verbose:
-                        log.info(f"  Renamed: {symbol.name} -> {name}")
-            else:
-                seen_names[name] = 0
-
-            new_sym = merged.add_symbol(
-                name,
-                symbol.description,
-                original_name=symbol.original_name,
-            )
-            new_sym.part_count = symbol.part_count
-            new_sym.component_record = symbol.component_record
-            for obj in symbol.objects:
-                new_sym.objects.append(obj)
-            new_sym.raw_records = _normalize_merge_raw_records(symbol.raw_records)
-            new_sym._original_streams = dict(symbol._original_streams)
-
-            # Copy embedded images
-            for img in symbol.images:
-                filename = getattr(img, "filename", None)
-                if filename and filename in source.embedded_images:
-                    merged.embedded_images[filename] = source.embedded_images[filename]
+        _merge_source(
+            merged,
+            source,
+            seen_names,
+            seen_librefs,
+            handle_conflicts,
+            verbose,
+        )
 
         if verbose:
             log.info(f"  Added {len(source.symbols)} symbols from {path.name}")

@@ -7,7 +7,7 @@ from .altium_record_types import SchRecordType
 class AltiumSchHyperlink(AltiumSchLabel):
     """
     HYPERLINK record.
-    
+
     Hyperlink annotation with clickable text.
     Inherits all behavior from LABEL.
     """

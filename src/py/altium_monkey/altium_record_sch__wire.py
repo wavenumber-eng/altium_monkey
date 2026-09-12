@@ -14,7 +14,21 @@ from .altium_record_types import (
     color_to_hex,
     rgb_to_win32_color,
 )
-from .altium_serializer import AltiumSerializer, CaseMode, Fields
+from ._sch_managed_defaults import WIRE_COLOR
+from .altium_serializer import (
+    AltiumSerializer,
+    CaseMode,
+    FieldDef,
+    Fields,
+    read_dynamic_string_field,
+    write_dynamic_string_field,
+)
+from .altium_sch_record_helpers import (
+    _validate_schematic_vertex_counts,
+    _validate_schematic_vertex_total,
+    read_indexed_coord,
+    validate_indexed_coord,
+)
 
 
 def wire_like_junction_geometry_ops(
@@ -30,9 +44,14 @@ def wire_like_junction_geometry_ops(
     """
     Build oracle-style rounded-rectangle junction ops for matching path vertices.
     """
-    from .altium_sch_geometry_oracle import SchGeometryOp, make_pen, make_solid_brush
+    from .altium_sch_geometry_oracle import (
+        SchGeometryOp,
+        _geometry_item_length,
+        make_pen,
+        make_solid_brush,
+    )
 
-    radius_units = size_px * units_per_px / 2.0
+    radius_units = _geometry_item_length(size_px / 2.0, units_per_px=units_per_px)
     junction_brush = make_solid_brush(color_raw)
     junction_pen = make_pen(color_raw)
     operations = []
@@ -45,22 +64,22 @@ def wire_like_junction_geometry_ops(
         if source_point in suppressed_points:
             continue
         operations.append(
-            SchGeometryOp.rounded_rectangle(
-                x1=geometry_x - radius_units,
-                y1=geometry_y - radius_units,
-                x2=geometry_x + radius_units,
-                y2=geometry_y + radius_units,
+            SchGeometryOp.rounded_rectangle_from_item(
+                center_x=geometry_x,
+                center_y=geometry_y,
+                half_width=radius_units,
+                half_height=radius_units,
                 corner_x_radius=radius_units,
                 corner_y_radius=radius_units,
                 brush=junction_brush,
             )
         )
         operations.append(
-            SchGeometryOp.rounded_rectangle(
-                x1=geometry_x - radius_units,
-                y1=geometry_y - radius_units,
-                x2=geometry_x + radius_units,
-                y2=geometry_y + radius_units,
+            SchGeometryOp.rounded_rectangle_from_item(
+                center_x=geometry_x,
+                center_y=geometry_y,
+                half_width=radius_units,
+                half_height=radius_units,
                 corner_x_radius=radius_units,
                 corner_y_radius=radius_units,
                 pen=junction_pen,
@@ -78,11 +97,14 @@ class AltiumSchWire(SchGraphicalObject):
 
     def __init__(self) -> None:
         super().__init__()
+        self._init_family_dynamic_unique_id()
         self.points: list[CoordPoint] = []
-        self.line_width: LineWidth = LineWidth.SMALLEST
+        self.line_width: LineWidth = LineWidth.SMALL
+        self.color = WIRE_COLOR
+        self._apply_nonpersisted_area_color_default()
         # Note: Wire does NOT support LineStyle, IsSolid, Transparent (per native file format implementation)
         # Wire-specific fields (per native file format implementation)
-        self.underline_color: int | None = None
+        self.underline_color: int = 0
         self.assigned_interface: str = ""
         self.assigned_interface_signal: str = ""
         # Detached SchDoc records serialize in PascalCase; parsed records preserve
@@ -90,6 +112,16 @@ class AltiumSchWire(SchGraphicalObject):
         self._use_pascal_case: bool = True
         self._has_line_width: bool = False
         self._has_underline_color: bool = False
+        self._has_assigned_interface: bool = False
+        self._used_utf8_assigned_interface: bool = False
+        self._has_assigned_interface_signal: bool = False
+        self._used_utf8_assigned_interface_signal: bool = False
+        self._source_points: tuple[CoordPoint, ...] = ()
+        self._source_line_width: LineWidth = self.line_width
+        self._source_underline_color: int = self.underline_color
+        self._source_assigned_interface: str = self.assigned_interface
+        self._source_assigned_interface_signal: str = self.assigned_interface_signal
+        self._capture_graphical_source_state()
 
     @property
     def record_type(self) -> SchRecordType:
@@ -99,6 +131,7 @@ class AltiumSchWire(SchGraphicalObject):
         """
         Add a point to the wire in mils.
         """
+        _validate_schematic_vertex_total(len(self.points) + 1)
         self.points.append(CoordPoint.from_mils(x_mils, y_mils))
 
     @property
@@ -114,6 +147,7 @@ class AltiumSchWire(SchGraphicalObject):
     def points_mils(self, value: list[SchPointMils]) -> None:
         if not isinstance(value, list):
             raise TypeError("points_mils must be a list of SchPointMils values")
+        _validate_schematic_vertex_total(len(value))
         converted: list[CoordPoint] = []
         for point in value:
             if not isinstance(point, SchPointMils):
@@ -145,58 +179,84 @@ class AltiumSchWire(SchGraphicalObject):
         # Note: Wire does NOT support LineStyle, IsSolid, Transparent - ignore if present
 
         # Wire-specific fields (per native file format implementation)
-        underline_val, self._has_underline_color = s.read_int(
+        underline_val, self._has_underline_color = s.read_color(
             record, Fields.UNDERLINE_COLOR, default=0
         )
-        self.underline_color = underline_val if self._has_underline_color else None
-        self.assigned_interface, _ = s.read_str(
-            record, Fields.ASSIGNED_INTERFACE, default=""
+        self.underline_color = int(underline_val or 0)
+        (
+            self.assigned_interface,
+            self._has_assigned_interface,
+            self._used_utf8_assigned_interface,
+        ) = read_dynamic_string_field(
+            s, record, self._record, Fields.ASSIGNED_INTERFACE, default=""
         )
-        self.assigned_interface_signal, _ = s.read_str(
-            record, Fields.ASSIGNED_INTERFACE_SIGNAL, default=""
+        (
+            self.assigned_interface_signal,
+            self._has_assigned_interface_signal,
+            self._used_utf8_assigned_interface_signal,
+        ) = read_dynamic_string_field(
+            s, record, self._record, Fields.ASSIGNED_INTERFACE_SIGNAL, default=""
         )
+        self._parse_family_dynamic_unique_id(s, record)
 
         # Parse points
         point_count, _ = s.read_int(record, Fields.LOCATION_COUNT, default=0)
         extra_point_count, _ = s.read_int(record, "EXTRALOCATIONCOUNT", default=0)
+        _validate_schematic_vertex_counts(point_count, extra_point_count)
         self.points = []
 
-        if point_count > 0:
-            # Has explicit LocationCount
+        if point_count > 0 or extra_point_count > 0:
+            # Managed SchDataVertices accepts extended points even when the
+            # primary count is zero.
             for i in range(point_count):
-                x = int(record.get(f"X{i + 1}", 0))
-                y = int(record.get(f"Y{i + 1}", 0))
-                x_frac = int(
-                    record.get(f"X{i + 1}_FRAC", record.get(f"X{i + 1}_Frac", 0))
-                )
-                y_frac = int(
-                    record.get(f"Y{i + 1}_FRAC", record.get(f"Y{i + 1}_Frac", 0))
-                )
+                x, x_frac = read_indexed_coord(record, f"X{i + 1}")
+                y, y_frac = read_indexed_coord(record, f"Y{i + 1}")
                 self.points.append(CoordPoint(x, y, x_frac, y_frac))
 
             for i in range(point_count + 1, point_count + extra_point_count + 1):
-                x = int(record.get(f"EX{i}", 0))
-                y = int(record.get(f"EY{i}", 0))
-                x_frac = int(record.get(f"EX{i}_FRAC", record.get(f"EX{i}_Frac", 0)))
-                y_frac = int(record.get(f"EY{i}_FRAC", record.get(f"EY{i}_Frac", 0)))
+                x, x_frac = read_indexed_coord(record, f"EX{i}")
+                y, y_frac = read_indexed_coord(record, f"EY{i}")
                 self.points.append(CoordPoint(x, y, x_frac, y_frac))
         else:
             # No LocationCount - count X/Y fields manually
             i = 1
             while f"X{i}" in record or f"Y{i}" in record:
-                x = int(record.get(f"X{i}", 0))
-                y = int(record.get(f"Y{i}", 0))
-                x_frac = int(record.get(f"X{i}_FRAC", record.get(f"X{i}_Frac", 0)))
-                y_frac = int(record.get(f"Y{i}_FRAC", record.get(f"Y{i}_Frac", 0)))
+                _validate_schematic_vertex_total(i)
+                x, x_frac = read_indexed_coord(record, f"X{i}")
+                y, y_frac = read_indexed_coord(record, f"Y{i}")
                 self.points.append(CoordPoint(x, y, x_frac, y_frac))
                 i += 1
+
+        self._source_points = tuple(self.points)
+        self._source_line_width = self.line_width
+        self._source_underline_color = self.underline_color
+        self._source_assigned_interface = self.assigned_interface
+        self._source_assigned_interface_signal = self.assigned_interface_signal
+        self._apply_imported_color_defaults(area_color=False)
+        self._apply_nonpersisted_area_color_default()
 
     def serialize_to_record(self) -> dict[str, Any]:
         """
         Serialize to a record.
         """
         record = super().serialize_to_record()
+        self._remove_non_wire_geometry(record)
+        s = AltiumSerializer(
+            CaseMode.PASCALCASE if self._use_pascal_case else CaseMode.UPPERCASE
+        )
+        points_changed = (
+            self._raw_record is None or tuple(self.points) != self._source_points
+        )
+        _validate_schematic_vertex_total(len(self.points))
+        self._write_point_counts(record, s, points_changed)
+        self._write_wire_fields(record, s)
+        if points_changed:
+            self._write_points(record, points_changed)
+            self._remove_stale_points(record)
+        self._write_wire_colors(record, s)
+        return self._order_authored_graphical_fields(record, self._family_order())
 
+    def _remove_non_wire_geometry(self, record: dict[str, object]) -> None:
         for loc_key in [
             "Location.X",
             "Location.Y",
@@ -208,126 +268,108 @@ class AltiumSchWire(SchGraphicalObject):
             "LOCATION.Y_FRAC",
         ]:
             record.pop(loc_key, None)
+        if self._raw_record is None:
+            for field in (
+                Fields.LINE_STYLE,
+                Fields.LINE_STYLE_EXT,
+                Fields.IS_SOLID,
+                Fields.TRANSPARENT,
+            ):
+                self._remove_field(record, [field.pascal, field.upper])
 
-        # Determine case mode
-        mode = (
-            CaseMode.PASCALCASE
-            if getattr(self, "_use_pascal_case", False)
-            else CaseMode.UPPERCASE
-        )
-        s = AltiumSerializer(mode)
-        raw = self._raw_record
-
-        # Write location count and line width
+    def _write_point_counts(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+        points_changed: bool,
+    ) -> None:
         main_point_count = min(len(self.points), 50)
         extra_point_count = max(len(self.points) - main_point_count, 0)
-        s.write_int(record, Fields.LOCATION_COUNT, main_point_count, raw)
+        serializer.write_int(
+            record,
+            Fields.LOCATION_COUNT,
+            main_point_count,
+            self._raw_record,
+            force=points_changed,
+        )
+        if main_point_count == 0 and (self._raw_record is None or points_changed):
+            serializer.remove_field(record, Fields.LOCATION_COUNT)
         if extra_point_count > 0:
             self._update_field(
-                record, "EXTRALOCATIONCOUNT", extra_point_count, ["EXTRALOCATIONCOUNT"]
+                record,
+                "EXTRALOCATIONCOUNT",
+                extra_point_count,
+                ["EXTRALOCATIONCOUNT"],
+                force=points_changed,
             )
         else:
             self._remove_field(record, ["EXTRALOCATIONCOUNT"])
 
-        if self._has_line_width or self.line_width != LineWidth.SMALLEST:
-            s.write_int(record, Fields.LINE_WIDTH, self.line_width.value, raw)
-        # Note: Wire does NOT serialize LineStyle, IsSolid, Transparent (per native file format implementation)
-        self._remove_field(record, [Fields.LINE_STYLE.pascal, Fields.LINE_STYLE.upper])
-        self._remove_field(
-            record, [Fields.LINE_STYLE_EXT.pascal, Fields.LINE_STYLE_EXT.upper]
+    def _write_wire_fields(
+        self, record: dict[str, object], serializer: AltiumSerializer
+    ) -> None:
+        self._serialize_managed_family_int(
+            record, serializer, Fields.LINE_WIDTH.canonical, self.line_width.value
         )
-        self._remove_field(record, [Fields.IS_SOLID.pascal, Fields.IS_SOLID.upper])
-        self._remove_field(
-            record, [Fields.TRANSPARENT.pascal, Fields.TRANSPARENT.upper]
+        self._serialize_managed_family_color(
+            record,
+            serializer,
+            Fields.UNDERLINE_COLOR.canonical,
+            self.underline_color or 0,
         )
+        self._write_wire_dynamic(
+            record,
+            serializer,
+            Fields.ASSIGNED_INTERFACE,
+            self.assigned_interface,
+            self._source_assigned_interface,
+            self._has_assigned_interface,
+            self._used_utf8_assigned_interface,
+        )
+        self._write_wire_dynamic(
+            record,
+            serializer,
+            Fields.ASSIGNED_INTERFACE_SIGNAL,
+            self.assigned_interface_signal,
+            self._source_assigned_interface_signal,
+            self._has_assigned_interface_signal,
+            self._used_utf8_assigned_interface_signal,
+        )
+        self._serialize_family_dynamic_unique_id(record, serializer)
 
-        # Wire-specific fields
-        if self.underline_color not in (None, 0):
-            s.write_int(
-                record,
-                Fields.UNDERLINE_COLOR,
-                self.underline_color,
-                raw,
-                force=True,
-            )
-        else:
-            self._remove_field(
-                record,
-                [Fields.UNDERLINE_COLOR.pascal, Fields.UNDERLINE_COLOR.upper],
-            )
-        if self.assigned_interface:
-            s.write_str(record, Fields.ASSIGNED_INTERFACE, self.assigned_interface, raw)
-        else:
-            self._remove_field(
-                record,
-                [
-                    Fields.ASSIGNED_INTERFACE.pascal,
-                    Fields.ASSIGNED_INTERFACE.upper,
-                ],
-            )
-        if self.assigned_interface_signal:
-            s.write_str(
-                record,
-                Fields.ASSIGNED_INTERFACE_SIGNAL,
-                self.assigned_interface_signal,
-                raw,
-            )
-        else:
-            self._remove_field(
-                record,
-                [
-                    Fields.ASSIGNED_INTERFACE_SIGNAL.pascal,
-                    Fields.ASSIGNED_INTERFACE_SIGNAL.upper,
-                ],
-            )
-
-        # Write points - indexed field names: X1, Y1, X2, Y2, etc.
+    def _write_points(self, record: dict[str, object], points_changed: bool) -> None:
         for i, point in enumerate(self.points, 1):
-            if i <= 50:
-                x_key = f"X{i}"
-                y_key = f"Y{i}"
-            else:
-                x_key = f"EX{i}"
-                y_key = f"EY{i}"
+            x_key, y_key = self._point_keys(i)
+            validate_indexed_coord(point, x_key, y_key)
+            self._update_field(record, x_key, point.x, [x_key], force=points_changed)
+            self._update_field(record, y_key, point.y, [y_key], force=points_changed)
+            self._write_point_fraction(record, x_key, point.x_frac)
+            self._write_point_fraction(record, y_key, point.y_frac)
 
-            self._update_field(record, x_key, point.x, [x_key])
-            self._update_field(record, y_key, point.y, [y_key])
+    @staticmethod
+    def _point_keys(index: int) -> tuple[str, str]:
+        prefix = "" if index <= 50 else "E"
+        return f"{prefix}X{index}", f"{prefix}Y{index}"
 
-            if point.x_frac:
-                self._update_field(
-                    record,
-                    f"{x_key}_Frac",
-                    point.x_frac,
-                    [f"{x_key}_Frac", f"{x_key}_FRAC"],
-                    force=True,
-                )
-            else:
-                self._remove_field(record, [f"{x_key}_Frac", f"{x_key}_FRAC"])
+    def _write_point_fraction(
+        self, record: dict[str, object], key: str, fraction: int
+    ) -> None:
+        spellings = [f"{key}_Frac", f"{key}_FRAC"]
+        if fraction:
+            self._update_field(record, spellings[0], fraction, spellings, force=True)
+        else:
+            self._remove_field(record, spellings)
 
-            if point.y_frac:
-                self._update_field(
-                    record,
-                    f"{y_key}_Frac",
-                    point.y_frac,
-                    [f"{y_key}_Frac", f"{y_key}_FRAC"],
-                    force=True,
-                )
-            else:
-                self._remove_field(record, [f"{y_key}_Frac", f"{y_key}_FRAC"])
-
-        stale_total = 0
-        if raw is not None:
-            stale_total = int(raw.get("LocationCount", raw.get("LOCATIONCOUNT", 0)))
-            stale_total += int(raw.get("EXTRALOCATIONCOUNT", 0))
-
+    def _remove_stale_points(self, record: dict[str, object]) -> None:
+        if self._raw_record is None:
+            return
+        stale_total = int(
+            self._raw_record.get(
+                "LocationCount", self._raw_record.get("LOCATIONCOUNT", 0)
+            )
+        ) + int(self._raw_record.get("EXTRALOCATIONCOUNT", 0))
         for i in range(len(self.points) + 1, stale_total + 1):
-            if i <= 50:
-                x_key = f"X{i}"
-                y_key = f"Y{i}"
-            else:
-                x_key = f"EX{i}"
-                y_key = f"EY{i}"
-
+            x_key, y_key = self._point_keys(i)
             self._remove_field(
                 record,
                 [
@@ -340,7 +382,67 @@ class AltiumSchWire(SchGraphicalObject):
                 ],
             )
 
-        return record
+    def _write_wire_colors(
+        self, record: dict[str, object], serializer: AltiumSerializer
+    ) -> None:
+        if self._raw_record is None or self.color != self._source_color:
+            self._remove_fields_case_insensitively(record, ["Color"])
+            if self.color not in (None, 0):
+                serializer.write_color(
+                    record, Fields.COLOR, self.color, None, force=True
+                )
+        if self._raw_record is None or self._area_color_dirty:
+            self._remove_fields_case_insensitively(record, ["AreaColor"])
+
+    def _family_order(self) -> tuple[str, ...]:
+        if self.record_type is SchRecordType.BUS:
+            return (
+                "LineWidth",
+                "Color",
+                "UnderlineColor",
+                "__Vertices__",
+                "UniqueID",
+                "AssignedInterface",
+                "AssignedInterfaceSignal",
+            )
+        return (
+            "LineWidth",
+            "Color",
+            "UnderlineColor",
+            "UniqueID",
+            "AssignedInterface",
+            "AssignedInterfaceSignal",
+            "__Vertices__",
+        )
+
+    def _write_wire_dynamic(
+        self,
+        record: dict[str, object],
+        serializer: AltiumSerializer,
+        field: FieldDef | str,
+        value: str,
+        source_value: str,
+        was_present: bool,
+        used_utf8_sidecar: bool,
+    ) -> None:
+        if self._raw_record is not None and value == source_value:
+            return
+        field_def = serializer._get_field_def(field)
+        if not value:
+            self._remove_fields_case_insensitively(
+                record, [field_def.pascal, f"%UTF8%{field_def.pascal}"]
+            )
+            return
+        write_dynamic_string_field(
+            serializer,
+            record,
+            field_def,
+            value,
+            raw_record=self._raw_record,
+            used_utf8_sidecar=used_utf8_sidecar,
+            was_present=was_present,
+            force=True,
+        )
 
     def to_geometry(
         self,
@@ -362,6 +464,7 @@ class AltiumSchWire(SchGraphicalObject):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
             make_pen,
             svg_coord_to_geometry,
             wrap_record_operations,
@@ -410,7 +513,10 @@ class AltiumSchWire(SchGraphicalObject):
                 int(masked_hex[3:5], 16),
                 int(masked_hex[5:7], 16),
             )
-        pen = make_pen(color_raw, width=int(round(stroke_width_mils * units_per_px)))
+        pen = make_pen(
+            color_raw,
+            width=_geometry_item_length(stroke_width_mils, units_per_px=units_per_px),
+        )
 
         operations = [SchGeometryOp.lines(geometry_points, pen=pen)]
         operations.extend(

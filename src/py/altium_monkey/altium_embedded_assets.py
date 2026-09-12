@@ -141,7 +141,9 @@ def decompress_zlib_payload(payload: bytes, *, label: str) -> bytes:
     try:
         return zlib.decompress(payload)
     except Exception as exc:
-        raise ValueError(f"embedded asset payload could not be decompressed: {label}") from exc
+        raise ValueError(
+            f"embedded asset payload could not be decompressed: {label}"
+        ) from exc
 
 
 def try_decompress_zlib_payload(payload: bytes) -> bytes | None:
@@ -283,9 +285,7 @@ def opaque_pcblib_embedded_fonts_summary(
             extraction_filename=None,
             raw_size=len(payload),
             payload_available=True,
-            payload_sha256=payload_sha256(
-                payload, include_hashes=include_hashes
-            ),
+            payload_sha256=payload_sha256(payload, include_hashes=include_hashes),
             support_status="opaque",
             reason=(
                 "PcbLib Library/EmbeddedFonts is preserved as raw bytes; typed font "
@@ -309,7 +309,9 @@ def _has_nonempty_pcblib_embedded_font_stream(raw_embedded_fonts: bytes | None) 
     return True
 
 
-def live_embedded_model_entries_from_builder(builder: object | None) -> tuple[tuple[object, bytes], ...]:
+def live_embedded_model_entries_from_builder(
+    builder: object | None,
+) -> tuple[tuple[object, bytes], ...]:
     """Return embedded model entries retained by a live authoring builder."""
     specs = getattr(builder, "_embedded_models", None)
     if not specs:

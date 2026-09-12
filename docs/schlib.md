@@ -17,6 +17,10 @@ Use it when you need to:
 `AltiumSymbol` uses the same `ObjectCollection` pattern as `AltiumSchDoc`.
 Symbol properties such as `symbol.pins`, `symbol.parameters`,
 `symbol.rectangles`, `symbol.lines`, and `symbol.arcs` are typed query views.
+`AltiumSchLib.symbols`, `AltiumSymbol.objects`, and these typed accessors are
+read-only live views. Use `AltiumSchLib.add_symbol()` / `remove_symbol()` and
+`AltiumSymbol.add_object()` / `remove_object()` for structural changes instead
+of appending to or replacing a returned view.
 
 Add symbol records with `symbol.add_object(...)` or symbol helper methods. Keep
 visual ordering in mind: body graphics should usually be behind pins and text.
@@ -92,6 +96,12 @@ For the shared reference and JSON contract, see
 schematic pixel-canvas coordinates. Pass
 `SchSvgRenderOptions(include_view_box=False)` to omit only that root attribute
 while keeping the same geometry and symbol rendering path.
+
+Bundled fallback font payloads are omitted by default. Pass
+`SchSvgRenderOptions(embed_bundled_fallback_fonts=True)` for self-contained
+symbol SVGs when package fallbacks are selected. The option embeds only used
+package-owned fallback faces. Bulk `to_svg(output_dir=...)` still writes only
+the requested SVG artifacts; it does not copy font sidecars.
 
 ## Examples
 

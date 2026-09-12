@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:schematic_bom_a0",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "altium_monkey.schematic_bom.a0"
+    },
+    "generator": {
+      "type": "string",
+      "const": "altium_monkey"
+    },
+    "selected_variant": {
+      "$ref": "#/$defs/NullableString"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SchematicBomA0Component"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "generator",
+    "selected_variant",
+    "components"
+  ],
+  "unevaluatedProperties": {
+    "not": {}
+  },
+  "description": "Versioned schematic BOM transport.",
+  "title": "Altium Monkey schematic BOM a0",
+  "$defs": {
+    "NullableString": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required field whose value may be a string or JSON null."
+    },
+    "SchematicBomA0Component": {
+      "type": "object",
+      "properties": {
+        "component_id": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "designator": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "logical_designator": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "physical_designator": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "source_page": {
+          "$ref": "#/$defs/SchematicSourcePage"
+        },
+        "value": {
+          "type": "string"
+        },
+        "footprint": {
+          "type": "string"
+        },
+        "library_ref": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "parameters": {
+          "$ref": "#/$defs/SchematicStringParameterMap"
+        },
+        "fitted": {
+          "type": "boolean"
+        },
+        "dnp": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "component_id",
+        "designator",
+        "logical_designator",
+        "physical_designator",
+        "source_page",
+        "value",
+        "footprint",
+        "library_ref",
+        "description",
+        "parameters",
+        "fitted",
+        "dnp"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "SchematicIdentityString": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Non-empty identity used by current schematic transport contracts."
+    },
+    "SchematicSourcePage": {
+      "type": "object",
+      "properties": {
+        "physical_document_id": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "source_sheet_file": {
+          "$ref": "#/$defs/NullableString"
+        }
+      },
+      "required": [
+        "physical_document_id",
+        "source_sheet_file"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      },
+      "description": "Correlated physical-page and logical-source identity."
+    },
+    "SchematicStringParameterMap": {
+      "type": "object",
+      "properties": {},
+      "unevaluatedProperties": {
+        "type": "string"
+      },
+      "description": "String-only component parameters for current schematic transports."
+    }
+  }
+}

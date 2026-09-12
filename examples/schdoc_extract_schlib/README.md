@@ -56,5 +56,7 @@ schdoc.extract_symbols(
 ```
 
 `strip_parameters=True` and `strip_implementations=True` produce the lean
-DBLib-ready split libraries. Set both to `False` when you want extracted SchLibs
-that retain source component metadata and model links.
+DBLib-ready split libraries. The required generic designator field (for example,
+`U?`) remains part of each symbol; ordinary component metadata parameters are
+removed. Set both options to `False` when you want extracted SchLibs that retain
+source component metadata and model links.

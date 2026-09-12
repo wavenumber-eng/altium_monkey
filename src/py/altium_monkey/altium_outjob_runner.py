@@ -544,8 +544,7 @@ def _ensure_no_existing_x2_for_kill_after_run() -> None:
     if not existing_x2:
         return
     process_list = ", ".join(
-        f"{process.pid}:{process.executable or '<unknown>'}"
-        for process in existing_x2
+        f"{process.pid}:{process.executable or '<unknown>'}" for process in existing_x2
     )
     raise RuntimeError(
         "kill_after_run requires no pre-existing X2.exe processes because "
@@ -557,7 +556,9 @@ def _outjob_run_script_dir(
     project: Path,
     script_directory: Path | str | None,
 ) -> Path:
-    script_dir = project.parent if script_directory is None else Path(script_directory).resolve()
+    script_dir = (
+        project.parent if script_directory is None else Path(script_directory).resolve()
+    )
     script_dir.mkdir(parents=True, exist_ok=True)
     return script_dir
 

@@ -2,12 +2,17 @@
 
 import html
 import math
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal, ROUND_HALF_EVEN
-from dataclasses import dataclass, field, replace
+from dataclasses import InitVar, dataclass, field, replace
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
 from .altium_font_resolver import resolve_font_with_style
+from ._sch_source_admission import _SourceAdmission
+from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
 from .altium_record_types import CoordPoint, LineStyle, LineWidth, color_to_hex
 from .altium_ttf_metrics import (
     get_font_factor,
@@ -57,7 +62,10 @@ ONSCREEN_FONT_ORACLE_OVERRIDES: dict[str, dict[str, float | str]] = {
 }
 
 if TYPE_CHECKING:
+    from ._altium_sch_component_project_state import _ParameterRenderOverride
     from .altium_font_manager import FontIDManager
+    from ._altium_sch_component_overlay import _ComponentOverlayCapture
+    from ._altium_sch_component_variant import _ComponentVariantCapture
 
 
 # ============================================================================
@@ -84,6 +92,14 @@ class SchCompileMaskRenderMode(Enum):
 
     ORACLE_RAW = auto()
     COMPILED_VISUAL = auto()
+
+
+class SchPaintColorMode(Enum):
+    """Managed metafile paint-color policy."""
+
+    COLOR = auto()
+    GRAYSCALE = auto()
+    MONOCHROME = auto()
 
 
 @dataclass
@@ -161,6 +177,43 @@ class SchSvgRenderOptions:
 
     # Include a root SVG viewBox in schematic pixel-canvas coordinates.
     include_view_box: bool = True
+
+    # Inline package-owned fallback faces used by emitted SVG text. Disabled by
+    # default to keep SVG output compact. This never embeds installed,
+    # configured, alias, explicit-path, test-asset, or general search fonts.
+    embed_bundled_fallback_fonts: bool = False
+
+    # Managed painter settings used by specialized export/editor branches.
+    is_metafile: bool = False
+    metafile_blankets: bool = True
+    metafile_parameter_sets: bool = True
+    optimized: bool = False
+    convert_special_strings: bool = True
+    replace_empty_value_with_name: bool = True
+    constraint_manager_imported_directive_uids: tuple[str, ...] = ()
+    paint_color_mode: SchPaintColorMode = SchPaintColorMode.COLOR
+    emphasize: bool = False
+    inverted_objects_editor: bool = False
+
+    # Managed schematic display preferences used by project physical views.
+    expand_component_designators: bool = True
+    multipart_naming_method: int = 0
+    multipart_separator: str = ":"
+    single_slash_negation: bool = False
+
+    # Aggregate Blanket work limits. A bulk SchLib render shares one allowance
+    # across every symbol and part rather than resetting these per document.
+    max_blanket_edge_tests: int = 1_000_000
+    max_blanket_operations: int = 200_000
+    max_blanket_bounds_sources: int = 1_000_000
+    max_blanket_output_bytes: int = 256_000_000
+
+    # Aggregate ParameterSet work limits. Imported directive identifiers,
+    # formula display text, bounds measurements, and emitted operations share
+    # one allowance for the complete producer request.
+    max_parameter_set_sources: int = 1_000_000
+    max_parameter_set_text_characters: int = 1_000_000
+    max_parameter_set_operations: int = 200_000
 
     @classmethod
     def native_altium(cls) -> "SchSvgRenderOptions":
@@ -260,6 +313,39 @@ def _format_svg_number(value: float) -> str:
     if abs(value - round(value)) <= 1e-9:
         return str(int(round(value)))
     return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+_EXACT_INTERMEDIATE_SVG_NUMBERS: ContextVar[bool] = ContextVar(
+    "exact_intermediate_svg_numbers",
+    default=False,
+)
+
+
+@contextmanager
+def exact_intermediate_svg_numbers() -> Iterator[None]:
+    """Preserve doubles while SVG elements act as an internal geometry carrier."""
+    token = _EXACT_INTERMEDIATE_SVG_NUMBERS.set(True)
+    try:
+        yield
+    finally:
+        _EXACT_INTERMEDIATE_SVG_NUMBERS.reset(token)
+
+
+def using_exact_intermediate_svg_numbers() -> bool:
+    """Return whether SVG is carrying unrounded geometry between producers."""
+    return _EXACT_INTERMEDIATE_SVG_NUMBERS.get()
+
+
+def _format_intermediate_svg_number(
+    value: int | float,
+    *,
+    digits: int,
+    strip: bool = False,
+) -> str:
+    if _EXACT_INTERMEDIATE_SVG_NUMBERS.get():
+        return repr(float(value))
+    formatted = f"{float(value):.{digits}f}"
+    return formatted.rstrip("0").rstrip(".") if strip else formatted
 
 
 def build_compile_mask_visual_overlay_svg(
@@ -609,7 +695,7 @@ def compute_dash_segments(
 # ============================================================================
 
 
-def altium_to_svg_x(x: int, offset_x: float = 0.0, scale: float = 1.0) -> float:
+def altium_to_svg_x(x: int | float, offset_x: float = 0.0, scale: float = 1.0) -> float:
     """
     Convert Altium X coordinate to SVG.
 
@@ -627,7 +713,7 @@ def altium_to_svg_x(x: int, offset_x: float = 0.0, scale: float = 1.0) -> float:
 
 
 def altium_to_svg_y(
-    y: int, offset_y: float = 0.0, scale: float = 1.0, flip: bool = True
+    y: int | float, offset_y: float = 0.0, scale: float = 1.0, flip: bool = True
 ) -> float:
     """
     Convert Altium Y coordinate to SVG.
@@ -730,16 +816,21 @@ def modify_color(percent: int, color: int, background_color: int) -> int:
 
     Matches native ColorManager.ModifyColor(percent, color, backgroundColor).
     """
-    r = (color & 0xFF) + int(
-        ((background_color & 0xFF) - (color & 0xFF)) * percent / 100
-    )
-    g = ((color >> 8) & 0xFF) + int(
-        (((background_color >> 8) & 0xFF) - ((color >> 8) & 0xFF)) * percent / 100
-    )
-    b = ((color >> 16) & 0xFF) + int(
-        (((background_color >> 16) & 0xFF) - ((color >> 16) & 0xFF)) * percent / 100
-    )
-    return (b << 16) | (g << 8) | r
+    from .altium_sch_geometry_oracle import _signed_int32
+
+    result = 0
+    for shift in (0, 8, 16):
+        channel = (color >> shift) & 0xFF
+        background = (background_color >> shift) & 0xFF
+        product = _signed_int32((background - channel) * percent)
+        quotient = abs(product) // 100
+        if product < 0:
+            quotient = -quotient
+        # Managed arithmetic wraps the int product, divides toward zero, then
+        # converts each completed channel to a byte rather than clamping it.
+        mixed = (channel + quotient) & 0xFF
+        result |= mixed << shift
+    return result
 
 
 def svg_line(
@@ -755,9 +846,14 @@ def svg_line(
     """
     Generate SVG <line> element.
     """
+    x1_text = _format_intermediate_svg_number(x1, digits=2)
+    y1_text = _format_intermediate_svg_number(y1, digits=2)
+    x2_text = _format_intermediate_svg_number(x2, digits=2)
+    y2_text = _format_intermediate_svg_number(y2, digits=2)
+    width_text = _format_intermediate_svg_number(stroke_width, digits=2)
     parts = [
-        f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}"',
-        f'stroke="{stroke}" stroke-width="{stroke_width:.2f}px"',
+        f'<line x1="{x1_text}" y1="{y1_text}" x2="{x2_text}" y2="{y2_text}"',
+        f'stroke="{stroke}" stroke-width="{width_text}px"',
     ]
     if stroke_dasharray:
         parts.append(f'stroke-dasharray="{stroke_dasharray}"')
@@ -794,11 +890,19 @@ def svg_rect(
         rx, ry: Corner radii. None to omit (sharp corners).
         **attrs: Additional attributes (e.g., vector_effect)
     """
-    parts = [f'<rect x="{x:.2f}" y="{y:.2f}" width="{width:.2f}" height="{height:.2f}"']
+    x_text = _format_intermediate_svg_number(x, digits=2)
+    y_text = _format_intermediate_svg_number(y, digits=2)
+    width_text = _format_intermediate_svg_number(width, digits=2)
+    height_text = _format_intermediate_svg_number(height, digits=2)
+    parts = [
+        f'<rect x="{x_text}" y="{y_text}" width="{width_text}" height="{height_text}"'
+    ]
     if stroke is not None:
         parts.append(f'stroke="{stroke}"')
     if stroke_width is not None and stroke is not None:
-        parts.append(f'stroke-width="{stroke_width:.2f}px"')
+        parts.append(
+            f'stroke-width="{_format_intermediate_svg_number(stroke_width, digits=2)}px"'
+        )
     if fill is not None:
         parts.append(f'fill="{fill}"')
     if fill_opacity is not None:
@@ -806,9 +910,9 @@ def svg_rect(
     if stroke_dasharray:
         parts.append(f'stroke-dasharray="{stroke_dasharray}"')
     if rx is not None and rx > 0:
-        parts.append(f'rx="{rx:.2f}"')
+        parts.append(f'rx="{_format_intermediate_svg_number(rx, digits=2)}"')
     if ry is not None and ry > 0:
-        parts.append(f'ry="{ry:.2f}"')
+        parts.append(f'ry="{_format_intermediate_svg_number(ry, digits=2)}"')
     for k, v in attrs.items():
         if v is not None:  # Skip None values
             parts.append(f'{k.replace("_", "-")}="{v}"')
@@ -829,14 +933,26 @@ def svg_circle(
     Generate SVG <circle> element.
     """
     parts = [
-        f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}"',
-        f'stroke="{stroke}" stroke-width="{stroke_width:.2f}px" fill="{fill}"',
+        f'<circle cx="{_format_intermediate_svg_number(cx, digits=2)}" '
+        f'cy="{_format_intermediate_svg_number(cy, digits=2)}" '
+        f'r="{_format_intermediate_svg_number(r, digits=2)}"',
+        f'stroke="{stroke}" '
+        f'stroke-width="{_format_intermediate_svg_number(stroke_width, digits=2)}px" '
+        f'fill="{fill}"',
     ]
     if fill_opacity is not None:
         parts.append(f'fill-opacity="{fill_opacity:.2f}"')
     for k, v in attrs.items():
         parts.append(f'{k.replace("_", "-")}="{v}"')
     return " ".join(parts) + "/>"
+
+
+def _optional_svg_attributes(attrs: dict[str, object]) -> list[str]:
+    return [
+        f'{key.replace("_", "-")}="{value}"'
+        for key, value in attrs.items()
+        if value is not None
+    ]
 
 
 def svg_ellipse(
@@ -860,18 +976,23 @@ def svg_ellipse(
         stroke_width: Stroke width. None to omit.
         fill: Fill color. None to omit (native Altium style for arcs).
     """
-    parts = [f'<ellipse cx="{cx:.2f}" cy="{cy:.2f}" rx="{rx:.2f}" ry="{ry:.2f}"']
+    parts = [
+        f'<ellipse cx="{_format_intermediate_svg_number(cx, digits=2)}" '
+        f'cy="{_format_intermediate_svg_number(cy, digits=2)}" '
+        f'rx="{_format_intermediate_svg_number(rx, digits=2)}" '
+        f'ry="{_format_intermediate_svg_number(ry, digits=2)}"'
+    ]
     if stroke is not None:
         parts.append(f'stroke="{stroke}"')
     if stroke_width is not None and stroke is not None:
-        parts.append(f'stroke-width="{stroke_width:.2f}px"')
+        parts.append(
+            f'stroke-width="{_format_intermediate_svg_number(stroke_width, digits=2)}px"'
+        )
     if fill is not None:
         parts.append(f'fill="{fill}"')
     if fill_opacity is not None:
         parts.append(f'fill-opacity="{fill_opacity:.2f}"')
-    for k, v in attrs.items():
-        if v is not None:
-            parts.append(f'{k.replace("_", "-")}="{v}"')
+    parts.extend(_optional_svg_attributes(attrs))
     return " ".join(parts) + "/>"
 
 
@@ -1036,19 +1157,31 @@ def svg_arc(
     # Endpoints are always fractional since they come from trig calculations on
     # center coordinates that may have CoordPoint fractional parts.
     has_fractional_radius = (rx != int(rx)) or (ry != int(ry))
-    rx_str = f"{rx:.4f}" if has_fractional_radius else str(int(rx))
-    ry_str = f"{ry:.4f}" if has_fractional_radius else str(int(ry))
-    d = f"M{x1:.4f},{y1:.4f} A{rx_str},{ry_str} 0 {large_arc},{sweep} {x2:.4f},{y2:.4f}"
+    rx_str = (
+        _format_intermediate_svg_number(rx, digits=4)
+        if has_fractional_radius
+        else str(int(rx))
+    )
+    ry_str = (
+        _format_intermediate_svg_number(ry, digits=4)
+        if has_fractional_radius
+        else str(int(ry))
+    )
+    x1_text = _format_intermediate_svg_number(x1, digits=4)
+    y1_text = _format_intermediate_svg_number(y1, digits=4)
+    x2_text = _format_intermediate_svg_number(x2, digits=4)
+    y2_text = _format_intermediate_svg_number(y2, digits=4)
+    d = f"M{x1_text},{y1_text} A{rx_str},{ry_str} 0 {large_arc},{sweep} {x2_text},{y2_text}"
 
     parts = [
         f'<path d="{d}"',
-        f'stroke="{stroke}" stroke-width="{stroke_width:.2f}px"',
+        f'stroke="{stroke}" '
+        f'stroke-width="{_format_intermediate_svg_number(stroke_width, digits=2)}px"',
     ]
     # Only include fill if explicitly provided (native Altium omits it for arcs)
     if fill is not None:
         parts.append(f'fill="{fill}"')
-    for k, v in attrs.items():
-        parts.append(f'{k.replace("_", "-")}="{v}"')
+    parts.extend(_optional_svg_attributes(attrs))
     return " ".join(parts) + "/>"
 
 
@@ -1067,12 +1200,19 @@ def svg_polygon(
         If stroke is empty string or stroke_width is 0, omits stroke attributes.
         This matches native Altium SVG output for fill-only polygons.
     """
-    points_str = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+    points_str = " ".join(
+        f"{_format_intermediate_svg_number(x, digits=2)},"
+        f"{_format_intermediate_svg_number(y, digits=2)}"
+        for x, y in points
+    )
     parts = [f'<polygon points="{points_str}"']
 
     # Only include stroke attributes if stroke is specified and width > 0
     if stroke and stroke_width > 0:
-        parts.append(f'stroke="{stroke}" stroke-width="{stroke_width:.2f}px"')
+        parts.append(
+            f'stroke="{stroke}" '
+            f'stroke-width="{_format_intermediate_svg_number(stroke_width, digits=2)}px"'
+        )
 
     parts.append(f'fill="{fill}"')
 
@@ -1096,10 +1236,16 @@ def svg_polyline(
     """
     Generate SVG <polyline> element.
     """
-    points_str = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+    points_str = " ".join(
+        f"{_format_intermediate_svg_number(x, digits=2)},"
+        f"{_format_intermediate_svg_number(y, digits=2)}"
+        for x, y in points
+    )
     parts = [
         f'<polyline points="{points_str}"',
-        f'stroke="{stroke}" stroke-width="{stroke_width:.2f}px" fill="{fill}"',
+        f'stroke="{stroke}" '
+        f'stroke-width="{_format_intermediate_svg_number(stroke_width, digits=2)}px" '
+        f'fill="{fill}"',
     ]
     if stroke_dasharray:
         parts.append(f'stroke-dasharray="{stroke_dasharray}"')
@@ -1121,7 +1267,9 @@ def svg_path(
     """
     parts = [
         f'<path d="{d}"',
-        f'stroke="{stroke}" stroke-width="{stroke_width:.2f}px" fill="{fill}"',
+        f'stroke="{stroke}" '
+        f'stroke-width="{_format_intermediate_svg_number(stroke_width, digits=2)}px" '
+        f'fill="{fill}"',
     ]
     if fill_opacity is not None:
         parts.append(f'fill-opacity="{fill_opacity:.2f}"')
@@ -1168,12 +1316,14 @@ def svg_text(
     if font_size == int(font_size):
         font_size_str = f"{int(font_size)}px"
     else:
-        font_size_str = f"{font_size:.4f}px"
+        font_size_str = f"{_format_intermediate_svg_number(font_size, digits=4)}px"
 
     # Native Altium frequently emits 3-4 decimal coordinate precision for text.
     # Keep higher precision here to avoid rounding half-pixel anchors across
     # integer boundaries during oracle comparisons.
     def _fmt_coord(v: float) -> str:
+        if _EXACT_INTERMEDIATE_SVG_NUMBERS.get():
+            return repr(float(v))
         if abs(v - round(v)) < 1e-9:
             return str(int(round(v)))
         return f"{v:.4f}".rstrip("0").rstrip(".")
@@ -1546,11 +1696,11 @@ def svg_text_poly(
         'fill-rule="evenodd"',
         'stroke="none"',
         'data-text-source="polytext"',
-        f'data-text-anchor-x="{float(x):.4f}"',
-        f'data-text-anchor-y="{float(y):.4f}"',
+        f'data-text-anchor-x="{_format_intermediate_svg_number(x, digits=4)}"',
+        f'data-text-anchor-y="{_format_intermediate_svg_number(y, digits=4)}"',
         f'data-text-value="{html.escape(text, quote=True)}"',
         f'data-text-font-family="{html.escape(str(font_family), quote=True)}"',
-        f'data-text-font-size="{float(font_size):.4f}"',
+        f'data-text-font-size="{_format_intermediate_svg_number(font_size, digits=4)}"',
     ]
     if transform:
         parts.append(f'transform="{html.escape(str(transform), quote=True)}"')
@@ -1764,6 +1914,7 @@ def render_text_with_overline(
     fill: str = "#000000",
     stroke_color: str | None = None,
     stroke_width: float = 1.0,
+    single_slash_negation: bool = False,
 ) -> tuple[str, list[str]]:
     """
     Render text with overlines (bars) for characters followed by backslash.
@@ -1799,42 +1950,34 @@ def render_text_with_overline(
         - clean_text: Text with backslashes removed
         - overline_elements: List of SVG line elements for overlines
     """
+    from .altium_sch_geometry_oracle import (
+        _split_overline_text_details,
+        _text_from_utf16_code_units,
+        _utf16_code_units,
+    )
     from .altium_text_metrics import measure_text_width
 
-    # No backslash = no overlines needed
-    if "\\" not in text:
-        return text, []
+    clean_text, marker_details = _split_overline_text_details(
+        text, single_slash_negation=single_slash_negation
+    )
+    if not marker_details:
+        return clean_text, []
 
     # Use fill color for overlines if not specified
     line_color = stroke_color if stroke_color else fill
 
-    # Mirror DrawOverLine(): iterate on the working string and decide whether
-    # each segment is measured with trailing-side-bearing based on whether
-    # characters remain after removing the current backslash.
-    working_text = text
+    # DrawOverLine indexes UTF-16 code units, including the two units that make
+    # up a non-BMP scalar.
+    clean_units = _utf16_code_units(clean_text)
     overline_segments: list[tuple[str, str, bool]] = []
-
-    while True:
-        slash_idx = working_text.find("\\")
-        if slash_idx < 0:
-            break
-
-        prefix = working_text[:slash_idx]
-        working_text = working_text[:slash_idx] + working_text[slash_idx + 1 :]
-
-        if slash_idx <= 0:
-            continue
-
-        include_rsb = slash_idx < len(working_text)
+    for marker_index, include_rsb in marker_details:
         overline_segments.append(
             (
-                prefix,
-                working_text[slash_idx - 1],
+                _text_from_utf16_code_units(clean_units[: marker_index + 1]),
+                _text_from_utf16_code_units([clean_units[marker_index]]),
                 include_rsb,
             )
         )
-
-    clean_text = working_text
 
     if not overline_segments or not clean_text:
         return clean_text, []
@@ -1867,7 +2010,10 @@ def render_text_with_overline(
         x2 = x + width_to_segment_end
 
         overline_elements.append(
-            f'<line x1="{x2:.4f}" y1="{overline_y}" x2="{x1:.4f}" y2="{overline_y}" '
+            f'<line x1="{_format_intermediate_svg_number(x2, digits=4)}" '
+            f'y1="{_format_intermediate_svg_number(overline_y, digits=4)}" '
+            f'x2="{_format_intermediate_svg_number(x1, digits=4)}" '
+            f'y2="{_format_intermediate_svg_number(overline_y, digits=4)}" '
             f'stroke="{line_color}" stroke-width="{stroke_width}px"/>'
         )
 
@@ -1877,6 +2023,152 @@ def render_text_with_overline(
 # ============================================================================
 # SVG CONTEXT FOR RENDERING
 # ============================================================================
+
+
+class _OperationRenderBudgetMixin:
+    max_operations: int
+    operations: int
+
+    def _reserve(self, count: int, remaining: int, resource: str) -> None:
+        raise NotImplementedError
+
+    def reserve_operations(self, count: int) -> None:
+        self._reserve(count, self.max_operations - self.operations, "operation")
+        self.operations += count
+
+
+@dataclass
+class _BlanketRenderBudget(_OperationRenderBudgetMixin):
+    max_edge_tests: int = 1_000_000
+    max_operations: int = 200_000
+    max_bounds_sources: int = 1_000_000
+    max_output_bytes: int = 256_000_000
+    edge_tests: int = field(default=0, init=False)
+    operations: int = field(default=0, init=False)
+    bounds_sources: int = field(default=0, init=False)
+    output_bytes: int = field(default=0, init=False)
+    failed: bool = field(default=False, init=False)
+
+    def __post_init__(self) -> None:
+        for limit in (
+            self.max_edge_tests,
+            self.max_operations,
+            self.max_bounds_sources,
+            self.max_output_bytes,
+        ):
+            if type(limit) is not int or limit < 0:
+                raise ValueError("blanket render limits must be nonnegative integers")
+
+    @classmethod
+    def from_options(cls, options: SchSvgRenderOptions) -> "_BlanketRenderBudget":
+        return cls(
+            max_edge_tests=options.max_blanket_edge_tests,
+            max_operations=options.max_blanket_operations,
+            max_bounds_sources=options.max_blanket_bounds_sources,
+            max_output_bytes=options.max_blanket_output_bytes,
+        )
+
+    def _reserve(self, count: int, remaining: int, resource: str) -> None:
+        if self.failed:
+            raise RuntimeError("blanket render budget is unusable after failure")
+        if type(count) is not int or count < 0 or count > remaining:
+            self.failed = True
+            raise ValueError(f"blanket render {resource} limit exceeded")
+
+    def reserve_edge_tests(self, count: int) -> None:
+        self._reserve(count, self.max_edge_tests - self.edge_tests, "edge-test")
+        self.edge_tests += count
+
+    def preflight_edge_tests(self, count: int) -> None:
+        """Validate a candidate scan without publishing a partial charge."""
+        self._reserve(count, self.max_edge_tests - self.edge_tests, "edge-test")
+
+    def reserve_render_work(self, *, edge_tests: int, operations: int) -> None:
+        """Atomically charge one Blanket's scan and emitted operations."""
+        self.preflight_edge_tests(edge_tests)
+        self._reserve(
+            operations,
+            self.max_operations - self.operations,
+            "operation",
+        )
+        self.edge_tests += edge_tests
+        self.operations += operations
+
+    def reserve_bounds_sources(self, count: int) -> None:
+        self._reserve(
+            count,
+            self.max_bounds_sources - self.bounds_sources,
+            "bounds-source",
+        )
+        self.bounds_sources += count
+
+    def reserve_output_bytes(self, count: int) -> None:
+        self._reserve(
+            count,
+            self.max_output_bytes - self.output_bytes,
+            "output-byte",
+        )
+        self.output_bytes += count
+
+
+@dataclass
+class _ParameterSetRenderBudget(_OperationRenderBudgetMixin):
+    max_sources: int = 1_000_000
+    max_text_characters: int = 1_000_000
+    max_operations: int = 200_000
+    sources: int = field(default=0, init=False)
+    text_characters: int = field(default=0, init=False)
+    operations: int = field(default=0, init=False)
+    failed: bool = field(default=False, init=False)
+
+    def __post_init__(self) -> None:
+        for limit in (
+            self.max_sources,
+            self.max_text_characters,
+            self.max_operations,
+        ):
+            if type(limit) is not int or limit < 0:
+                raise ValueError(
+                    "parameter-set render limits must be nonnegative integers"
+                )
+
+    @classmethod
+    def from_options(cls, options: SchSvgRenderOptions) -> "_ParameterSetRenderBudget":
+        budget = cls(
+            max_sources=options.max_parameter_set_sources,
+            max_text_characters=options.max_parameter_set_text_characters,
+            max_operations=options.max_parameter_set_operations,
+        )
+        imported_uids = options.constraint_manager_imported_directive_uids
+        if type(imported_uids) is not tuple or any(
+            type(unique_id) is not str or not unique_id for unique_id in imported_uids
+        ):
+            budget.failed = True
+            raise ValueError(
+                "constraint-manager imported directive UIDs must be a tuple of nonempty strings"
+            )
+        budget.reserve_sources(len(imported_uids))
+        budget.reserve_text_characters(sum(map(len, imported_uids)))
+        return budget
+
+    def _reserve(self, count: int, remaining: int, resource: str) -> None:
+        if self.failed:
+            raise RuntimeError("parameter-set render budget is unusable after failure")
+        if type(count) is not int or count < 0 or count > remaining:
+            self.failed = True
+            raise ValueError(f"parameter-set render {resource} limit exceeded")
+
+    def reserve_sources(self, count: int) -> None:
+        self._reserve(count, self.max_sources - self.sources, "source")
+        self.sources += count
+
+    def reserve_text_characters(self, count: int) -> None:
+        self._reserve(
+            count,
+            self.max_text_characters - self.text_characters,
+            "text-character",
+        )
+        self.text_characters += count
 
 
 @dataclass
@@ -1918,6 +2210,40 @@ class SchSvgRenderContext:
     show_pins: bool = True
     show_pin_names: bool = True
     show_pin_numbers: bool = True
+    # Selected component fields may paint without clearing persisted Hidden.
+    _visible_hidden_parameter_ids: frozenset[int] = field(
+        default_factory=frozenset, init=False, repr=False
+    )
+    _source_admission: _SourceAdmission = field(
+        default_factory=_SourceAdmission, init=False, repr=False, compare=False
+    )
+    _component_overlay_capture: "_ComponentOverlayCapture | None" = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _component_variant_capture: "_ComponentVariantCapture | None" = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _parameter_render_overrides: "Mapping[int, _ParameterRenderOverride]" = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _geometry_draw_rect: tuple[float, float, float, float] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _blanket_work_budget: _BlanketRenderBudget = field(
+        default_factory=_BlanketRenderBudget, init=False, repr=False, compare=False
+    )
+    _parameter_set_work_budget: _ParameterSetRenderBudget = field(
+        default_factory=_ParameterSetRenderBudget,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _imported_parameter_set_ids: frozenset[int] = field(
+        default_factory=frozenset, init=False, repr=False, compare=False
+    )
+    _imported_parameter_ids: frozenset[int] = field(
+        default_factory=frozenset, init=False, repr=False, compare=False
+    )
     show_pin_direction: bool = (
         True  # Render electrical type glyphs (INPUT/OUTPUT/IO arrows)
     )
@@ -2048,6 +2374,108 @@ class SchSvgRenderContext:
     # This captures quirks that exist in Altium's SVG export surface but are
     # intentionally not part of the on-screen renderer behavior.
     native_svg_export: bool = False
+
+    # New constructor fields are appended after the released 2026.9.7 field
+    # prefix so positional callers retain their established bindings.
+    _prepared_parameter_set_budget: InitVar[_ParameterSetRenderBudget | None] = None
+    _horizontal_system_font_id: int = 1
+
+    # Runtime net-color preference/cache state used by managed underline lookup.
+    net_color_override_enabled: bool = False
+    net_color_overrides: dict[str, int] = field(default_factory=dict)
+
+    # Managed DrawObjectInfo and physical-view color state.
+    filtered_objects_blend: int = 75
+    af_dim_level: int = 80
+    physical_view_dim_level: int = 80
+    document_is_dimmed: bool = False
+    document_is_masked: bool = False
+
+    # Deterministic, render-local identities for source objects whose persisted
+    # UID is empty. These are deliberately absent from public geometry IR.
+    render_group_ids: dict[int, str] = field(default_factory=dict)
+
+    # Managed DrawNormal requires an owner document. The normal public SchDoc
+    # and SchLib producers always provide one; direct adapters may model null.
+    owner_document_present: bool = True
+    transparent_back_group_present: bool = True
+    # ObjectExportGraphics uses metafile line-pattern expansion even though
+    # higher-level render options independently model public painter branches.
+    _blanket_metafile_line_patterns: bool = False
+
+    def __post_init__(
+        self, _prepared_parameter_set_budget: _ParameterSetRenderBudget | None
+    ) -> None:
+        if not isinstance(self.options.paint_color_mode, SchPaintColorMode):
+            raise ValueError("paint_color_mode must be a SchPaintColorMode")
+        self._blanket_work_budget = _BlanketRenderBudget.from_options(self.options)
+        if _prepared_parameter_set_budget is None:
+            self._parameter_set_work_budget = _ParameterSetRenderBudget.from_options(
+                self.options
+            )
+        elif not isinstance(_prepared_parameter_set_budget, _ParameterSetRenderBudget):
+            raise TypeError("invalid prepared ParameterSet render budget")
+        else:
+            self._parameter_set_work_budget = _prepared_parameter_set_budget
+
+    def _capture_parameter_set_state(self) -> None:
+        """Capture imported-directive identities from the source projection."""
+        from .altium_record_sch__parameter import AltiumSchParameter
+        from .altium_record_sch__parameter_set import AltiumSchParameterSet
+
+        imported_uids = frozenset(
+            self.options.constraint_manager_imported_directive_uids
+        )
+        if not imported_uids:
+            self._imported_parameter_set_ids = frozenset()
+            self._imported_parameter_ids = frozenset()
+            return
+
+        sources = self._source_admission.source_objects
+        self._parameter_set_work_budget.reserve_sources(len(sources))
+        imported_parameter_sets: set[int] = set()
+        parameter_sources: list[tuple[AltiumSchParameter, int]] = []
+        for source in sources:
+            unique_id = str(getattr(source, "unique_id", "") or "")
+            self._parameter_set_work_budget.reserve_text_characters(len(unique_id))
+            parent = self._source_admission.parent(source)
+            if type(parent) is not AltiumSchParameterSet:
+                continue
+            parent_id = id(parent)
+            if unique_id in imported_uids:
+                imported_parameter_sets.add(parent_id)
+            if type(source) is AltiumSchParameter:
+                parameter_sources.append((source, parent_id))
+        imported_parameter_names = frozenset(("RULE", "CLASSNAME", "COMPCLASSNAME"))
+        imported_parameters: set[int] = set()
+        for source, parent_id in parameter_sources:
+            if parent_id not in imported_parameter_sets:
+                continue
+            self._parameter_set_work_budget.reserve_text_characters(len(source.name))
+            if dotnet_ordinal_ignore_case_key(source.name) in imported_parameter_names:
+                imported_parameters.add(id(source))
+        self._imported_parameter_set_ids = frozenset(imported_parameter_sets)
+        self._imported_parameter_ids = frozenset(imported_parameters)
+
+    def _parameter_set_is_imported(self, source: object) -> bool:
+        """Return captured Constraint Manager state for one ParameterSet."""
+        return id(source) in self._imported_parameter_set_ids
+
+    def _parameter_is_imported(self, source: object) -> bool:
+        """Return captured Constraint Manager state for one Parameter child."""
+        return id(source) in self._imported_parameter_ids
+
+    def render_group_id(self, source_object: object) -> str:
+        persisted = str(getattr(source_object, "unique_id", "") or "")
+        return persisted or self.render_group_ids.get(id(source_object), "")
+
+    def render_group_identity(self, source_object: object) -> str:
+        from .altium_sch_geometry_oracle import _source_render_group_identity
+
+        return _source_render_group_identity(
+            source_object,
+            self.render_group_id(source_object),
+        )
 
     def use_compile_mask_visual_overlay(self) -> bool:
         return (
@@ -2429,8 +2857,8 @@ class SchSvgRenderContext:
             svg_y = (self.sheet_height - py + self.offset_y) * self.scale
         else:
             # Fallback to old behavior if sheet_height not set
-            svg_x = altium_to_svg_x(int(px), self.offset_x, self.scale)
-            svg_y = altium_to_svg_y(int(py), self.offset_y, self.scale, self.flip_y)
+            svg_x = altium_to_svg_x(px, self.offset_x, self.scale)
+            svg_y = altium_to_svg_y(py, self.offset_y, self.scale, self.flip_y)
         return (svg_x, svg_y)
 
     def _rotate_point(self, x: float, y: float, degrees: int) -> tuple[float, float]:
@@ -2557,7 +2985,21 @@ class SchSvgRenderContext:
         """
         Create a copy of this context.
         """
-        return replace(self)
+        copied = replace(
+            self,
+            _prepared_parameter_set_budget=self._parameter_set_work_budget,
+        )
+        copied._visible_hidden_parameter_ids = self._visible_hidden_parameter_ids
+        copied._source_admission = self._source_admission
+        copied._component_overlay_capture = self._component_overlay_capture
+        copied._component_variant_capture = self._component_variant_capture
+        copied._parameter_render_overrides = self._parameter_render_overrides
+        copied._blanket_work_budget = self._blanket_work_budget
+        copied._parameter_set_work_budget = self._parameter_set_work_budget
+        copied._imported_parameter_set_ids = self._imported_parameter_set_ids
+        copied._imported_parameter_ids = self._imported_parameter_ids
+        copied._blanket_metafile_line_patterns = self._blanket_metafile_line_patterns
+        return copied
 
     def get_line_width(self, width: LineWidth) -> float:
         """

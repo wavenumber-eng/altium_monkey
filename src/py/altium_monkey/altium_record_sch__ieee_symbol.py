@@ -8,11 +8,12 @@ if TYPE_CHECKING:
     from .altium_font_manager import FontIDManager
     from .altium_sch_geometry_oracle import SchGeometryRecord
     from .altium_sch_svg_renderer import SchSvgRenderContext
-
 from .altium_sch_enums import IeeeSymbol, Rotation90, SymbolLineWidth
+from ._sch_managed_defaults import DIRECTIVE_COLOR, GRAPHICAL_FILL_COLOR
 from .altium_record_types import SchGraphicalObject, SchRecordType
 from .altium_serializer import AltiumSerializer, Fields
 from .altium_sch_record_helpers import detect_case_mode_method_from_uppercase_fields
+
 
 Point = tuple[float, float]
 Polyline = list[Point]
@@ -347,14 +348,20 @@ def _transform_arc(
         location, (cx, cy), orientation, is_mirrored, scale
     )
     rotation_degrees = float(orientation.value * 90)
-    start_angle = _normalize_angle(start_angle + rotation_degrees)
-    end_angle = _normalize_angle(end_angle + rotation_degrees)
-    if is_mirrored:
+    start_angle += rotation_degrees
+    end_angle += rotation_degrees
+    is_full_circle = abs(end_angle - start_angle - 360.0) <= 0.009999999776482582
+    if is_mirrored and not is_full_circle:
         start_angle, end_angle = (
             _normalize_angle(180.0 - end_angle),
             _normalize_angle(180.0 - start_angle),
         )
-    return (center_x, center_y, radius * scale, start_angle, end_angle)
+    if scale < 0.0 and not is_full_circle:
+        start_angle = _normalize_angle(start_angle - 180.0)
+        end_angle = _normalize_angle(end_angle - 180.0)
+    elif scale == 0.0 and not is_full_circle:
+        start_angle, end_angle = end_angle, start_angle
+    return (center_x, center_y, abs(radius * scale), start_angle, end_angle)
 
 
 def _ieee_symbol_shape(
@@ -374,14 +381,19 @@ class AltiumSchIeeeSymbol(SchGraphicalObject):
 
     def __init__(self) -> None:
         super().__init__()
+        self.unique_id = None
         self.symbol: IeeeSymbol = IeeeSymbol.AND  # Default to AND gate
         self.orientation: Rotation90 = Rotation90.DEG_0
         self.is_mirrored: bool = False
         self.line_width: SymbolLineWidth = SymbolLineWidth.ZERO
-        self.scale_factor: int = 100
+        self.scale_factor: int = 10
+        self.scale_factor_frac: int = 0
+        self.color = DIRECTIVE_COLOR
+        self.area_color = GRAPHICAL_FILL_COLOR
         # Track field presence
         self._has_symbol: bool = False
         self._has_orientation: bool = False
+        self._has_mirror: bool = False
         self._has_line_width: bool = False
         self._has_scale_factor: bool = False
 
@@ -395,13 +407,14 @@ class AltiumSchIeeeSymbol(SchGraphicalObject):
         font_manager: "FontIDManager | None" = None,
     ) -> None:
         super().parse_from_record(record, font_manager)
+        self.unique_id = None
 
         # Use serializer for field reading
         s = AltiumSerializer()
 
         # Symbol type
         symbol_val, self._has_symbol = s.read_int(
-            record, Fields.SYMBOL, default=IeeeSymbol.AND.value
+            record, Fields.SYMBOL, default=IeeeSymbol.NONE.value
         )
         self.symbol = IeeeSymbol(symbol_val)
 
@@ -412,7 +425,9 @@ class AltiumSchIeeeSymbol(SchGraphicalObject):
         self.orientation = Rotation90(orient_val)
 
         # Mirrored flag
-        self.is_mirrored, _ = s.read_bool(record, Fields.IS_MIRRORED, default=False)
+        self.is_mirrored, self._has_mirror = s.read_bool(
+            record, "Mirror", default=False
+        )
 
         # Line width
         line_width_val, self._has_line_width = s.read_int(
@@ -421,9 +436,13 @@ class AltiumSchIeeeSymbol(SchGraphicalObject):
         self.line_width = SymbolLineWidth(line_width_val)
 
         # Scale factor
-        self.scale_factor, self._has_scale_factor = s.read_int(
-            record, Fields.SCALE_FACTOR, default=100
-        )
+        (
+            self.scale_factor,
+            self.scale_factor_frac,
+            self._has_scale_factor,
+        ) = s.read_coord(record, Fields.SCALE_FACTOR.canonical, "")
+        self._apply_imported_color_defaults(area_color=False)
+        self._apply_nonpersisted_area_color_default()
 
     def serialize_to_record(self) -> dict[str, Any]:
         record = super().serialize_to_record()
@@ -431,21 +450,47 @@ class AltiumSchIeeeSymbol(SchGraphicalObject):
         # Determine case mode from raw record
         mode = self._detect_case_mode()
         s = AltiumSerializer(mode)
-        raw = self._raw_record
 
-        if self._has_symbol or self.symbol != IeeeSymbol.AND:
-            s.write_int(record, Fields.SYMBOL, self.symbol.value, raw)
-        if self._has_orientation or self.orientation != Rotation90.DEG_0:
-            s.write_int(record, Fields.ORIENTATION, self.orientation.value, raw)
+        self._serialize_managed_family_int(
+            record, s, Fields.SYMBOL.canonical, self.symbol.value
+        )
+        self._serialize_managed_family_int(
+            record, s, Fields.ORIENTATION.canonical, self.orientation.value
+        )
 
-        if self.is_mirrored:
-            s.write_bool(record, Fields.IS_MIRRORED, self.is_mirrored, raw)
+        s.remove_field(record, Fields.IS_MIRRORED)
+        self._serialize_managed_family_bool(record, s, "Mirror", self.is_mirrored)
 
-        if self._has_line_width or self.line_width != SymbolLineWidth.ZERO:
-            s.write_int(record, Fields.LINE_WIDTH, self.line_width.value, raw)
-        if self._has_scale_factor or self.scale_factor != 100:
-            s.write_int(record, Fields.SCALE_FACTOR, self.scale_factor, raw)
-
+        self._serialize_managed_family_int(
+            record, s, Fields.LINE_WIDTH.canonical, self.line_width.value
+        )
+        self._serialize_managed_family_coord(
+            record,
+            s,
+            Fields.SCALE_FACTOR.canonical,
+            "",
+            self.scale_factor,
+            self.scale_factor_frac,
+        )
+        s.remove_field(record, Fields.AREA_COLOR)
+        self._remove_fields_case_insensitively(record, ["UniqueID", "%UTF8%UniqueID"])
+        if self._raw_record is None:
+            return self._order_authored_graphical_fields(
+                record,
+                (
+                    "Symbol",
+                    "Location.X",
+                    "Location.X_Frac",
+                    "Location.Y",
+                    "Location.Y_Frac",
+                    "ScaleFactor",
+                    "ScaleFactor_Frac",
+                    "Orientation",
+                    "LineWidth",
+                    "Color",
+                    "Mirror",
+                ),
+            )
         return record
 
     _detect_case_mode = detect_case_mode_method_from_uppercase_fields
@@ -464,23 +509,54 @@ class AltiumSchIeeeSymbol(SchGraphicalObject):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_f32,
+            _geometry_item_arc_angles,
+            _geometry_item_length,
             make_pen,
             make_solid_brush,
             svg_coord_to_geometry,
             wrap_record_operations,
+        )
+        from ._altium_record_sch__harness_layout import (
+            _float_to_i32,
+            _unchecked_i32,
         )
 
         polylines, polygons, arcs = _ieee_symbol_shape(self.symbol)
         if not polylines and not polygons and not arcs:
             return None
 
-        scale = (float(self.scale_factor) / 10.0) if self.scale_factor else 1.0
-        location = (float(self.location.x), float(self.location.y))
+        scale_internal = _unchecked_i32(
+            self.scale_factor * 100_000 + self.scale_factor_frac
+        )
+        if not self._has_scale_factor and scale_internal == 0:
+            scale = 1.0
+        else:
+            scale = _geometry_item_f32(scale_internal)
+            scale = _geometry_item_f32(scale / _geometry_item_f32(100_000.0))
+            scale = _geometry_item_f32(scale / _geometry_item_f32(10.0))
+        location = (
+            _unchecked_i32(self.location.x * 100_000 + self.location.x_frac)
+            / 100_000.0,
+            _unchecked_i32(self.location.y * 100_000 + self.location.y_frac)
+            / 100_000.0,
+        )
         stroke_width_mils = _IEEE_SYMBOL_LINE_WIDTH_MILS.get(self.line_width, 0.0)
+        pen_source_width_mils = stroke_width_mils
+        if scale > 0.0:
+            compensated_width = _geometry_item_f32(
+                _geometry_item_f32(stroke_width_mils * 100_000.0) / scale
+            )
+            pen_source_width_mils = (
+                _float_to_i32(compensated_width, rounded=False) / 100_000.0
+            )
         pen_width = (
             0
             if self.line_width == SymbolLineWidth.ZERO
-            else int(round(stroke_width_mils * units_per_px))
+            else _geometry_item_length(
+                abs(pen_source_width_mils * scale * ctx.get_stroke_scale()),
+                units_per_px=units_per_px,
+            )
         )
         pen_color_raw = int(self.color) if self.color is not None else 0
         fill_color_raw = int(getattr(ctx, "sheet_area_color", 0xFFFFFF) or 0xFFFFFF)
@@ -574,14 +650,26 @@ class AltiumSchIeeeSymbol(SchGraphicalObject):
                 sheet_height_px=float(ctx.sheet_height or 0.0),
                 units_per_px=units_per_px,
             )
+            geometry_start_angle, geometry_end_angle = _geometry_item_arc_angles(
+                start_angle,
+                end_angle,
+                rotation=ctx.rotation,
+                mirror_x=ctx.mirror,
+            )
             operations.append(
                 SchGeometryOp.arc(
                     center_x=center_geometry[0],
                     center_y=center_geometry[1],
-                    width=radius_mils * 2.0 * units_per_px,
-                    height=radius_mils * 2.0 * units_per_px,
-                    start_angle=start_angle,
-                    end_angle=end_angle,
+                    width=_geometry_item_length(
+                        abs(radius_mils * 2.0 * ctx.scale),
+                        units_per_px=units_per_px,
+                    ),
+                    height=_geometry_item_length(
+                        abs(radius_mils * 2.0 * ctx.scale),
+                        units_per_px=units_per_px,
+                    ),
+                    start_angle=geometry_start_angle,
+                    end_angle=geometry_end_angle,
                     pen=pen,
                 )
             )

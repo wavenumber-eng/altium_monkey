@@ -2,10 +2,13 @@
 
 from typing import TYPE_CHECKING
 
+from ._sch_managed_defaults import WIRE_COLOR
 from .altium_record_sch__line import AltiumSchLine
-from .altium_record_types import SchRecordType
+from .altium_record_types import CoordPoint, LineStyle, SchRecordType
+from .altium_serializer import AltiumSerializer, Fields
 
 if TYPE_CHECKING:
+    from .altium_font_manager import FontIDManager
     from .altium_sch_geometry_oracle import SchGeometryRecord
     from .altium_sch_svg_renderer import SchSvgRenderContext
 
@@ -13,7 +16,7 @@ if TYPE_CHECKING:
 class AltiumSchBusEntry(AltiumSchLine):
     """
     BUS_ENTRY record.
-    
+
     Represents a bus entry point (wire-to-bus connection).
     Inherits all behavior from LINE.
     """
@@ -22,13 +25,44 @@ class AltiumSchBusEntry(AltiumSchLine):
     def record_type(self) -> SchRecordType:
         return SchRecordType.BUS_ENTRY
 
-    def serialize_to_record(self) -> dict:
+    def parse_from_record(
+        self, record: dict[str, object], font_manager: FontIDManager | None = None
+    ) -> None:
+        super().parse_from_record(record, font_manager)
+        serializer = AltiumSerializer()
+        self._parse_family_dynamic_unique_id(serializer, record)
+        self._line_style = LineStyle.SOLID
+        self._source_line_style = LineStyle.SOLID
+        self._line_style_dirty = False
+        self._apply_nonpersisted_area_color_default()
+
+    def serialize_to_record(self) -> dict[str, object]:
         record = super().serialize_to_record()
-        record.pop('LineStyle', None)
-        record.pop('LINESTYLE', None)
-        record.pop('LineStyleExt', None)
-        record.pop('LINESTYLEEXT', None)
-        return record
+        serializer = AltiumSerializer(self._detect_case_mode())
+        if self._raw_record is None or self._line_style_dirty:
+            self._remove_fields_case_insensitively(
+                record, [Fields.LINE_STYLE.canonical, Fields.LINE_STYLE_EXT.canonical]
+            )
+        self._serialize_managed_family_color(
+            record, serializer, Fields.COLOR.canonical, self.color or 0
+        )
+        self._serialize_family_dynamic_unique_id(record, serializer)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "UniqueID",
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Corner.X",
+                "Corner.X_Frac",
+                "Corner.Y",
+                "Corner.Y_Frac",
+                "LineWidth",
+                "Color",
+            ),
+        )
 
     def to_geometry(
         self,
@@ -44,6 +78,7 @@ class AltiumSchBusEntry(AltiumSchLine):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
             make_pen,
             svg_coord_to_geometry,
             wrap_record_operations,
@@ -67,7 +102,9 @@ class AltiumSchBusEntry(AltiumSchLine):
             ),
         ]
 
-        stroke_width_mils = float(LINE_WIDTH_MILS.get(self.line_width, DEFAULT_LINE_WIDTH))
+        stroke_width_mils = float(
+            LINE_WIDTH_MILS.get(self.line_width, DEFAULT_LINE_WIDTH)
+        )
         inflate = max(stroke_width_mils, 1.0)
         min_x = min(float(self.location.x), float(self.corner.x)) - inflate
         max_x = max(float(self.location.x), float(self.corner.x)) + inflate
@@ -91,7 +128,13 @@ class AltiumSchBusEntry(AltiumSchLine):
                 [
                     SchGeometryOp.lines(
                         geometry_points,
-                        pen=make_pen(color_raw, width=int(round(stroke_width_mils * units_per_px))),
+                        pen=make_pen(
+                            color_raw,
+                            width=_geometry_item_length(
+                                stroke_width_mils * ctx.get_stroke_scale(),
+                                units_per_px=units_per_px,
+                            ),
+                        ),
                     )
                 ],
                 units_per_px=units_per_px,
@@ -104,3 +147,10 @@ class AltiumSchBusEntry(AltiumSchLine):
             f"to=({self.corner.x}, {self.corner.y})>"
         )
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._init_family_dynamic_unique_id()
+        self.corner = CoordPoint(10, 10)
+        self.color = WIRE_COLOR
+        self._apply_nonpersisted_area_color_default()
+        self._capture_graphical_source_state()

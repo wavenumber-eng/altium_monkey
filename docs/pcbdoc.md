@@ -16,6 +16,19 @@ Use it when you need to:
 8. inspect and author user-defined PCB unions
 9. inventory extractable footprints and embedded payloads before selecting one
 
+## Loading And Validation Boundary
+
+`AltiumPcbDoc.from_file(...)` and `from_bytes(...)` parse the requested board
+without building an additional whole-document record-state snapshot. This keeps
+ordinary inspection, rendering, and authoring proportional to the work the
+caller requested.
+
+Loading proves that the supported document structures can be parsed; it does
+not certify that the source is a compiled, electrically valid, or otherwise
+known-good Altium design. Manufacturing and release workflows should begin
+from a caller-selected saved input and apply the validation required by their
+specific output.
+
 ## Object Model
 
 PcbDoc does not yet use the generic `ObjectCollection` API used by SchDoc and
@@ -42,6 +55,22 @@ pcbdoc.save("updated.PcbDoc")
 Direct edits to typed lists are advanced usage. They can be appropriate for
 read-preserving mutation, but callers are responsible for keeping indexes,
 ownership, stream order, and related binary state valid.
+
+When a supported typed list is part of the document writer's owned state,
+`save(...)` writes its counted section atomically: the current record count in
+`Header` and the serialized records in `Data` are regenerated together. This
+also applies when removing the final record, where both the zero count and an
+empty Data stream must replace the source streams. Unsupported and otherwise
+unowned sections remain lossless passthrough. A source-backed save may still
+regenerate an owned section that the caller did not edit; streams outside the
+selected regenerated set remain byte-identical.
+
+This count synchronization makes narrow direct-list insertion and deletion
+safe from stale-header corruption; it is not a generic PCB deletion or
+relationship-management API. Removing a component, pad, model, or another
+record can require coordinated updates to owner indexes, companion sections,
+or references. Prefer a high-level helper when one exists, and reopen advanced
+direct-list output in Altium Designer as an interoperability check.
 
 ## User Unions
 
@@ -160,6 +189,25 @@ percent storage. Read the exact value back with
 `pad.corner_radius_mils_on_layer(layer)`. Whole-number percents keep the
 legacy integer-only storage, so existing output is unchanged. See the
 [PcbDoc format contract](format_contracts/pcbdoc.md) for the storage details.
+
+Parsed component pads expose their stored removed-copper-land state through
+`pad.removed_copper_layers` and `pad.is_copper_land_removed(layer)`. Change one
+legacy Top/Mid1..Mid30/Bottom state explicitly with:
+
+```python
+pad.set_copper_land_removed(PcbLayer.MID1, True)
+pcbdoc.save("updated.PcbDoc")
+```
+
+The setter requires an actual legacy copper `PcbLayer` and a `bool`. Saving a
+valid record preserves its per-layer geometry and full-stack data while
+updating the map. Ambiguous, partial, noncanonical, or malformed source maps
+reject mutation rather than guessing. Use
+`pad.has_stored_copper_land_on_layer(layer)` when you need the structural
+stored-land applicability; it does not alter geometry or replace rendering or
+manufacturing policy. Pad and via removed-layer storage are independent.
+For an all-false map-only legacy pad, save and reopen after the first removal
+before applying another layer removal.
 
 `AltiumPcbDoc.add_custom_pad(...)` authors a board custom pad as an anchor pad
 plus native custom-shape region records. `outline_points_mils` and
@@ -563,7 +611,9 @@ PcbDoc does not yet use `ObjectCollection`.
 There is no public generic PcbDoc object deletion API in this release.
 
 Mutations outside the high-level helper methods generally require direct
-record-list edits and should be validated carefully.
+record-list edits and should be validated carefully. Counted Header/Data
+synchronization is automatic for owned sections, but relationship cleanup and
+cascading deletion remain the caller's responsibility.
 
 ## Examples
 

@@ -11,6 +11,7 @@ from .altium_record_types import (
     SchGraphicalObject,
     SchRecordType,
 )
+from ._sch_managed_defaults import GRAPHICAL_BORDER_COLOR, GRAPHICAL_FILL_COLOR
 from .altium_serializer import AltiumSerializer, Fields
 from .altium_sch_record_helpers import (
     _coord_scalar_to_native_units,
@@ -40,12 +41,14 @@ class AltiumSchEllipse(
 
     def __init__(self) -> None:
         super().__init__()
-        self.radius: int = 0  # X radius (base integer part)
+        self.color = GRAPHICAL_BORDER_COLOR
+        self.area_color = GRAPHICAL_FILL_COLOR
+        self.radius: int = 20  # X radius (base integer part)
         self.radius_frac: int = 0  # X radius fractional part (/100000)
-        self.secondary_radius: int = 0  # Y radius (base integer part)
+        self.secondary_radius: int = 10  # Y radius (base integer part)
         self.secondary_radius_frac: int = 0  # Y radius fractional part (/100000)
         self.line_width: LineWidth = LineWidth.SMALLEST
-        self.is_solid: bool = False
+        self.is_solid: bool = True
         self.transparent: bool = (
             False  # Unchecked checkboxes don't appear in Altium records
         )
@@ -82,19 +85,19 @@ class AltiumSchEllipse(
         # Parse radius fields with presence tracking
         # CRITICAL: Default must be 0, not 10. When only Radius_Frac is present,
         # the base radius is implicitly 0 (e.g., Radius_Frac=78700 -> radius=0.787)
-        self.radius, self._has_radius_base = s.read_int(
-            record, Fields.RADIUS, default=0
+        self.radius, self.radius_frac, self._has_radius_base = s.read_coord(
+            record, Fields.RADIUS.canonical
         )
-        self.radius_frac, has_radius_frac = s.read_int(
-            record, Fields.RADIUS_FRAC, default=0
-        )
+        _, has_radius_frac = s.read_int(record, Fields.RADIUS_FRAC, default=0)
         self._has_radius = self._has_radius_base or has_radius_frac
 
         # Parse secondary radius fields (same default=0 logic)
-        self.secondary_radius, self._has_secondary_radius_base = s.read_int(
-            record, Fields.SECONDARY_RADIUS, default=0
-        )
-        self.secondary_radius_frac, has_sec_radius_frac = s.read_int(
+        (
+            self.secondary_radius,
+            self.secondary_radius_frac,
+            self._has_secondary_radius_base,
+        ) = s.read_coord(record, Fields.SECONDARY_RADIUS.canonical)
+        _, has_sec_radius_frac = s.read_int(
             record, Fields.SECONDARY_RADIUS_FRAC, default=0
         )
         self._has_secondary_radius = (
@@ -107,16 +110,14 @@ class AltiumSchEllipse(
         )
         self.line_width = LineWidth(line_width_val)
 
-        # Parse boolean properties
-        # NOTE: Altium native defaults IsSolid=True for new ellipses (file format implementation),
-        # but native Altium's SVG export renders ellipses as stroke-only regardless of IsSolid.
-        # We match the SVG export behavior (no fill when IsSolid not explicitly True).
+        # Sparse import overwrites the authored fill default.
         self.is_solid, self._has_is_solid = s.read_bool(
             record, Fields.IS_SOLID, default=False
         )
         self.transparent, self._has_transparent = s.read_bool(
             record, Fields.TRANSPARENT, default=False
         )
+        self._apply_imported_color_defaults(area_color=True)
 
         # CRITICAL: Handle missing AreaColor field - DON'T set defaults here
         # Leave area_color as-is from parent class parsing
@@ -130,37 +131,40 @@ class AltiumSchEllipse(
         # Determine case mode from raw record
         mode = self._detect_case_mode()
         s = AltiumSerializer(mode)
-        raw = self._raw_record
 
         # Note: Always output Location.X/Y to match native export (no omission when 0)
 
         # Radius/Radius_Frac handling:
         # - Only output base Radius if source explicitly had it OR value is non-zero
         # - Always output Radius_Frac if non-zero (even with zero base)
-        if self._has_radius_base or self.radius != 0:
-            s.write_int(record, Fields.RADIUS, self.radius, raw)
-        if self.radius_frac:
-            s.write_int(record, Fields.RADIUS_FRAC, self.radius_frac, raw)
+        self._serialize_managed_family_coord(
+            record, s, Fields.RADIUS.canonical, "", self.radius, self.radius_frac
+        )
 
         # Same logic for SecondaryRadius
-        if self._has_secondary_radius_base or self.secondary_radius != 0:
-            s.write_int(record, Fields.SECONDARY_RADIUS, self.secondary_radius, raw)
-        if self.secondary_radius_frac:
-            s.write_int(
-                record, Fields.SECONDARY_RADIUS_FRAC, self.secondary_radius_frac, raw
-            )
+        self._serialize_managed_family_coord(
+            record,
+            s,
+            Fields.SECONDARY_RADIUS.canonical,
+            "",
+            self.secondary_radius,
+            self.secondary_radius_frac,
+        )
 
         # Only export LineWidth if it was present in source OR has non-default value
-        if self._has_line_width or self.line_width != LineWidth.SMALLEST:
-            s.write_int(record, Fields.LINE_WIDTH, self.line_width.value, raw)
+        self._serialize_managed_family_int(
+            record, s, Fields.LINE_WIDTH.canonical, self.line_width.value
+        )
 
         # Only export IsSolid if it was present in source OR is True
-        if self._has_is_solid or self.is_solid:
-            s.write_bool(record, Fields.IS_SOLID, self.is_solid, raw)
+        self._serialize_managed_family_bool(
+            record, s, Fields.IS_SOLID.canonical, self.is_solid
+        )
 
         # Transparent field: Export if it was present in source OR is True
-        if self._has_transparent or self.transparent:
-            s.write_bool(record, Fields.TRANSPARENT, self.transparent, raw)
+        self._serialize_managed_family_bool(
+            record, s, Fields.TRANSPARENT.canonical, self.transparent
+        )
 
         # Note: Ellipse does NOT serialize LineStyle or LineStyleExt even if
         # stale fields were present in a parsed raw record.
@@ -171,7 +175,26 @@ class AltiumSchEllipse(
         if self.owner_index == 0 or self.owner_index is None:
             s.remove_field(record, Fields.OWNER_INDEX)
 
-        return record
+        self._move_geometry_identity_to_end_if_needed(record)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Radius",
+                "Radius_Frac",
+                "SecondaryRadius",
+                "SecondaryRadius_Frac",
+                "LineWidth",
+                "Color",
+                "AreaColor",
+                "IsSolid",
+                "Transparent",
+                "UniqueID",
+            ),
+        )
 
     _detect_case_mode = detect_case_mode_method_from_dotted_uppercase_fields
 
@@ -189,43 +212,31 @@ class AltiumSchEllipse(
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
+            make_rounded_rectangle_operation,
             make_pen,
             make_solid_brush,
-            svg_coord_to_geometry,
             wrap_record_operations,
         )
 
         cx, cy = ctx.transform_coord_precise(self.location)
-        cx, cy = round(cx, 3), round(cy, 3)
         radius_units = _coord_scalar_to_native_units(self.radius, self.radius_frac)
         secondary_radius_units = _coord_scalar_to_native_units(
             self.secondary_radius,
             self.secondary_radius_frac,
         )
-        rx = round(radius_units * ctx.scale, 3)
-        ry = round(secondary_radius_units * ctx.scale, 3)
+        rx = radius_units * ctx.scale
+        ry = secondary_radius_units * ctx.scale
         renderable = radius_units > 0.0 and secondary_radius_units > 0.0
 
-        geo_left, geo_top = svg_coord_to_geometry(
-            cx - rx,
-            cy - ry,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
-        )
-        geo_right, geo_bottom = svg_coord_to_geometry(
-            cx + rx,
-            cy + ry,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
-        )
-
-        rx_units = int(round(rx * units_per_px))
-        ry_units = int(round(ry * units_per_px))
         stroke_width_mils = LINE_WIDTH_MILS.get(self.line_width, 1.0)
         pen_width = (
             0
             if self.line_width == LineWidth.SMALLEST
-            else int(round(stroke_width_mils * units_per_px))
+            else _geometry_item_length(
+                stroke_width_mils * ctx.get_stroke_scale(),
+                units_per_px=units_per_px,
+            )
         )
 
         operations: list[SchGeometryOp] = []
@@ -246,13 +257,15 @@ class AltiumSchEllipse(
                 else stroke_color_raw
             )
             operations.append(
-                SchGeometryOp.rounded_rectangle(
-                    x1=geo_left,
-                    y1=geo_top,
-                    x2=geo_right,
-                    y2=geo_bottom,
-                    corner_x_radius=rx_units,
-                    corner_y_radius=ry_units,
+                make_rounded_rectangle_operation(
+                    x1_px=cx - rx,
+                    y1_px=cy - ry,
+                    x2_px=cx + rx,
+                    y2_px=cy + ry,
+                    sheet_height_px=float(ctx.sheet_height or 0.0),
+                    units_per_px=units_per_px,
+                    corner_x_radius_px=rx,
+                    corner_y_radius_px=ry,
                     brush=make_solid_brush(
                         fill_color_raw,
                         alpha=SEMI_TRANSPARENT_ALPHA if self.transparent else 0xFF,
@@ -262,13 +275,15 @@ class AltiumSchEllipse(
 
         if renderable:
             operations.append(
-                SchGeometryOp.rounded_rectangle(
-                    x1=geo_left,
-                    y1=geo_top,
-                    x2=geo_right,
-                    y2=geo_bottom,
-                    corner_x_radius=rx_units,
-                    corner_y_radius=ry_units,
+                make_rounded_rectangle_operation(
+                    x1_px=cx - rx,
+                    y1_px=cy - ry,
+                    x2_px=cx + rx,
+                    y2_px=cy + ry,
+                    sheet_height_px=float(ctx.sheet_height or 0.0),
+                    units_per_px=units_per_px,
+                    corner_x_radius_px=rx,
+                    corner_y_radius_px=ry,
                     pen=make_pen(
                         stroke_color_raw,
                         width=pen_width,

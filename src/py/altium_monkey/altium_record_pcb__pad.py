@@ -6,7 +6,7 @@ import html
 import logging
 import math
 import struct
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from .altium_pcb_enums import PadShape
 from .altium_pcb_layer_ref import PcbLayerRef, resolve_pcb_primitive_layer_state
@@ -23,7 +23,12 @@ from .altium_pcb_hole_tolerance import (
     hole_tolerance_internal_from_mils,
     hole_tolerance_mils_from_internal,
 )
-from .altium_record_types import PcbGraphicalObject, PcbLayer, PcbRecordType
+from .altium_record_types import (
+    MAX_INDEXED_ITEMS_PER_RECORD,
+    PcbGraphicalObject,
+    PcbLayer,
+    PcbRecordType,
+)
 
 if TYPE_CHECKING:
     from .altium_pcb_layer_ref import PcbLayerRegistry, PcbPrimitiveLayerState
@@ -77,6 +82,31 @@ _PAD_FLAGS1_TENT_BOTTOM = 0x40
 _PAD_FLAGS1_FAB_TESTPOINT_TOP = 0x80
 _PAD_FLAGS2_FAB_TESTPOINT_BOTTOM = 0x01
 _PAD_ASSY_TESTPOINT_BYTE_MASK = 0x01
+_PAD_SUBRECORD6_GEOMETRY_BYTES = 596
+_PAD_REMOVED_COPPER_LAYER_COUNT = 32
+_PAD_SUBRECORD6_MAP_END = (
+    _PAD_SUBRECORD6_GEOMETRY_BYTES + _PAD_REMOVED_COPPER_LAYER_COUNT
+)
+_PAD_SUBRECORD6_TABLE_START = _PAD_SUBRECORD6_MAP_END + 8
+_PAD_SUBRECORD6_KNOWN_ENTRY_BYTES = 15
+_PAD_FULL_STACK_BASE_LAYER_CODE = 4
+_PAD_FULL_STACK_BASE_MODE_FLAGS = 0x0180
+_PAD_FULL_STACK_DEFAULT_CORNER_PERCENT = 50
+_PAD_ALT_SHAPE_ROUNDED_RECTANGLE = 9
+_PAD_SUBRECORD6_SEQUENCE_FIELDS = (
+    (0, 0, 29, 4),
+    (1, 116, 29, 4),
+    (2, 232, 29, 1),
+    (6, 275, 32, 4),
+    (7, 403, 32, 4),
+    (8, 532, 32, 1),
+    (9, 564, 32, 1),
+)
+_PAD_SUBRECORD6_SCALAR_FIELDS = (
+    (3, 262, 1),
+    (4, 263, 4),
+    (5, 267, 8),
+)
 
 
 def _svg_side_expansion_iu(
@@ -212,6 +242,22 @@ class AltiumPcbPad(PcbGraphicalObject):
         # Tuple format:
         # (layer_code, mode_flags, shape_value, size_x_iu, size_y_iu, corner_pct)
         self.full_stack_layer_entries: list[tuple[int, int, int, int, int, int]] = []
+        self._removed_copper_layer_values: list[bool] = [
+            False
+        ] * _PAD_REMOVED_COPPER_LAYER_COUNT
+        self._removed_copper_layer_original: tuple[bool, ...] = (
+            False,
+        ) * _PAD_REMOVED_COPPER_LAYER_COUNT
+        self._removed_copper_layer_map_present: bool = False
+        self._removed_copper_layer_map_canonical: bool = False
+        self._removed_copper_layer_pending: bool = False
+        self._subrecord6_tail_framing_valid: bool = True
+        self._subrecord6_entry_count: int | None = None
+        self._subrecord6_entry_stride: int | None = None
+        self._subrecord6_entry_suffixes: list[bytes] = []
+        self._subrecord6_residual_data: bytes = b""
+        self._subrecord6_geometry_signature: tuple | None = None
+        self._subrecord6_full_stack_signature: tuple | None = None
         # Exact fractional corner-radius percentages keyed by layer token such
         # as "TOP". Sourced from the document/footprint CornerRadiusChamfer
         # stream (SCR*.CRPCTEX) or fractional authoring; the per-layer
@@ -261,6 +307,90 @@ class AltiumPcbPad(PcbGraphicalObject):
         Return the PCB pad record discriminator.
         """
         return PcbRecordType.PAD
+
+    @property
+    def removed_copper_layers(self) -> tuple[bool, ...]:
+        """Return removed-land state in legacy copper-layer order."""
+        return tuple(self._removed_copper_layer_values)
+
+    @property
+    def has_removed_copper_layer_map(self) -> bool:
+        """Return whether the complete persisted 32-byte map is present."""
+        return self._removed_copper_layer_map_present
+
+    @property
+    def removed_copper_layer_map_is_canonical(self) -> bool:
+        """Return whether every persisted map byte is zero or one."""
+        return self._removed_copper_layer_map_canonical
+
+    @staticmethod
+    def _removed_copper_layer_index(layer: PcbLayer) -> int:
+        if not isinstance(layer, PcbLayer):
+            raise TypeError("layer must be a PcbLayer")
+        if not layer.is_copper():
+            raise ValueError("layer must be a legacy copper PcbLayer")
+        return int(layer.value) - 1
+
+    def is_copper_land_removed(self, layer: PcbLayer) -> bool:
+        """Return the stored removed-land state for one legacy copper layer."""
+        return self._removed_copper_layer_values[
+            self._removed_copper_layer_index(layer)
+        ]
+
+    def _validate_removed_map_transition(
+        self,
+        index: int,
+        removed: bool,
+    ) -> None:
+        length = len(self._subrecord6_data)
+        if length not in {0, _PAD_SUBRECORD6_GEOMETRY_BYTES}:
+            if not self._removed_copper_layer_map_present:
+                raise ValueError("cannot mutate a partial pad removed-layer map")
+            if not self._removed_copper_layer_map_canonical:
+                raise ValueError("cannot mutate a noncanonical pad removed-layer map")
+            if not self._subrecord6_tail_framing_valid:
+                raise ValueError(
+                    "cannot mutate pad removed-layer map with invalid framing"
+                )
+        if length != _PAD_SUBRECORD6_MAP_END:
+            return
+        if removed == self._removed_copper_layer_values[index]:
+            return
+        if any(self._removed_copper_layer_original):
+            raise ValueError(
+                "cannot change an existing true bit in a 628-byte pad removed-layer map"
+            )
+        if (
+            tuple(self._removed_copper_layer_values)
+            != self._removed_copper_layer_original
+        ):
+            prospective = list(self._removed_copper_layer_values)
+            prospective[index] = removed
+            if tuple(prospective) != self._removed_copper_layer_original:
+                raise ValueError(
+                    "cannot stage another pending true bit on a 628-byte pad map"
+                )
+
+    def set_copper_land_removed(self, layer: PcbLayer, removed: bool) -> None:
+        """Set one legacy copper-layer removed-land state."""
+        index = self._removed_copper_layer_index(layer)
+        if type(removed) is not bool:
+            raise TypeError("removed must be a bool")
+        self._validate_removed_map_transition(index, removed)
+
+        self._removed_copper_layer_values[index] = removed
+        if not self._removed_copper_layer_map_present:
+            self._removed_copper_layer_pending = any(self._removed_copper_layer_values)
+
+    def has_stored_copper_land_on_layer(self, layer: PcbLayer) -> bool:
+        """Return structural stored-land applicability for a copper layer."""
+        self._removed_copper_layer_index(layer)
+        if self.is_copper_land_removed(layer):
+            return False
+        source_layer = self._source_layer()
+        if self.is_through_hole or source_layer == PcbLayer.MULTI_LAYER:
+            return True
+        return source_layer == layer
 
     def layer_state(
         self,
@@ -804,7 +934,7 @@ class AltiumPcbPad(PcbGraphicalObject):
             pos += 32
 
             # Optional tail block used by full-stack pads. Observed format:
-            # - 32 bytes reserved/legacy payload
+            # - 32-byte removed-copper-layer map
             # - uint32 entry_count
             # - uint32 entry_stride (observed 15)
             # - entry_count * entry_stride bytes
@@ -814,41 +944,73 @@ class AltiumPcbPad(PcbGraphicalObject):
             #   entry[5:9]   int32 size X (internal units)
             #   entry[9:13]  int32 size Y (internal units)
             #   entry[13:15] uint16 corner % / mode payload
-            self._parse_subrecord6_full_stack_entries(content)
-
         elif subrecord_len != 0:
             log.debug(
                 "Pad SubRecord 6 unexpected length: %d (expected 0 or >=596)",
                 subrecord_len,
             )
 
+        self._parse_subrecord6_tail(content)
+        self._subrecord6_geometry_signature = (
+            self._subrecord6_geometry_state_signature()
+        )
+        self._subrecord6_full_stack_signature = self._full_stack_state_signature()
         self._subrecord6_signature = self._subrecord6_state_signature()
 
         return 4 + subrecord_len
 
-    def _parse_subrecord6_full_stack_entries(self, content: bytes) -> None:
-        """
-        Parse optional SubRecord 6 full-stack entry tail.
-        """
+    def _parse_subrecord6_tail(self, content: bytes) -> None:
+        """Parse the removed-land map and bounded full-stack tail."""
         self.full_stack_layer_entries = []
+        available_map = content[_PAD_SUBRECORD6_GEOMETRY_BYTES:_PAD_SUBRECORD6_MAP_END]
+        self._removed_copper_layer_values = [bool(value) for value in available_map]
+        self._removed_copper_layer_values.extend(
+            [False]
+            * (_PAD_REMOVED_COPPER_LAYER_COUNT - len(self._removed_copper_layer_values))
+        )
+        self._removed_copper_layer_map_present = (
+            len(available_map) == _PAD_REMOVED_COPPER_LAYER_COUNT
+        )
+        self._removed_copper_layer_map_canonical = (
+            self._removed_copper_layer_map_present
+            and all(value in {0, 1} for value in available_map)
+        )
+        self._removed_copper_layer_original = tuple(self._removed_copper_layer_values)
+        self._removed_copper_layer_pending = False
+        self._subrecord6_entry_count = None
+        self._subrecord6_entry_stride = None
+        self._subrecord6_entry_suffixes = []
+        self._subrecord6_residual_data = b""
 
-        tail_offset = 596
-        header_size = 40
-        if len(content) < tail_offset + header_size:
+        length = len(content)
+        self._subrecord6_tail_framing_valid = length in {
+            0,
+            _PAD_SUBRECORD6_GEOMETRY_BYTES,
+            _PAD_SUBRECORD6_MAP_END,
+        }
+        if length < _PAD_SUBRECORD6_TABLE_START:
             return
 
-        count = struct.unpack("<I", content[tail_offset + 32 : tail_offset + 36])[0]
-        stride = struct.unpack("<I", content[tail_offset + 36 : tail_offset + 40])[0]
-        if count <= 0 or stride < 15:
+        count, stride = struct.unpack_from("<II", content, _PAD_SUBRECORD6_MAP_END)
+        self._subrecord6_entry_count = count
+        self._subrecord6_entry_stride = stride
+        remaining = length - _PAD_SUBRECORD6_TABLE_START
+        if count > MAX_INDEXED_ITEMS_PER_RECORD:
+            return
+        if count == 0:
+            self._subrecord6_residual_data = content[_PAD_SUBRECORD6_TABLE_START:]
+            self._subrecord6_tail_framing_valid = True
+            return
+        if stride < _PAD_SUBRECORD6_KNOWN_ENTRY_BYTES:
+            return
+        if count > remaining // stride:
             return
 
-        data_start = tail_offset + header_size
-        data_end = data_start + (count * stride)
-        if data_end > len(content):
-            return
+        data_end = _PAD_SUBRECORD6_TABLE_START + count * stride
 
         entries: list[tuple[int, int, int, int, int, int]] = []
-        pos = data_start
+        suffixes: list[bytes] = []
+        pos = _PAD_SUBRECORD6_TABLE_START
         for _ in range(count):
             rec = content[pos : pos + stride]
             layer_code = struct.unpack("<h", rec[0:2])[0]
@@ -860,9 +1022,32 @@ class AltiumPcbPad(PcbGraphicalObject):
             entries.append(
                 (layer_code, mode_flags, shape_value, size_x, size_y, corner_pct)
             )
+            suffixes.append(rec[_PAD_SUBRECORD6_KNOWN_ENTRY_BYTES:])
             pos += stride
 
         self.full_stack_layer_entries = entries
+        self._subrecord6_entry_suffixes = suffixes
+        self._subrecord6_residual_data = content[data_end:]
+        self._subrecord6_tail_framing_valid = True
+
+    def _subrecord6_geometry_state_signature(self) -> tuple:
+        """Return the typed 596-byte geometry signature."""
+        return (
+            tuple(self.inner_size_x),
+            tuple(self.inner_size_y),
+            tuple(self.inner_shape),
+            int(self.hole_shape or 0),
+            int(self.slot_size or 0),
+            float(self.slot_rotation or 0.0),
+            tuple(self.hole_offset_x),
+            tuple(self.hole_offset_y),
+            tuple(self.alt_shape),
+            tuple(self.corner_radius),
+        )
+
+    def _full_stack_state_signature(self) -> tuple:
+        """Return the known full-stack entry signature."""
+        return tuple(tuple(entry) for entry in self.full_stack_layer_entries)
 
     def _subrecord6_state_signature(self) -> tuple:
         """
@@ -877,16 +1062,8 @@ class AltiumPcbPad(PcbGraphicalObject):
             return value
 
         return (
-            _freeze(self.inner_size_x),
-            _freeze(self.inner_size_y),
-            _freeze(self.inner_shape),
-            int(self.hole_shape or 0),
-            int(self.slot_size or 0),
-            float(self.slot_rotation or 0.0),
-            _freeze(self.hole_offset_x),
-            _freeze(self.hole_offset_y),
-            _freeze(self.alt_shape),
-            _freeze(self.corner_radius),
+            _freeze(self._subrecord6_geometry_state_signature()),
+            tuple(self._removed_copper_layer_values),
             _freeze(self.full_stack_layer_entries),
         )
 
@@ -1102,15 +1279,17 @@ class AltiumPcbPad(PcbGraphicalObject):
                 self.alt_shape,
                 self.corner_radius,
                 self.full_stack_layer_entries,
+                self._removed_copper_layer_pending,
             )
         )
 
-    def _build_subrecord6_data(self) -> bytes:
+    def _synthesize_subrecord6_data(self) -> bytes:
         """
         Synthesize SubRecord 6 (SizeAndShapeByLayer) from typed fields.
         """
         if not self._has_synthesized_subrecord6_fields():
             return b""
+        self._validate_full_stack_entry_count()
 
         def _pad_list(values: list[int], count: int, default: int = 0) -> list[int]:
             out = list(values[:count])
@@ -1174,8 +1353,339 @@ class AltiumPcbPad(PcbGraphicalObject):
                 entry.extend(struct.pack("<H", int(corner_pct) & 0xFFFF))
                 content.extend(entry)
 
-        built = bytes(content)
+        return bytes(content)
+
+    @staticmethod
+    def _encode_full_stack_entry(
+        entry: tuple[int, int, int, int, int, int],
+    ) -> bytes:
+        layer_code, mode_flags, shape_value, size_x, size_y, corner_pct = entry
+        return struct.pack(
+            "<hHBiiH",
+            int(layer_code),
+            int(mode_flags) & 0xFFFF,
+            int(shape_value) & 0xFF,
+            int(size_x),
+            int(size_y),
+            int(corner_pct) & 0xFFFF,
+        )
+
+    def _removed_map_base_full_stack_entry(
+        self,
+    ) -> tuple[int, int, int, int, int, int]:
+        """Return the native base entry used when first materializing the map."""
+        raw_alt_shape = int(self.alt_shape[0]) if self.alt_shape else 0
+        rounded = raw_alt_shape == _PAD_ALT_SHAPE_ROUNDED_RECTANGLE
+        shape_value = raw_alt_shape if rounded else int(self.top_shape)
+        corner_pct = (
+            int(self.corner_radius[0])
+            if rounded and self.corner_radius
+            else _PAD_FULL_STACK_DEFAULT_CORNER_PERCENT
+        )
+        return (
+            _PAD_FULL_STACK_BASE_LAYER_CODE,
+            _PAD_FULL_STACK_BASE_MODE_FLAGS,
+            shape_value,
+            int(self.top_width),
+            int(self.top_height),
+            corner_pct,
+        )
+
+    def _materialize_removed_map_tail(
+        self,
+        content: bytes,
+        *,
+        source_was_empty: bool,
+    ) -> bytes:
+        """Materialize the Altium-authored 32-byte map and base table entry."""
+        if len(content) not in {
+            _PAD_SUBRECORD6_GEOMETRY_BYTES,
+            _PAD_SUBRECORD6_MAP_END,
+        }:
+            raise ValueError(
+                "cannot materialize pad removed-layer map from this layout"
+            )
+
+        geometry = bytearray(content[:_PAD_SUBRECORD6_GEOMETRY_BYTES])
+        if source_was_empty and not self.alt_shape:
+            geometry[532:564] = bytes([int(PadShape.CIRCLE)]) * 32
+        removed_map = bytes(int(value) for value in self._removed_copper_layer_values)
+        entry = self._encode_full_stack_entry(self._removed_map_base_full_stack_entry())
+        return bytes(geometry) + removed_map + struct.pack("<II", 1, 15) + entry
+
+    def _overlay_removed_copper_layer_map(self, content: bytes) -> bytes:
+        """Patch only the canonical map lane of a framed tail."""
+        if len(content) < _PAD_SUBRECORD6_TABLE_START:
+            raise ValueError("cannot overlay pad removed-layer map without a table")
+        if not self._subrecord6_tail_framing_valid:
+            raise ValueError("cannot mutate pad removed-layer map with invalid framing")
+        overlaid = bytearray(content)
+        overlaid[_PAD_SUBRECORD6_GEOMETRY_BYTES:_PAD_SUBRECORD6_MAP_END] = bytes(
+            int(value) for value in self._removed_copper_layer_values
+        )
+        return bytes(overlaid)
+
+    def _overlay_full_stack_entries(self, content: bytes) -> bytes:
+        """Overlay known full-stack fields without inventing unknown suffixes."""
+        self._validate_full_stack_entry_count()
+        if not self._subrecord6_tail_framing_valid:
+            raise ValueError("cannot mutate full-stack entries with invalid framing")
+
+        entries = self.full_stack_layer_entries
+        length = len(content)
+        if length == _PAD_SUBRECORD6_GEOMETRY_BYTES:
+            prefix = content + bytes(_PAD_REMOVED_COPPER_LAYER_COUNT)
+            encoded = b"".join(
+                self._encode_full_stack_entry(entry) for entry in entries
+            )
+            return prefix + struct.pack("<II", len(entries), 15) + encoded
+        if length == _PAD_SUBRECORD6_MAP_END:
+            encoded = b"".join(
+                self._encode_full_stack_entry(entry) for entry in entries
+            )
+            return content + struct.pack("<II", len(entries), 15) + encoded
+        if length < _PAD_SUBRECORD6_TABLE_START:
+            raise ValueError("cannot mutate full-stack entries with invalid framing")
+
+        original_count = self._subrecord6_entry_count
+        stride = self._subrecord6_entry_stride
+        if original_count is None or stride is None:
+            raise ValueError("cannot mutate full-stack entries with invalid framing")
+        if stride > _PAD_SUBRECORD6_KNOWN_ENTRY_BYTES:
+            if len(entries) != original_count:
+                raise ValueError(
+                    "cannot change full-stack cardinality with an unknown entry stride"
+                )
+            overlaid = bytearray(content)
+            for index, entry in enumerate(entries):
+                start = _PAD_SUBRECORD6_TABLE_START + index * stride
+                overlaid[start : start + _PAD_SUBRECORD6_KNOWN_ENTRY_BYTES] = (
+                    self._encode_full_stack_entry(entry)
+                )
+            return bytes(overlaid)
+        if stride != _PAD_SUBRECORD6_KNOWN_ENTRY_BYTES and entries:
+            raise ValueError(
+                "cannot add full-stack entries with an unknown entry stride"
+            )
+
+        encoded = b"".join(self._encode_full_stack_entry(entry) for entry in entries)
+        prefix = bytearray(content[:_PAD_SUBRECORD6_TABLE_START])
+        struct.pack_into("<II", prefix, _PAD_SUBRECORD6_MAP_END, len(entries), 15)
+        return bytes(prefix) + encoded + self._subrecord6_residual_data
+
+    def _validate_full_stack_entry_count(self) -> None:
+        if len(self.full_stack_layer_entries) > MAX_INDEXED_ITEMS_PER_RECORD:
+            raise ValueError("pad full-stack entries exceed the 65,536 item limit")
+
+    @staticmethod
+    def _overlay_changed_geometry_sequence(
+        target: bytearray,
+        synthesized: bytes,
+        original_values: tuple[object, ...],
+        current_values: tuple[object, ...],
+        *,
+        offset: int,
+        count: int,
+        width: int,
+    ) -> None:
+        for index in range(count):
+            original = original_values[index] if index < len(original_values) else None
+            current = current_values[index] if index < len(current_values) else None
+            if original == current:
+                continue
+            start = offset + index * width
+            target[start : start + width] = synthesized[start : start + width]
+
+    def _overlay_subrecord6_geometry(
+        self,
+        raw: bytes,
+        synthesized: bytes,
+    ) -> bytes:
+        """Patch changed known geometry fields and preserve every other byte."""
+        original = self._subrecord6_geometry_signature
+        if original is None:
+            raise ValueError("cannot mutate pad geometry without a parsed signature")
+        current = self._subrecord6_geometry_state_signature()
+        overlaid = bytearray(raw)
+        for field_index, offset, count, width in _PAD_SUBRECORD6_SEQUENCE_FIELDS:
+            self._overlay_changed_geometry_sequence(
+                overlaid,
+                synthesized,
+                cast(tuple[object, ...], original[field_index]),
+                cast(tuple[object, ...], current[field_index]),
+                offset=offset,
+                count=count,
+                width=width,
+            )
+        for field_index, offset, width in _PAD_SUBRECORD6_SCALAR_FIELDS:
+            if original[field_index] != current[field_index]:
+                overlaid[offset : offset + width] = synthesized[offset : offset + width]
+        return bytes(overlaid)
+
+    def _overlay_subrecord6_typed_fields(
+        self,
+        raw: bytes,
+        synthesized: bytes,
+        *,
+        geometry_changed: bool,
+        entries_changed: bool,
+    ) -> bytes:
+        """Overlay typed geometry and entry fields onto parsed bytes."""
+        if not raw:
+            return synthesized
+        if geometry_changed and len(raw) < _PAD_SUBRECORD6_GEOMETRY_BYTES:
+            raise ValueError("cannot mutate truncated SubRecord 6 geometry")
+        if geometry_changed:
+            built = self._overlay_subrecord6_geometry(raw, synthesized)
+        else:
+            built = raw
+        if entries_changed:
+            return self._overlay_full_stack_entries(built)
+        return built
+
+    def _apply_removed_copper_layer_map(self, built: bytes, raw: bytes) -> bytes:
+        """Apply one reviewed removed-map transition to SubRecord 6."""
+        if len(raw) not in {
+            0,
+            _PAD_SUBRECORD6_GEOMETRY_BYTES,
+            _PAD_SUBRECORD6_MAP_END,
+        }:
+            return self._overlay_removed_copper_layer_map(built)
+        if self.full_stack_layer_entries:
+            raise ValueError(
+                "cannot combine first removed-layer materialization with "
+                "full-stack entry mutation"
+            )
+        return self._materialize_removed_map_tail(
+            built,
+            source_was_empty=not raw,
+        )
+
+    def _subrecord6_geometry_changed(self) -> bool:
+        original = self._subrecord6_geometry_signature
+        if original is None:
+            return bool(self._subrecord6_geometry_state_signature())
+        return self._subrecord6_geometry_state_signature() != original
+
+    def _subrecord6_entries_changed(self) -> bool:
+        original = self._subrecord6_full_stack_signature
+        if original is None:
+            return bool(self.full_stack_layer_entries)
+        return self._full_stack_state_signature() != original
+
+    def _subrecord6_map_changed(self) -> bool:
+        return (
+            tuple(self._removed_copper_layer_values)
+            != self._removed_copper_layer_original
+        )
+
+    def _validate_removed_map_entry_combination(
+        self,
+        raw: bytes,
+        *,
+        map_changed: bool,
+    ) -> None:
+        if (
+            map_changed
+            and len(raw)
+            in {
+                0,
+                _PAD_SUBRECORD6_GEOMETRY_BYTES,
+                _PAD_SUBRECORD6_MAP_END,
+            }
+            and self.full_stack_layer_entries
+        ):
+            raise ValueError(
+                "cannot combine first removed-layer materialization with "
+                "full-stack entry mutation"
+            )
+
+    def _compose_subrecord6_data(
+        self,
+        *,
+        geometry_changed: bool,
+        entries_changed: bool,
+        map_changed: bool,
+    ) -> bytes:
+        synthesized = self._synthesize_subrecord6_data()
+        built = self._overlay_subrecord6_typed_fields(
+            self._subrecord6_data,
+            synthesized,
+            geometry_changed=geometry_changed,
+            entries_changed=entries_changed,
+        )
+        if map_changed:
+            return self._apply_removed_copper_layer_map(
+                built,
+                self._subrecord6_data,
+            )
+        return built
+
+    def _preflight_subrecord6_write(self) -> None:
+        """Reject unsafe SubRecord 6 mutations before any serializer cache changes."""
+        self._validate_full_stack_entry_count()
+        raw = self._subrecord6_data
+        geometry_changed = self._subrecord6_geometry_changed()
+        entries_changed = self._subrecord6_entries_changed()
+        if geometry_changed and raw and len(raw) < _PAD_SUBRECORD6_GEOMETRY_BYTES:
+            raise ValueError("cannot mutate truncated SubRecord 6 geometry")
+        if entries_changed:
+            self._preflight_full_stack_entry_write(raw)
+        map_changed = self._subrecord6_map_changed()
+        self._validate_removed_map_entry_combination(raw, map_changed=map_changed)
+        if any((geometry_changed, entries_changed, map_changed)):
+            self._compose_subrecord6_data(
+                geometry_changed=geometry_changed,
+                entries_changed=entries_changed,
+                map_changed=map_changed,
+            )
+
+    def _preflight_full_stack_entry_write(self, raw: bytes) -> None:
+        if not self._subrecord6_tail_framing_valid:
+            raise ValueError("cannot mutate full-stack entries with invalid framing")
+        if len(raw) in {
+            0,
+            _PAD_SUBRECORD6_GEOMETRY_BYTES,
+            _PAD_SUBRECORD6_MAP_END,
+        }:
+            return
+        if len(raw) < _PAD_SUBRECORD6_TABLE_START:
+            raise ValueError("cannot mutate full-stack entries with invalid framing")
+        count = self._subrecord6_entry_count
+        stride = self._subrecord6_entry_stride
+        if count is None or stride is None:
+            raise ValueError("cannot mutate full-stack entries with invalid framing")
+        if stride > _PAD_SUBRECORD6_KNOWN_ENTRY_BYTES:
+            if len(self.full_stack_layer_entries) != count:
+                raise ValueError(
+                    "cannot change full-stack cardinality with an unknown entry stride"
+                )
+            return
+        if (
+            stride != _PAD_SUBRECORD6_KNOWN_ENTRY_BYTES
+            and self.full_stack_layer_entries
+        ):
+            raise ValueError(
+                "cannot add full-stack entries with an unknown entry stride"
+            )
+
+    def _build_subrecord6_data(self) -> bytes:
+        """Build SubRecord 6 with lossless overlays on parsed raw bytes."""
+        geometry_changed = self._subrecord6_geometry_changed()
+        entries_changed = self._subrecord6_entries_changed()
+        map_changed = self._subrecord6_map_changed()
+        built = self._compose_subrecord6_data(
+            geometry_changed=geometry_changed,
+            entries_changed=entries_changed,
+            map_changed=map_changed,
+        )
+
         self._subrecord6_data = built
+        self._parse_subrecord6_tail(built)
+        self._subrecord6_geometry_signature = (
+            self._subrecord6_geometry_state_signature()
+        )
+        self._subrecord6_full_stack_signature = self._full_stack_state_signature()
         self._subrecord6_signature = self._subrecord6_state_signature()
         return built
 
@@ -1200,6 +1710,7 @@ class AltiumPcbPad(PcbGraphicalObject):
             For round-trip, use stored raw binary if available.
             For from-scratch creation, build minimal required SubRecords.
         """
+        self._preflight_subrecord6_write()
         state_sig = self._state_signature()
         cached_sig = getattr(self, "_raw_binary_signature", None)
         if self._raw_binary is not None and cached_sig == state_sig:
@@ -1319,7 +1830,7 @@ class AltiumPcbPad(PcbGraphicalObject):
 
         result = bytes(record)
         self._raw_binary = result
-        self._raw_binary_signature = state_sig
+        self._raw_binary_signature = self._state_signature()
         return result
 
     @property

@@ -26,10 +26,12 @@ class AltiumLauncher:
     Launches Altium Designer on Windows and opens files programmatically.
     """
 
-    def __init__(self, altium_path: Path | None = None, preferred_version: int | None = None) -> None:
+    def __init__(
+        self, altium_path: Path | None = None, preferred_version: int | None = None
+    ) -> None:
         """
         Initialize Altium launcher.
-        
+
         Args:
             altium_path: Path to X2.exe. If None, auto-detects from Program Files.
             preferred_version: Preferred Altium version (e.g., 24, 25). If None, prefers
@@ -68,15 +70,17 @@ class AltiumLauncher:
         # Default to AD25 for the current interop/oracle lanes.
         return 25
 
-    def _find_altium_installation(self, preferred_version: int | None = None) -> Path | None:
+    def _find_altium_installation(
+        self, preferred_version: int | None = None
+    ) -> Path | None:
         """
         Find Altium Designer installation by searching Program Files.
         If multiple versions found, returns the preferred version or latest.
-        
+
         Args:
             preferred_version: Preferred Altium version (e.g., 24, 25). If None, uses
                 `_resolve_preferred_version()` and falls back to latest only if needed.
-        
+
         Returns:
             Path to X2.exe or None if not found
         """
@@ -101,7 +105,7 @@ class AltiumLauncher:
                     continue
 
                 # Check if folder name matches ADxx pattern
-                match = re.match(r'^AD(\d+)$', item.name, re.IGNORECASE)
+                match = re.match(r"^AD(\d+)$", item.name, re.IGNORECASE)
                 if match:
                     version = int(match.group(1))
                     exe_path = item / "X2.EXE"
@@ -126,13 +130,17 @@ class AltiumLauncher:
 
             # Preferred version not found, warn and fall back to latest
             log.warning(f"Preferred Altium version AD{preferred_version} not found")
-            log.info(f"Available versions: {', '.join(f'AD{v}' for v, _ in found_installations)}")
+            log.info(
+                f"Available versions: {', '.join(f'AD{v}' for v, _ in found_installations)}"
+            )
 
         # Use latest version
         latest_version, latest_path = found_installations[0]
 
         if len(found_installations) > 1:
-            log.info(f"Multiple Altium versions found, using latest: AD{latest_version}")
+            log.info(
+                f"Multiple Altium versions found, using latest: AD{latest_version}"
+            )
         else:
             log.info(f"Found Altium Designer {latest_version}")
 
@@ -141,14 +149,14 @@ class AltiumLauncher:
     def _open_file_impl(self, file_path: Path) -> bool:
         """
         Internal implementation for opening files in Altium Designer.
-        
+
         Directly launches X2.EXE with the file path as an argument.
         This is more reliable than os.startfile() which depends on Windows
         file associations being properly configured.
-        
+
         Args:
             file_path: Path to file to open
-        
+
         Returns:
             True if launch succeeded
         """
@@ -181,18 +189,18 @@ class AltiumLauncher:
     ) -> int:
         """
         Launch Altium and run a script procedure on startup.
-        
+
         Execute a startup script through Altium.
-        
+
         Uses os.system() with cmd.exe to reliably handle the pipe character
         in Altium's -R argument syntax. Python subprocess has escaping issues
         with this complex argument format.
-        
+
         Args:
             script_project: Path to .PrjScr script project file
             unit_name: Name of the script unit (e.g., "MyScriptUnit")
             procedure_name: Name of the procedure to run (e.g., "Run")
-        
+
         Returns:
             Exit code from os.system() (0 = success)
         """
@@ -206,7 +214,9 @@ class AltiumLauncher:
         # The start "" runs it asynchronously (doesn't block)
         cmd = f'start "" "{self.altium_path}" -RScriptingSystem:RunScript(ProjectName="{script_project}"^|ProcName="{unit_name}>{procedure_name}")'
 
-        log.info(f"Running script: {unit_name}>{procedure_name} from {script_project.name}")
+        log.info(
+            f"Running script: {unit_name}>{procedure_name} from {script_project.name}"
+        )
         log.info(f"Command: {cmd}")
 
         return os.system(cmd)
@@ -253,25 +263,23 @@ class AltiumLauncher:
                 pid = int(pid_text.strip())
             except ValueError:
                 continue
-            processes.append(
-                AltiumProcessInfo(pid=pid, executable=executable.strip())
-            )
+            processes.append(AltiumProcessInfo(pid=pid, executable=executable.strip()))
         return tuple(processes)
 
     def open(self, file_path: str | Path) -> bool:
         """
         Open a file in Altium Designer.
-        
+
         Open a file or project in Altium.
-        
+
         Directly launches X2.EXE with the file path as an argument.
         This is more reliable than os.startfile() which depends on Windows
         file associations being properly configured.
         Supports all Altium file types: SchDoc, SchLib, PcbDoc, PcbLib, PrjPcb.
-        
+
         Args:
             file_path: Path to the file to open
-        
+
         Returns:
             True if file was opened successfully
         """
@@ -280,20 +288,18 @@ class AltiumLauncher:
     def kill(self) -> bool:
         """
         Kill all running Altium Designer processes on this machine.
-        
+
         Terminate running Altium processes.
-        
+
         Uses Windows taskkill to forcefully terminate every X2.EXE process. It
         is not scoped to an instance launched by this object.
-        
+
         Returns:
             True if Altium was killed or wasn't running
         """
         try:
             result = subprocess.run(
-                ["taskkill", "/F", "/IM", "X2.EXE"],
-                capture_output=True,
-                text=True
+                ["taskkill", "/F", "/IM", "X2.EXE"], capture_output=True, text=True
             )
             if result.returncode == 0:
                 log.info("Altium Designer processes killed")

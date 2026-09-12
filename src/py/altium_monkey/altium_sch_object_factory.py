@@ -4,6 +4,7 @@ Shared construction helpers for public schematic object creation APIs.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, cast
 
@@ -73,6 +74,7 @@ from .altium_record_types import (
     TextOrientation,
 )
 from .altium_sch_enums import SchHorizontalAlign
+from .altium_sch_record_helpers import _public_mils_to_coord_scalar
 
 
 def _normalize_optional_color_value(
@@ -91,6 +93,19 @@ def _validate_non_negative_public_mils(field_name: str, value: int) -> int:
     if value < 0:
         raise ValueError(f"{field_name} must be non-negative")
     return value
+
+
+def _validate_non_negative_public_mils_scalar(
+    field_name: str, value: int | float
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{field_name} must be a numeric number of mils")
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise ValueError(f"{field_name} must be finite")
+    if normalized < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return normalized
 
 
 def _validate_line_width_enum(value: LineWidth) -> LineWidth:
@@ -494,7 +509,7 @@ def make_sch_note(
     alignment: SchHorizontalAlign = SchHorizontalAlign.LEFT,
     word_wrap: bool = True,
     clip_to_rect: bool = True,
-    text_margin_mils: int = 5,
+    text_margin_mils: float = 5.0,
     collapsed: bool = False,
 ) -> AltiumSchNote:
     """
@@ -507,12 +522,12 @@ def make_sch_note(
         author: Author string stored on the note object.
         font: Public font description resolved when the note is added to a
             document or library.
-        border_color: Optional note border color helper. ``None`` leaves the
-            native default color behavior.
-        fill_color: Optional note fill color helper. ``None`` leaves the
-            native default color behavior.
-        text_color: Optional note text color helper. ``None`` leaves the native
-            default color behavior.
+        border_color: Optional note border color helper. ``None`` clears the
+            persisted border-color field.
+        fill_color: Optional note fill color helper. ``None`` clears the
+            persisted fill-color field.
+        text_color: Optional note text color helper. ``None`` clears the
+            persisted text-color field.
         alignment: Horizontal text alignment inside the note.
         word_wrap: Whether note text wraps to the note width.
         clip_to_rect: Whether note text is clipped to the note bounds.
@@ -539,7 +554,7 @@ def make_sch_note(
         raise TypeError("font must be a SchFontSpec value")
     if not isinstance(alignment, SchHorizontalAlign):
         raise TypeError("alignment must be a SchHorizontalAlign value")
-    validated_text_margin_mils = _validate_non_negative_public_mils(
+    validated_text_margin_mils = _validate_non_negative_public_mils_scalar(
         "text_margin_mils", text_margin_mils
     )
     location, corner = bounds_mils.to_coord_points()
@@ -589,11 +604,12 @@ def make_sch_no_erc(
             classes. When ``False``, the two optional suppression payload
             strings are written through to the record.
         error_kind_set_to_suppress: Advanced native suppression payload for
-            partial No ERC directives. This is preserved as a raw string until
-            a higher-level helper is designed for the native error-kind set.
+            partial No ERC directives. The empty public default is an explicit
+            factory override; low-level managed objects initialize the full
+            suppressible error-kind set.
         connection_pairs_to_suppress: Advanced native suppression payload for
-            selective connection-pair suppression. This is preserved as a raw
-            string until a higher-level helper is designed.
+            selective connection-pair suppression. The empty public default is
+            an explicit factory override of the managed all-pairs state.
 
     Returns:
         A detached ``AltiumSchNoErc`` ready to be added with
@@ -646,8 +662,8 @@ def make_sch_arc(
         radius_mils: Arc radius in mils. Must be greater than zero.
         start_angle_degrees: Arc start angle in degrees.
         end_angle_degrees: Arc end angle in degrees.
-        color: Optional arc stroke color helper. ``None`` leaves the native
-            default color behavior.
+        color: Optional arc stroke color helper. ``None`` omits the persisted
+            color field, whose V5 reopen semantic is black.
         line_width: Arc stroke thickness enum. Defaults to ``LineWidth.SMALL``
             to match Altium's native new-arc default.
 
@@ -687,8 +703,8 @@ def make_sch_full_circle(
     Args:
         center_mils: Circle center point in mils.
         radius_mils: Circle radius in mils. Must be greater than zero.
-        color: Optional circle stroke color helper. ``None`` leaves the native
-            default color behavior.
+        color: Optional circle stroke color helper. ``None`` omits the
+            persisted color field, whose V5 reopen semantic is black.
         line_width: Circle stroke thickness enum. Defaults to
             ``LineWidth.SMALL`` to match Altium's native new-arc default.
 
@@ -724,10 +740,10 @@ def make_sch_ellipse(
         radius_mils: Primary ellipse radius in mils. Must be greater than zero.
         secondary_radius_mils: Secondary ellipse radius in mils. Must be
             greater than zero.
-        color: Optional ellipse stroke color helper. ``None`` leaves the native
-            default color behavior.
-        fill_color: Optional fill color helper. ``None`` leaves the native
-            default area-color behavior.
+        color: Optional ellipse stroke color helper. ``None`` omits the
+            persisted color field, whose V5 reopen semantic is black.
+        fill_color: Optional fill color helper. ``None`` omits the persisted
+            area-color field, whose V5 reopen semantic is black.
         line_width: Ellipse stroke thickness enum. Defaults to
             ``LineWidth.SMALLEST`` to match Altium's native new-ellipse
             default.
@@ -778,8 +794,8 @@ def make_sch_elliptical_arc(
             greater than zero.
         start_angle_degrees: Arc start angle in degrees.
         end_angle_degrees: Arc end angle in degrees.
-        color: Optional stroke color helper. ``None`` leaves the native
-            default color behavior.
+        color: Optional stroke color helper. ``None`` omits the persisted
+            color field, whose V5 reopen semantic is black.
         line_width: Stroke thickness enum. Defaults to ``LineWidth.SMALL`` to
             match Altium's native new-arc default.
 
@@ -824,8 +840,8 @@ def make_sch_line(
     Args:
         start_mils: Line start point in mils.
         end_mils: Line end point in mils.
-        color: Optional line color helper. ``None`` leaves the native default
-            color behavior.
+        color: Optional line color helper. ``None`` omits the persisted color
+            field, whose V5 reopen semantic is black.
         line_width: Line stroke thickness enum. Defaults to
             ``LineWidth.SMALL`` to match Altium's native new-line default.
         line_style: Line dash pattern enum. Defaults to ``LineStyle.SOLID`` to
@@ -863,8 +879,8 @@ def make_sch_wire(
     Args:
         points_mils: Ordered wire path points in mils. At least two points are
             required.
-        color: Optional wire color helper. ``None`` leaves the native default
-            wire color behavior.
+        color: Optional wire color helper. ``None`` clears the persisted wire
+            color field.
         line_width: Wire thickness enum. Defaults to ``LineWidth.SMALL`` to
             match Altium's native new-wire default.
 
@@ -896,8 +912,8 @@ def make_sch_junction(
 
     Args:
         location_mils: Absolute junction center in mils.
-        color: Optional junction color helper. ``None`` leaves the native
-            junction color behavior.
+        color: Optional junction color helper. ``None`` clears the persisted
+            junction color field.
 
     Returns:
         A detached ``AltiumSchJunction`` ready to be added with
@@ -925,8 +941,8 @@ def make_sch_bezier(
         points_mils: Ordered cubic bezier control points in mils. Native
             schematic beziers use ``4 + 3n`` points: four points for the first
             segment, then three more for each connected segment.
-        color: Optional bezier stroke color helper. ``None`` leaves the native
-            default color behavior.
+        color: Optional bezier stroke color helper. ``None`` omits the
+            persisted color field, whose V5 reopen semantic is black.
         line_width: Bezier stroke thickness enum. Defaults to
             ``LineWidth.SMALL`` to match Altium's native new-bezier default.
 
@@ -971,10 +987,10 @@ def make_sch_rectangle(
 
     Args:
         bounds_mils: Absolute rectangle bounds in mils.
-        color: Optional border color helper. ``None`` leaves the native default
-            color behavior.
-        fill_color: Optional fill color helper. ``None`` leaves the native
-            default area-color behavior.
+        color: Optional border color helper. ``None`` omits the persisted
+            color field, whose V5 reopen semantic is black.
+        fill_color: Optional fill color helper. ``None`` omits the persisted
+            area-color field, whose V5 reopen semantic is black.
         line_width: Rectangle border thickness enum. Defaults to
             ``LineWidth.SMALLEST`` to match Altium's native new-rectangle
             default.
@@ -1018,10 +1034,10 @@ def make_sch_compile_mask(
 
     Args:
         bounds_mils: Absolute compile-mask bounds in mils.
-        color: Optional border color helper. ``None`` leaves the native
-            default color behavior.
-        fill_color: Optional fill color helper. ``None`` leaves the native
-            default area-color behavior.
+        color: Optional border color helper. ``None`` clears the persisted
+            border-color field.
+        fill_color: Optional fill color helper. ``None`` clears the persisted
+            area-color field.
         line_width: Compile-mask border thickness enum. Defaults to
             ``LineWidth.SMALLEST`` to match the native new-object baseline.
         collapsed: Whether the compile mask starts in its collapsed display
@@ -1073,10 +1089,10 @@ def make_sch_rounded_rectangle(
             non-negative.
         corner_y_radius_mils: Rounded-corner Y radius in mils. Must be
             non-negative.
-        color: Optional border color helper. ``None`` leaves the native default
-            color behavior.
-        fill_color: Optional fill color helper. ``None`` leaves the native
-            default area-color behavior.
+        color: Optional border color helper. ``None`` omits the persisted
+            color field, whose V5 reopen semantic is black.
+        fill_color: Optional fill color helper. ``None`` omits the persisted
+            area-color field, whose V5 reopen semantic is black.
         line_width: Rounded-rectangle border thickness enum. Defaults to
             ``LineWidth.SMALLEST`` to match Altium's native new-object default.
         fill_background: Whether the rounded rectangle interior is filled.
@@ -1134,8 +1150,8 @@ def make_sch_polyline(
     Args:
         points_mils: Ordered polyline vertices in mils. At least two points are
             required.
-        color: Optional polyline color helper. ``None`` leaves the native
-            default color behavior.
+        color: Optional polyline color helper. ``None`` omits the persisted
+            color field, whose V5 reopen semantic is black.
         line_width: Polyline stroke thickness enum. Defaults to
             ``LineWidth.SMALL`` to match Altium's native new-polyline default.
         line_style: Polyline dash pattern enum.
@@ -1194,10 +1210,10 @@ def make_sch_polygon(
     Args:
         points_mils: Ordered polygon vertices in mils. At least three points
             are required.
-        color: Optional polygon border color helper. ``None`` leaves the
-            native default color behavior.
-        fill_color: Optional polygon fill color helper. ``None`` leaves the
-            native default area-color behavior.
+        color: Optional polygon border color helper. ``None`` omits the
+            persisted color field, whose V5 reopen semantic is black.
+        fill_color: Optional polygon fill color helper. ``None`` omits the
+            persisted area-color field, whose V5 reopen semantic is black.
         line_width: Polygon border thickness enum. Defaults to
             ``LineWidth.LARGE`` to match Altium's native new-polygon default.
         fill_background: Whether the polygon interior is filled.
@@ -1246,20 +1262,19 @@ def make_sch_blanket(
     Args:
         points_mils: Ordered blanket polygon vertices in mils. At least three
             points are required.
-        color: Optional blanket border color helper. ``None`` leaves the
-            native default color behavior.
-        fill_color: Optional blanket fill color helper. ``None`` leaves the
-            native default area-color behavior.
+        color: Optional blanket border color helper. ``None`` clears the
+            persisted border-color field.
+        fill_color: Optional blanket fill color helper. ``None`` clears the
+            persisted area-color field.
         line_width: Blanket border thickness enum. Defaults to
             ``LineWidth.SMALLEST`` to match Altium's native new-blanket
             default.
         line_style: Blanket border dash pattern enum. Defaults to
             ``LineStyle.DASHED`` to match Altium's native new-blanket default.
-        fill_background: Whether the blanket interior is filled. Defaults to
-            ``False`` to match Altium's native new-blanket default.
-        transparent_fill: Whether the blanket interior uses the native
-            transparent-fill flag. Defaults to ``True`` to match native new
-            blanket behavior.
+        fill_background: Session/rendering compatibility control. V5 blanket
+            records do not persist this value.
+        transparent_fill: Session/rendering compatibility control. V5 blanket
+            records do not persist this value.
         collapsed: Whether the blanket starts in its collapsed display state.
 
     Returns:
@@ -1298,7 +1313,7 @@ def make_sch_text_frame(
     line_width: LineWidth = LineWidth.SMALL,
     word_wrap: bool = True,
     clip_to_rect: bool = True,
-    text_margin_mils: int = 5,
+    text_margin_mils: float = 5.0,
     show_border: bool = True,
     fill_background: bool = True,
 ) -> AltiumSchTextFrame:
@@ -1310,12 +1325,12 @@ def make_sch_text_frame(
         text: Text content to place in the frame. Newlines are preserved.
         font: Public font description resolved when the frame is added to a
             document or library.
-        border_color: Optional border color helper. ``None`` leaves the native
-            default color behavior.
-        fill_color: Optional background fill color helper. ``None`` leaves the
-            native default color behavior.
-        text_color: Optional text color helper. ``None`` leaves the native
-            default color behavior.
+        border_color: Optional border color helper. ``None`` omits the
+            persisted border color, whose V5 reopen semantic is black.
+        fill_color: Optional background fill color helper. ``None`` omits the
+            persisted fill color, whose V5 reopen semantic is black.
+        text_color: Optional text color helper. ``None`` omits the persisted
+            text color, whose V5 reopen semantic is black.
         alignment: Horizontal text alignment inside the frame.
         line_width: Border thickness enum for the text-frame outline.
         word_wrap: Whether text wraps to the frame width.
@@ -1335,7 +1350,7 @@ def make_sch_text_frame(
     if not isinstance(alignment, SchHorizontalAlign):
         raise TypeError("alignment must be a SchHorizontalAlign value")
     validated_line_width = _validate_line_width_enum(line_width)
-    validated_text_margin_mils = _validate_non_negative_public_mils(
+    validated_text_margin_mils = _validate_non_negative_public_mils_scalar(
         "text_margin_mils", text_margin_mils
     )
     location, corner = bounds_mils.to_coord_points()
@@ -1451,13 +1466,14 @@ def make_sch_sheet_symbol(
         revision_name: Optional revision name string.
 
     Returns:
-        A detached ``AltiumSchSheetSymbol`` ready to own entries, sheet name,
-        and file name records before it is added with ``schdoc.add_object(...)``.
+        A detached ``AltiumSchSheetSymbol`` with the managed default sheet-name
+        and file-name child pair, ready to own entries before it is added with
+        ``schdoc.add_object(...)``.
 
     Notes:
-        This factory creates only the parent symbol record. Attach
-        ``make_sch_sheet_entry(...)`` records with ``sheet_symbol.add_entry(...)``
-        and labels with ``set_sheet_name(...)`` / ``set_file_name(...)``.
+        Attach ``make_sch_sheet_entry(...)`` records with
+        ``sheet_symbol.add_entry(...)``. Calls to ``set_sheet_name(...)`` and
+        ``set_file_name(...)`` replace the managed default child labels.
     """
     if not isinstance(bounds_mils, SchRectMils):
         raise TypeError("bounds_mils must be a SchRectMils value")
@@ -1494,9 +1510,13 @@ def make_sch_sheet_symbol(
     symbol.color = _normalize_optional_color_value("border_color", border_color)
     symbol.area_color = _normalize_optional_color_value("fill_color", fill_color)
     symbol.symbol_type = (
-        "DeviceSheet"
+        "Device Sheet"
         if validated_symbol_type is SchSheetSymbolType.DEVICE_SHEET
-        else "Normal"
+        else (
+            "Design Item"
+            if validated_symbol_type is SchSheetSymbolType.DESIGN_ITEM
+            else "Normal"
+        )
     )
     symbol.show_hidden_fields = show_hidden_fields
     symbol.design_item_id = design_item_id
@@ -1505,6 +1525,8 @@ def make_sch_sheet_symbol(
     symbol.item_guid = item_guid
     symbol.revision_guid = revision_guid
     symbol.revision_name = revision_name
+    symbol.set_sheet_name(AltiumSchSheetName())
+    symbol.set_file_name(AltiumSchFileName())
     return symbol
 
 
@@ -1570,11 +1592,9 @@ def make_sch_sheet_entry(
     )
     entry.text_color = _normalize_optional_color_value("text_color", text_color) or 0
     entry.arrow_kind = validated_arrow_kind.value
-    entry.text_style = {
-        BusTextStyle.FULL: "Full",
-        BusTextStyle.ABBREVIATED: "Abbreviated",
-        BusTextStyle.SHORT: "Short",
-    }[validated_text_style]
+    entry.text_style = (
+        "Prefix" if validated_text_style is BusTextStyle.PREFIX else "Full"
+    )
     entry.harness_type = harness_type
     return entry
 
@@ -1689,9 +1709,11 @@ def make_sch_bus(
     Args:
         points_mils: Ordered bus path points in mils. At least two points are
             required.
-        color: Optional bus color helper. ``None`` leaves the native default
-            bus color behavior.
-        line_width: Bus line thickness enum.
+        color: Optional bus color helper. ``None`` clears the persisted bus
+            color field.
+        line_width: Bus line thickness enum. The public ``MEDIUM`` default is
+            an authoring API override of the low-level managed ``SMALL``
+            default.
 
     Returns:
         A detached ``AltiumSchBus`` ready to be added with
@@ -1724,9 +1746,11 @@ def make_sch_bus_entry(
     Args:
         start_mils: Start point in mils.
         end_mils: End point in mils.
-        color: Optional bus-entry color helper. ``None`` leaves the native
-            default bus-entry color behavior.
-        line_width: Bus-entry line thickness enum.
+        color: Optional bus-entry color helper. ``None`` clears the persisted
+            bus-entry color field.
+        line_width: Bus-entry line thickness enum. The public ``SMALLEST``
+            default is an authoring API override of the low-level managed
+            ``SMALL`` default.
 
     Returns:
         A detached ``AltiumSchBusEntry`` ready to be added with
@@ -1805,12 +1829,13 @@ def make_sch_harness_connector(
 
     connector = AltiumSchHarnessConnector()
     connector.location = SchPointMils.from_mils(left_mils, top_mils).to_coord_point()
-    connector.xsize = int(round(width_mils / 10.0))
-    connector.ysize = int(round(height_mils / 10.0))
+    connector.xsize, connector.xsize_frac = _public_mils_to_coord_scalar(width_mils)
+    connector.ysize, connector.ysize_frac = _public_mils_to_coord_scalar(height_mils)
     connector.side = validated_side
-    connector.primary_connection_position = int(
-        round(validated_primary_position_mils / 10.0)
-    )
+    (
+        connector.primary_connection_position,
+        connector.primary_connection_position_frac,
+    ) = _public_mils_to_coord_scalar(validated_primary_position_mils)
     connector.line_width = validated_border_width
     connector.color = _normalize_optional_color_value("border_color", border_color)
     connector.area_color = _normalize_optional_color_value("fill_color", fill_color)
@@ -1974,8 +1999,8 @@ def make_sch_text_string(
             text.
         font: Public font description resolved when the text string is added to
             a document or library.
-        color: Optional text color helper. ``None`` leaves the native default
-            color behavior.
+        color: Optional text color helper. ``None`` clears the persisted text
+            color field.
         orientation: Text rotation in 90-degree increments.
         justification: Text anchor justification relative to ``location_mils``.
         mirrored: Whether the text string is mirrored.
@@ -2026,8 +2051,8 @@ def make_sch_net_label(
         text: Single-line net name text.
         font: Public font description resolved when the net label is added to a
             document or library.
-        color: Optional text color helper. ``None`` leaves the native default
-            net-label color behavior.
+        color: Optional text color helper. ``None`` clears the persisted
+            net-label color field.
         orientation: Net-label rotation in 90-degree increments.
         justification: Text anchor justification relative to ``location_mils``.
         mirrored: Whether the net label is mirrored.
@@ -2077,8 +2102,8 @@ def make_sch_off_sheet_connector(
         style: Built-in off-sheet connector direction enum.
         font: Public font description resolved when the connector is added to a
             document or library.
-        color: Optional symbol/text color helper. ``None`` leaves the native
-            default off-sheet connector color behavior.
+        color: Optional symbol/text color helper. ``None`` clears the persisted
+            off-sheet connector color field.
         orientation: Connector orientation in 90-degree increments.
         show_net_name: Whether the connector name is shown.
 
@@ -2145,12 +2170,12 @@ def make_sch_port(
         style: Native port style enum.
         font: Public font description resolved when the port is added to a
             document or library.
-        border_color: Optional border color helper. ``None`` leaves the native
-            default border color behavior.
-        fill_color: Optional fill color helper. ``None`` leaves the native
-            default fill color behavior.
-        text_color: Optional text color helper. ``None`` leaves the native
-            default text color behavior.
+        border_color: Optional border color helper. ``None`` clears the
+            persisted border-color field.
+        fill_color: Optional fill color helper. ``None`` clears the persisted
+            fill-color field.
+        text_color: Optional text color helper. ``None`` clears the persisted
+            text-color field.
         alignment: Port text alignment enum.
         border_width: Port border thickness enum. ``LineWidth.SMALLEST`` matches
             the native default field-omission behavior.
@@ -2232,8 +2257,8 @@ def make_sch_power_port(
         style: Built-in power-port style enum.
         font: Public font description resolved when the power port is added to
             a document or library.
-        color: Optional symbol/text color helper. ``None`` leaves the native
-            default power-port color behavior.
+        color: Optional symbol/text color helper. ``None`` clears the persisted
+            power-port color field.
         orientation: Power-port orientation in 90-degree increments.
         show_net_name: Optional explicit net-name visibility override. When
             ``None``, the native style-based default is used, which hides names
@@ -2296,8 +2321,8 @@ def make_sch_parameter(
         text: Parameter value string.
         font: Public font description resolved when the parameter is added to a
             document or library.
-        color: Optional text color helper. ``None`` leaves the native default
-            color behavior.
+        color: Optional text color helper. ``None`` clears the persisted text
+            color field.
         orientation: Text rotation in 90-degree increments.
         justification: Text anchor justification relative to ``location_mils``.
         show_name: Whether the rendered text includes the parameter name.

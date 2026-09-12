@@ -17,7 +17,7 @@ class BinaryReader:
     def __init__(self, data: bytes, offset: int = 0) -> None:
         """
         Initialize binary reader.
-        
+
         Args:
             data: Binary data to read
             offset: Starting offset (default: 0)
@@ -46,7 +46,7 @@ class BinaryReader:
         if self.pos + 1 > self.size:
             self.error = True
             return 0
-        val = struct.unpack('<b', self.data[self.pos:self.pos+1])[0]
+        val = struct.unpack("<b", self.data[self.pos : self.pos + 1])[0]
         self.pos += 1
         return val
 
@@ -57,7 +57,7 @@ class BinaryReader:
         if self.pos + 2 > self.size:
             self.error = True
             return 0
-        val = struct.unpack('<h', self.data[self.pos:self.pos+2])[0]
+        val = struct.unpack("<h", self.data[self.pos : self.pos + 2])[0]
         self.pos += 2
         return val
 
@@ -68,7 +68,7 @@ class BinaryReader:
         if self.pos + 2 > self.size:
             self.error = True
             return 0
-        val = struct.unpack('<H', self.data[self.pos:self.pos+2])[0]
+        val = struct.unpack("<H", self.data[self.pos : self.pos + 2])[0]
         self.pos += 2
         return val
 
@@ -79,7 +79,7 @@ class BinaryReader:
         if self.pos + 4 > self.size:
             self.error = True
             return 0
-        val = struct.unpack('<i', self.data[self.pos:self.pos+4])[0]
+        val = struct.unpack("<i", self.data[self.pos : self.pos + 4])[0]
         self.pos += 4
         return val
 
@@ -90,7 +90,7 @@ class BinaryReader:
         if self.pos + 4 > self.size:
             self.error = True
             return 0
-        val = struct.unpack('<I', self.data[self.pos:self.pos+4])[0]
+        val = struct.unpack("<I", self.data[self.pos : self.pos + 4])[0]
         self.pos += 4
         return val
 
@@ -101,7 +101,7 @@ class BinaryReader:
         if self.pos + 4 > self.size:
             self.error = True
             return 0.0
-        val = struct.unpack('<f', self.data[self.pos:self.pos+4])[0]
+        val = struct.unpack("<f", self.data[self.pos : self.pos + 4])[0]
         self.pos += 4
         return val
 
@@ -112,7 +112,7 @@ class BinaryReader:
         if self.pos + 8 > self.size:
             self.error = True
             return 0.0
-        val = struct.unpack('<d', self.data[self.pos:self.pos+8])[0]
+        val = struct.unpack("<d", self.data[self.pos : self.pos + 8])[0]
         self.pos += 8
         return val
 
@@ -122,8 +122,8 @@ class BinaryReader:
         """
         if self.pos + length > self.size:
             self.error = True
-            return b''
-        val = self.data[self.pos:self.pos+length]
+            return b""
+        val = self.data[self.pos : self.pos + length]
         self.pos += length
         return val
 
@@ -153,14 +153,14 @@ class BinaryReader:
     def read_subrecord_length(self) -> int:
         """
         Read SubRecord length and set end pointer.
-        
+
         SubRecord format:
             [4 bytes] Content length (NOT including this 4-byte field)
             [N bytes] Content
-        
+
         After calling this, use remaining_subrecord_bytes() to check
         how much data is left in the current SubRecord.
-        
+
         Returns:
             Content length (number of bytes in SubRecord content)
         """
@@ -197,12 +197,12 @@ class BinaryReader:
 class SubRecord:
     """
     Represents a parsed SubRecord from binary PCB data.
-    
+
     SubRecords are variable-length data blocks found in binary PCB records.
     Format:
         [4 bytes] Length (N) - content length, NOT including this field
         [N bytes] Content
-    
+
     Attributes:
         content: Binary content of the SubRecord
         length: Length of content in bytes
@@ -211,7 +211,7 @@ class SubRecord:
     def __init__(self, content: bytes) -> None:
         """
         Initialize SubRecord.
-        
+
         Args:
             content: Binary content data
         """
@@ -221,27 +221,24 @@ class SubRecord:
     def to_dict(self) -> dict[str, Any]:
         """
         Convert to dictionary for serialization.
-        
+
         Returns:
             Dictionary with 'length' and 'content' keys
         """
-        return {
-            'length': self.length,
-            'content': self.content
-        }
+        return {"length": self.length, "content": self.content}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'SubRecord':
+    def from_dict(cls, data: dict[str, Any]) -> "SubRecord":
         """
         Create SubRecord from dictionary.
-        
+
         Args:
             data: Dictionary with 'content' key
-        
+
         Returns:
             SubRecord instance
         """
-        return cls(data['content'])
+        return cls(data["content"])
 
     def __repr__(self) -> str:
         return f"SubRecord(length={self.length})"
@@ -250,14 +247,14 @@ class SubRecord:
 def parse_subrecords(data: bytes, start_offset: int = 0) -> list[SubRecord]:
     """
     Parse all SubRecords from binary data.
-    
+
     Reads length-prefixed binary SubRecords until end of data.
     Stops if incomplete SubRecord encountered.
-    
+
     Args:
         data: Binary data containing SubRecords
         start_offset: Starting offset in data (default: 0)
-    
+
     Returns:
         List of SubRecord objects.
     """
@@ -272,7 +269,7 @@ def parse_subrecords(data: bytes, start_offset: int = 0) -> list[SubRecord]:
 
         if length == 0:
             # Empty SubRecord
-            subrecords.append(SubRecord(b''))
+            subrecords.append(SubRecord(b""))
             continue
 
         if reader.remaining_bytes() < length:
@@ -289,15 +286,15 @@ def parse_subrecords(data: bytes, start_offset: int = 0) -> list[SubRecord]:
 def serialize_subrecords(subrecords: list[SubRecord]) -> bytes:
     """
     Serialize SubRecords back to binary format.
-    
+
     Reconstructs binary stream from SubRecord objects.
     Format for each SubRecord:
         [4 bytes] Length (little-endian uint32, content length only)
         [N bytes] Content
-    
+
     Args:
         subrecords: List of SubRecord objects
-    
+
     Returns:
         Binary data ready to write to file
     """
@@ -306,7 +303,7 @@ def serialize_subrecords(subrecords: list[SubRecord]) -> bytes:
     for subrecord in subrecords:
         # Write length (NOT including this 4-byte field)
         length = len(subrecord.content)
-        result.extend(struct.pack('<I', length))
+        result.extend(struct.pack("<I", length))
 
         # Write content
         result.extend(subrecord.content)
@@ -317,42 +314,39 @@ def serialize_subrecords(subrecords: list[SubRecord]) -> bytes:
 def parse_binary_record_basic(data: bytes) -> dict[str, Any]:
     """
     Parse binary record into basic structure (type + SubRecords).
-    
+
     This is a convenience function that extracts the record type byte
     and parses all SubRecords.
-    
+
     Args:
         data: Binary record data (including type byte)
-    
+
     Returns:
         Dictionary with 'record_type' and 'subrecords' keys
     """
     if len(data) == 0:
-        return {'record_type': 0, 'subrecords': []}
+        return {"record_type": 0, "subrecords": []}
 
     record_type = data[0]
     subrecords = parse_subrecords(data, start_offset=1)
 
-    return {
-        'record_type': record_type,
-        'subrecords': subrecords
-    }
+    return {"record_type": record_type, "subrecords": subrecords}
 
 
 def serialize_binary_record_basic(record: dict[str, Any]) -> bytes:
     """
     Serialize binary record from basic structure (type + SubRecords).
-    
+
     Inverse of parse_binary_record_basic().
-    
+
     Args:
         record: Dictionary with 'record_type' and 'subrecords' keys
-    
+
     Returns:
         Binary data (type byte + serialized SubRecords)
     """
-    record_type = record.get('record_type', 0)
-    subrecords = record.get('subrecords', [])
+    record_type = record.get("record_type", 0)
+    subrecords = record.get("subrecords", [])
 
     result = bytearray()
     result.append(record_type)

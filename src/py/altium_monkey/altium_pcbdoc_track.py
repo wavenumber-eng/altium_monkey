@@ -97,7 +97,9 @@ def parse_track_record(data: bytes, offset: int) -> PcbDocTrack | None:
             pos = 0
 
             if len(content) < 35:
-                log.warning(f"SubRecord 1 too short at offset {offset}: {len(content)} bytes")
+                log.warning(
+                    f"SubRecord 1 too short at offset {offset}: {len(content)} bytes"
+                )
                 return None
 
             track.layer = content[pos]
@@ -152,7 +154,9 @@ def parse_track_record(data: bytes, offset: int) -> PcbDocTrack | None:
         return None
 
 
-def parse_tracks_from_pcbdoc(pcbdoc_path: Path, verbose: bool = False) -> list[PcbDocTrack]:
+def parse_tracks_from_pcbdoc(
+    pcbdoc_path: Path, verbose: bool = False
+) -> list[PcbDocTrack]:
     """
     Parse all track records from a PcbDoc file.
     """

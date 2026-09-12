@@ -356,17 +356,8 @@ class AltiumPcbDimension(PcbPropertyRecordMixin):
             y1 = self.y1
             x2 = self.x2
             y2 = self.y2
-            if (
-                x1 is not None
-                and y1 is not None
-                and x2 is not None
-                and y2 is not None
-            ):
-                return (
-                    math.hypot(float(x2 - x1), float(y2 - y1))
-                    / 10000.0
-                    * 0.0254
-                )
+            if x1 is not None and y1 is not None and x2 is not None and y2 is not None:
+                return math.hypot(float(x2 - x1), float(y2 - y1)) / 10000.0 * 0.0254
             return None
         if kind in {"radial", "radial_diameter"}:
             if self.references:

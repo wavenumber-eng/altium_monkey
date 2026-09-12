@@ -7,9 +7,6 @@ from __future__ import annotations
 _IMPLEMENTATION_FIELDS_TO_REMOVE = {
     "__ORIGINAL_INDEX__",
     "__CHILDREN__",
-    "DatabaseDatalinksLocked",
-    "DatalinksLocked",
-    "UseComponentLibrary",
 }
 
 
@@ -65,5 +62,8 @@ def clean_implementation_child_record_fields(
     Prepare an IMPLEMENTATION child record for serialization.
     """
     cleaned = clean_implementation_record_fields(record)
+    for key in tuple(cleaned):
+        if key.lower() in {"uniqueid", "%utf8%uniqueid"}:
+            cleaned.pop(key)
     cleaned["OwnerIndex"] = str(owner_index)
     return cleaned

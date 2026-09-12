@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:compiled_design_model_b0",
+  "title": "Altium Monkey compiled design model b0",
+  "description": "Handwritten beta diagnostic transport emitted by AltiumCompiledDesign.to_dict().",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "summary", "options", "annotation", "logical_documents", "physical_documents", "sheet_symbols", "physical_sheet_symbols", "components", "nets", "diagnostics", "source_path", "compile"],
+  "properties": {
+    "schema": {"const": "altium_monkey.sch.compiled_design_model.b0"},
+    "summary": {"$ref": "#/$defs/summary"},
+    "options": {"$ref": "#/$defs/options"},
+    "annotation": {"$ref": "#/$defs/annotation"},
+    "logical_documents": {"type": "array", "items": {"$ref": "#/$defs/logical_document"}},
+    "physical_documents": {"type": "array", "items": {"$ref": "#/$defs/physical_document"}},
+    "sheet_symbols": {"type": "array", "items": {"$ref": "#/$defs/sheet_symbol"}},
+    "physical_sheet_symbols": {"type": "array", "items": {"$ref": "#/$defs/physical_sheet_symbol"}},
+    "components": {"type": "array", "items": {"$ref": "#/$defs/component"}},
+    "nets": {"type": "array", "items": {"$ref": "#/$defs/net"}},
+    "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}},
+    "source_path": {"$ref": "#/$defs/nullable_string"},
+    "compile": {"$ref": "#/$defs/json_object"},
+    "debug": {"$ref": "#/$defs/json_object"}
+  },
+  "$defs": {
+    "json_object": {"type": "object", "additionalProperties": true},
+    "nullable_string": {"type": ["string", "null"]},
+    "signed_integer": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+    "nullable_integer": {"oneOf": [{"$ref": "#/$defs/signed_integer"}, {"type": "null"}]},
+    "string_list": {"type": "array", "items": {"type": "string"}},
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "code", "message", "source_id"],
+      "properties": {
+        "severity": {"type": "string"},
+        "code": {"type": "string"},
+        "message": {"type": "string"},
+        "source_id": {"$ref": "#/$defs/nullable_string"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logical_document_count", "physical_document_count", "sheet_symbol_count", "physical_sheet_symbol_count", "component_count", "net_count", "flattened_net_count", "diagnostic_count", "has_errors", "has_warnings"],
+      "properties": {
+        "logical_document_count": {"$ref": "#/$defs/signed_integer"},
+        "physical_document_count": {"$ref": "#/$defs/signed_integer"},
+        "sheet_symbol_count": {"$ref": "#/$defs/signed_integer"},
+        "physical_sheet_symbol_count": {"$ref": "#/$defs/signed_integer"},
+        "component_count": {"$ref": "#/$defs/signed_integer"},
+        "net_count": {"$ref": "#/$defs/signed_integer"},
+        "flattened_net_count": {"$ref": "#/$defs/signed_integer"},
+        "diagnostic_count": {"$ref": "#/$defs/signed_integer"},
+        "has_errors": {"type": "boolean"},
+        "has_warnings": {"type": "boolean"}
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hierarchy_mode", "hierarchy_mode_value", "effective_hierarchy_mode", "allow_port_net_names", "allow_sheet_entry_net_names", "netlist_single_pin_nets", "append_sheet_number_to_local_nets", "power_port_names_take_priority", "name_nets_hierarchically", "auto_sheet_numbering", "allow_device_sheet_editing", "channel_designator_format", "channel_room_naming_style", "channel_room_level_separator", "new_indexing_of_sheet_symbols", "reorder_documents_on_compile", "push_eco_to_annotation_file", "option_sources", "deferred_options"],
+      "properties": {
+        "hierarchy_mode": {"type": "string"},
+        "hierarchy_mode_value": {"$ref": "#/$defs/signed_integer"},
+        "effective_hierarchy_mode": {"type": "string"},
+        "allow_port_net_names": {"type": "boolean"},
+        "allow_sheet_entry_net_names": {"type": "boolean"},
+        "netlist_single_pin_nets": {"type": "boolean"},
+        "append_sheet_number_to_local_nets": {"type": "boolean"},
+        "power_port_names_take_priority": {"type": "boolean"},
+        "name_nets_hierarchically": {"type": "boolean"},
+        "auto_sheet_numbering": {"type": "boolean"},
+        "allow_device_sheet_editing": {"type": "boolean"},
+        "channel_designator_format": {"type": "string"},
+        "channel_room_naming_style": {"$ref": "#/$defs/signed_integer"},
+        "channel_room_level_separator": {"type": "string"},
+        "new_indexing_of_sheet_symbols": {"type": "boolean"},
+        "reorder_documents_on_compile": {"type": "boolean"},
+        "push_eco_to_annotation_file": {"type": "boolean"},
+        "option_sources": {"type": "object", "additionalProperties": {"type": "string"}},
+        "deferred_options": {"$ref": "#/$defs/string_list"}
+      }
+    },
+    "annotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "path", "designator_record_count", "sheet_number_record_count", "net_name_override_count", "diagnostics"],
+      "properties": {
+        "status": {"type": "string"},
+        "path": {"$ref": "#/$defs/nullable_string"},
+        "designator_record_count": {"$ref": "#/$defs/signed_integer"},
+        "sheet_number_record_count": {"$ref": "#/$defs/signed_integer"},
+        "net_name_override_count": {"$ref": "#/$defs/signed_integer"},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}}
+      }
+    },
+    "logical_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_path", "file_name", "ordinal", "is_top_level_candidate", "sheet_symbol_ids", "parent_sheet_symbol_ids", "component_source_count", "local_net_count", "diagnostics"],
+      "properties": {
+        "id": {"type": "string"},
+        "source_path": {"type": "string"},
+        "file_name": {"type": "string"},
+        "ordinal": {"$ref": "#/$defs/signed_integer"},
+        "is_top_level_candidate": {"type": "boolean"},
+        "sheet_symbol_ids": {"$ref": "#/$defs/string_list"},
+        "parent_sheet_symbol_ids": {"$ref": "#/$defs/string_list"},
+        "component_source_count": {"$ref": "#/$defs/signed_integer"},
+        "local_net_count": {"$ref": "#/$defs/signed_integer"},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}}
+      }
+    },
+    "sheet_symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "logical_document_id", "source_object_id", "designator", "child_filename", "child_logical_document_id", "child_source_path", "child_match_kind", "child_candidate_logical_document_ids", "child_physical_document_ids", "is_repeat", "repeat_prefix", "repeat_start", "repeat_end", "entry_count", "diagnostics"],
+      "properties": {
+        "id": {"type": "string"},
+        "logical_document_id": {"type": "string"},
+        "source_object_id": {"type": "string"},
+        "designator": {"type": "string"},
+        "child_filename": {"type": "string"},
+        "child_logical_document_id": {"$ref": "#/$defs/nullable_string"},
+        "child_source_path": {"$ref": "#/$defs/nullable_string"},
+        "child_match_kind": {"type": "string"},
+        "child_candidate_logical_document_ids": {"$ref": "#/$defs/string_list"},
+        "child_physical_document_ids": {"$ref": "#/$defs/string_list"},
+        "is_repeat": {"type": "boolean"},
+        "repeat_prefix": {"$ref": "#/$defs/nullable_string"},
+        "repeat_start": {"$ref": "#/$defs/nullable_integer"},
+        "repeat_end": {"$ref": "#/$defs/nullable_integer"},
+        "entry_count": {"$ref": "#/$defs/signed_integer"},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}}
+      }
+    },
+    "physical_sheet_symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "logical_sheet_symbol_id", "owner_logical_document_id", "owner_physical_document_id", "source_object_id", "logical_designator", "physical_designator", "sheet_symbol_file_name", "child_logical_document_id", "child_source_path", "child_physical_document_id", "child_physical_instance_path", "child_physical_instance_unique_id", "child_channel_index", "entry_count"],
+      "properties": {
+        "id": {"type": "string"},
+        "logical_sheet_symbol_id": {"type": "string"},
+        "owner_logical_document_id": {"type": "string"},
+        "owner_physical_document_id": {"type": "string"},
+        "source_object_id": {"type": "string"},
+        "logical_designator": {"type": "string"},
+        "physical_designator": {"type": "string"},
+        "sheet_symbol_file_name": {"type": "string"},
+        "child_logical_document_id": {"$ref": "#/$defs/nullable_string"},
+        "child_source_path": {"$ref": "#/$defs/nullable_string"},
+        "child_physical_document_id": {"type": "string"},
+        "child_physical_instance_path": {"type": "string"},
+        "child_physical_instance_unique_id": {"type": "string"},
+        "child_channel_index": {"$ref": "#/$defs/signed_integer"},
+        "entry_count": {"$ref": "#/$defs/signed_integer"}
+      }
+    },
+    "physical_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "logical_document_id", "source_path", "file_name", "ordinal", "physical_instance_path", "physical_instance_unique_id", "channel_index", "channel_prefix", "channel_alpha", "room_name", "parent_id", "parent_sheet_symbol_id", "child_ids", "component_ids", "sheet_number", "document_number", "physical_room_name", "diagnostics"],
+      "properties": {
+        "id": {"type": "string"},
+        "logical_document_id": {"type": "string"},
+        "source_path": {"type": "string"},
+        "file_name": {"type": "string"},
+        "ordinal": {"$ref": "#/$defs/signed_integer"},
+        "physical_instance_path": {"type": "string"},
+        "physical_instance_unique_id": {"type": "string"},
+        "channel_index": {"$ref": "#/$defs/signed_integer"},
+        "channel_prefix": {"$ref": "#/$defs/nullable_string"},
+        "channel_alpha": {"$ref": "#/$defs/nullable_string"},
+        "room_name": {"type": "string"},
+        "parent_id": {"$ref": "#/$defs/nullable_string"},
+        "parent_sheet_symbol_id": {"$ref": "#/$defs/nullable_string"},
+        "child_ids": {"$ref": "#/$defs/string_list"},
+        "component_ids": {"$ref": "#/$defs/string_list"},
+        "sheet_number": {"$ref": "#/$defs/nullable_string"},
+        "document_number": {"$ref": "#/$defs/nullable_string"},
+        "physical_room_name": {"type": "string"},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}}
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "logical_document_id", "physical_document_id", "source_object_id", "source_unique_id_path", "logical_designator", "physical_designator", "display_designator", "lib_reference", "design_item_id", "footprint", "component_kind", "component_kind_value", "include_in_netlist", "exclude_from_bom", "value", "description", "parameters", "pin_count", "all_pin_count", "part_count", "current_part_id", "annotation_state", "annotation_locked", "diagnostics"],
+      "properties": {
+        "id": {"type": "string"},
+        "logical_document_id": {"type": "string"},
+        "physical_document_id": {"type": "string"},
+        "source_object_id": {"type": "string"},
+        "source_unique_id_path": {"type": "string"},
+        "logical_designator": {"type": "string"},
+        "physical_designator": {"type": "string"},
+        "display_designator": {"type": "string"},
+        "lib_reference": {"type": "string"},
+        "design_item_id": {"type": "string"},
+        "footprint": {"type": "string"},
+        "component_kind": {"type": "string"},
+        "component_kind_value": {"$ref": "#/$defs/signed_integer"},
+        "include_in_netlist": {"type": "boolean"},
+        "exclude_from_bom": {"type": "boolean"},
+        "value": {"type": "string"},
+        "description": {"type": "string"},
+        "parameters": {"type": "object", "additionalProperties": {"type": "string"}},
+        "pin_count": {"$ref": "#/$defs/signed_integer"},
+        "all_pin_count": {"$ref": "#/$defs/signed_integer"},
+        "part_count": {"$ref": "#/$defs/signed_integer"},
+        "current_part_id": {"$ref": "#/$defs/signed_integer"},
+        "annotation_state": {"type": "string"},
+        "annotation_locked": {"type": "boolean"},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}}
+      }
+    },
+    "connection_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "units"],
+      "properties": {"x": {"$ref": "#/$defs/signed_integer"}, "y": {"$ref": "#/$defs/signed_integer"}, "units": {"const": "altium_coord"}}
+    },
+    "nullable_connection_point": {"oneOf": [{"$ref": "#/$defs/connection_point"}, {"type": "null"}]},
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "designator", "pin", "pin_name", "pin_type"],
+      "properties": {"id": {"type": "string"}, "designator": {"type": "string"}, "pin": {"type": "string"}, "pin_name": {"type": "string"}, "pin_type": {"type": "string"}}
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "element_id", "object_id", "name", "parent_id", "designator", "pin", "pin_name", "connection_point"],
+      "properties": {"id": {"type": "string"}, "role": {"type": "string"}, "element_id": {"type": "string"}, "object_id": {"type": "string"}, "name": {"type": "string"}, "parent_id": {"type": "string"}, "designator": {"type": "string"}, "pin": {"type": "string"}, "pin_name": {"type": "string"}, "connection_point": {"$ref": "#/$defs/nullable_connection_point"}}
+    },
+    "net_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "name", "parent_id", "element_id", "object_id", "designator", "pin", "pin_name", "physical_document_id", "connection_point", "removed", "inferred_from_harness"],
+      "properties": {"id": {"type": "string"}, "kind": {"type": "string"}, "name": {"type": "string"}, "parent_id": {"type": "string"}, "element_id": {"type": "string"}, "object_id": {"type": "string"}, "designator": {"type": "string"}, "pin": {"type": "string"}, "pin_name": {"type": "string"}, "physical_document_id": {"type": "string"}, "connection_point": {"$ref": "#/$defs/nullable_connection_point"}, "removed": {"type": "boolean"}, "inferred_from_harness": {"type": "boolean"}}
+    },
+    "net": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "original_name", "override_name", "scope", "logical_document_id", "physical_document_ids", "auto_named", "single_pin", "aliases", "terminal_ids", "terminals", "endpoint_ids", "endpoints", "item_ids", "items", "source_net_ids", "parent_net_id", "child_net_id", "link_ids", "diagnostics"],
+      "properties": {
+        "id": {"type": "string"}, "name": {"type": "string"}, "original_name": {"$ref": "#/$defs/nullable_string"}, "override_name": {"$ref": "#/$defs/nullable_string"}, "scope": {"type": "string"}, "logical_document_id": {"$ref": "#/$defs/nullable_string"},
+        "physical_document_ids": {"$ref": "#/$defs/string_list"}, "auto_named": {"type": "boolean"}, "single_pin": {"type": "boolean"}, "aliases": {"$ref": "#/$defs/string_list"}, "terminal_ids": {"$ref": "#/$defs/string_list"}, "terminals": {"type": "array", "items": {"$ref": "#/$defs/terminal"}}, "endpoint_ids": {"$ref": "#/$defs/string_list"}, "endpoints": {"type": "array", "items": {"$ref": "#/$defs/endpoint"}}, "item_ids": {"$ref": "#/$defs/string_list"}, "items": {"type": "array", "items": {"$ref": "#/$defs/net_item"}}, "source_net_ids": {"$ref": "#/$defs/string_list"}, "parent_net_id": {"type": "string"}, "child_net_id": {"type": "string"}, "link_ids": {"$ref": "#/$defs/string_list"}, "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}}
+      }
+    }
+  }
+}

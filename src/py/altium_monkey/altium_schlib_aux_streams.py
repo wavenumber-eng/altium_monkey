@@ -9,8 +9,9 @@ import zlib
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, TypedDict
 
-from .altium_pintextdata_modifier import PinTextData
-from .altium_sch_enums import PinItemMode, PinTextAnchor
+from .altium_pintextdata_modifier import PinTextData, PinTextPosition
+from .altium_sch_auxiliary_codec import encode_auxiliary_stream
+from .altium_sch_enums import PinItemMode, PinTextAnchor, PinTextOrientation
 
 if TYPE_CHECKING:
     from .altium_record_sch__pin import AltiumSchPin, PinTextSettings
@@ -30,9 +31,8 @@ class _PinTextContext(TypedDict):
     des_needs_position: bool
     name_margin_mils: float
     des_margin_mils: float
-    name_has_customization: bool
-    des_has_customization: bool
-    has_custom_font: bool
+    name_has_custom_font: bool
+    des_has_custom_font: bool
 
 
 def build_pintextdata_stream_for_pins(
@@ -53,12 +53,7 @@ def build_pintextdata_stream_for_pins(
     if not pins_with_pintextdata:
         return None
 
-    result = bytearray()
-    header_text = f"|HEADER=PinTextData|Weight={len(pins_with_pintextdata)}"
-    header_bytes = header_text.encode("iso-8859-1")
-    result.extend(struct.pack("<I", len(header_bytes) + 1))
-    result.extend(header_bytes)
-    result.append(0x00)
+    entries: list[tuple[str, bytes]] = []
 
     # Altium keys each PinTextData record by the pin's full symbol-list index,
     # not by a dense index over only customized pins.
@@ -70,9 +65,9 @@ def build_pintextdata_stream_for_pins(
             resolve_designator_font_id=resolve_font_id,
         )
         attrs = _build_pintext_attrs(ctx)
-        _append_pintext_record(result, str(ctx["pintextdata_designator"]), attrs)
+        entries.append((str(ctx["pintextdata_designator"]), attrs))
 
-    return bytes(result)
+    return encode_auxiliary_stream("PinTextData", entries)
 
 
 def build_pinfrac_stream_for_pins(pins: Sequence["AltiumSchPin"]) -> bytes | None:
@@ -172,272 +167,39 @@ def _resolve_pintext_context(
         "des_needs_position": des_needs_position,
         "name_margin_mils": float(name_margin_mils),
         "des_margin_mils": float(des_margin_mils),
-        "name_has_customization": pin.needs_custom_name_pintextdata,
-        "des_has_customization": pin.needs_custom_designator_pintextdata,
-        "has_custom_font": (
-            name_settings.font_mode == PinItemMode.CUSTOM
-            or designator_settings.font_mode == PinItemMode.CUSTOM
-        ),
+        "name_has_custom_font": name_settings.font_mode == PinItemMode.CUSTOM,
+        "des_has_custom_font": designator_settings.font_mode == PinItemMode.CUSTOM,
     }
 
 
-def _pintext_quadrant_flags(rotation: int, ref_to_comp: bool) -> int:
-    flags = 0x01
-    if ref_to_comp:
-        flags |= 0x02
-    flags |= ((rotation // 90) << 2) & 0x0C
-    return flags
-
-
-def _pintext_extended_flags(rotation: int, ref_to_comp: bool) -> int:
-    flags = 0x11 | (0x02 if ref_to_comp else 0x00)
-    if rotation == 90:
-        flags |= 0x04
-    elif rotation == 180:
-        flags |= 0x08
-    elif rotation == 270:
-        flags |= 0x0C
-    return flags
-
-
-def _build_pintext_dual_position_attrs(
-    *,
-    name_margin_mils: float,
-    des_margin_mils: float,
-    name_ref_to_comp: bool,
-    des_ref_to_comp: bool,
-    name_rotation: int,
-    designator_rotation: int,
-) -> bytes:
-    name_margin_dxp = round(name_margin_mils * 10000)
-    des_margin_dxp = round(des_margin_mils * 10000)
-    attrs = bytearray(10)
-    attrs[0] = _pintext_quadrant_flags(name_rotation, name_ref_to_comp)
-    struct.pack_into("<i", attrs, 1, name_margin_dxp)
-    attrs[5] = _pintext_quadrant_flags(designator_rotation, des_ref_to_comp)
-    struct.pack_into("<i", attrs, 6, des_margin_dxp)
-    return bytes(attrs)
-
-
-def _build_pintext_dual_custom_attrs(
-    *,
-    name_margin_mils: float,
-    des_margin_mils: float,
-    name_ref_to_comp: bool,
-    des_ref_to_comp: bool,
-    name_rotation: int,
-    designator_rotation: int,
-    name_font_id: int,
-    designator_font_id: int,
-    name_color: int,
-    designator_color: int,
-) -> bytes:
-    name_margin_dxp = round(name_margin_mils * 10000)
-    des_margin_dxp = round(des_margin_mils * 10000)
-    attrs = bytearray(22)
-    attrs[0] = _pintext_extended_flags(name_rotation, name_ref_to_comp)
-    struct.pack_into("<i", attrs, 1, name_margin_dxp)
-    struct.pack_into("<H", attrs, 5, name_font_id)
-    struct.pack_into("<I", attrs, 7, name_color)
-    attrs[11] = _pintext_extended_flags(designator_rotation, des_ref_to_comp)
-    struct.pack_into("<i", attrs, 12, des_margin_dxp)
-    struct.pack_into("<H", attrs, 16, designator_font_id)
-    struct.pack_into("<I", attrs, 18, designator_color)
-    return bytes(attrs)
-
-
-def _build_pintext_designator_position_attrs(
-    *,
-    des_margin_mils: float,
-    des_ref_to_comp: bool,
-    designator_rotation: int,
-    designator_font_id: int,
-    designator_color: int,
-    name_font_id: int,
-    name_color: int,
-    name_has_customization: bool,
-) -> bytes:
-    if name_has_customization:
-        des_margin_dxp = round(des_margin_mils * 10000)
-        attrs = bytearray(18)
-        attrs[0] = 0x10
-        struct.pack_into("<H", attrs, 1, name_font_id)
-        struct.pack_into("<I", attrs, 3, name_color)
-        attrs[7] = _pintext_extended_flags(designator_rotation, des_ref_to_comp)
-        struct.pack_into("<i", attrs, 8, des_margin_dxp)
-        struct.pack_into("<H", attrs, 12, designator_font_id)
-        struct.pack_into("<I", attrs, 14, designator_color)
-        return bytes(attrs)
-
-    des_margin_int16 = round(des_margin_mils * 39.0625)
-    attrs = bytearray(12)
-    attrs[0] = 0x00
-    attrs[1] = _pintext_extended_flags(designator_rotation, des_ref_to_comp)
-    attrs[2] = 0x00 if designator_rotation == 90 else 0x80
-    struct.pack_into("<H", attrs, 3, des_margin_int16)
-    attrs[5] = 0x00
-    attrs[6] = designator_font_id
-    struct.pack_into("<I", attrs, 7, designator_color)
-    attrs[11] = 0x00
-    return bytes(attrs)
-
-
-def _build_pintext_name_position_attrs(
-    *,
-    name_margin_mils: float,
-    name_ref_to_comp: bool,
-    name_rotation: int,
-    name_font_id: int,
-    name_color: int,
-    designator_font_id: int,
-    designator_color: int,
-    des_has_customization: bool,
-) -> bytes:
-    if des_has_customization:
-        name_margin_dxp = round(name_margin_mils * 10000)
-        attrs = bytearray(18)
-        attrs[0] = _pintext_extended_flags(name_rotation, name_ref_to_comp)
-        struct.pack_into("<i", attrs, 1, name_margin_dxp)
-        attrs[5] = name_font_id
-        struct.pack_into("<I", attrs, 6, name_color)
-        attrs[10] = 0x00
-        attrs[11] = 0x10
-        attrs[12] = designator_font_id
-        struct.pack_into("<I", attrs, 13, designator_color)
-        attrs[17] = 0x00
-        return bytes(attrs)
-
-    name_margin_int16 = round(name_margin_mils * 39.0625)
-    attrs = bytearray(12)
-    attrs[0] = _pintext_extended_flags(name_rotation, name_ref_to_comp)
-    attrs[1] = 0x00
-    struct.pack_into("<H", attrs, 2, name_margin_int16)
-    attrs[4] = 0x00
-    attrs[5] = name_font_id
-    struct.pack_into("<I", attrs, 6, name_color)
-    attrs[10] = 0x00
-    attrs[11] = 0x00
-    return bytes(attrs)
-
-
-def _build_pintext_single_custom_attrs(
-    *,
-    is_name: bool,
-    font_id: int,
-    color: int,
-) -> bytes:
-    attrs = bytearray(8)
-    if is_name:
-        attrs[0] = 0x10
-        attrs[1] = font_id
-        struct.pack_into("<I", attrs, 2, color)
-    else:
-        attrs[0] = 0x00
-        attrs[1] = 0x10
-        attrs[2] = font_id
-        struct.pack_into("<I", attrs, 3, color)
-    attrs[6] = 0x00
-    attrs[7] = 0x00
-    return bytes(attrs)
-
-
 def _build_pintext_attrs(ctx: _PinTextContext) -> bytes:
-    name_needs_position = bool(ctx["name_needs_position"])
-    des_needs_position = bool(ctx["des_needs_position"])
-    has_custom_font = bool(ctx["has_custom_font"])
-    name_has_customization = bool(ctx["name_has_customization"])
-    des_has_customization = bool(ctx["des_has_customization"])
-    name_rotation = int(ctx["name_rotation"])
-    designator_rotation = int(ctx["designator_rotation"])
-    name_ref_to_comp = bool(ctx["name_ref_to_comp"])
-    des_ref_to_comp = bool(ctx["des_ref_to_comp"])
-    name_font_id = int(ctx["name_font_id"])
-    designator_font_id = int(ctx["designator_font_id"])
-    name_color = int(ctx["name_color"])
-    designator_color = int(ctx["designator_color"])
-    name_margin_mils = float(ctx["name_margin_mils"])
-    des_margin_mils = float(ctx["des_margin_mils"])
-
-    if name_needs_position and des_needs_position and not has_custom_font:
-        return _build_pintext_dual_position_attrs(
-            name_margin_mils=name_margin_mils,
-            des_margin_mils=des_margin_mils,
-            name_ref_to_comp=name_ref_to_comp,
-            des_ref_to_comp=des_ref_to_comp,
-            name_rotation=name_rotation,
-            designator_rotation=designator_rotation,
+    name_position = None
+    if ctx["name_needs_position"]:
+        name_position = PinTextPosition(
+            margin_mils=ctx["name_margin_mils"],
+            orientation=PinTextOrientation(ctx["name_rotation"]),
+            reference_to_component=ctx["name_ref_to_comp"],
         )
-
-    if name_needs_position and des_needs_position:
-        return _build_pintext_dual_custom_attrs(
-            name_margin_mils=name_margin_mils,
-            des_margin_mils=des_margin_mils,
-            name_ref_to_comp=name_ref_to_comp,
-            des_ref_to_comp=des_ref_to_comp,
-            name_rotation=name_rotation,
-            designator_rotation=designator_rotation,
-            name_font_id=name_font_id,
-            designator_font_id=designator_font_id,
-            name_color=name_color,
-            designator_color=designator_color,
+    designator_position = None
+    if ctx["des_needs_position"]:
+        designator_position = PinTextPosition(
+            margin_mils=ctx["des_margin_mils"],
+            orientation=PinTextOrientation(ctx["designator_rotation"]),
+            reference_to_component=ctx["des_ref_to_comp"],
         )
-
-    if des_needs_position and not name_needs_position:
-        return _build_pintext_designator_position_attrs(
-            des_margin_mils=des_margin_mils,
-            des_ref_to_comp=des_ref_to_comp,
-            designator_rotation=designator_rotation,
-            designator_font_id=designator_font_id,
-            designator_color=designator_color,
-            name_font_id=name_font_id,
-            name_color=name_color,
-            name_has_customization=name_has_customization,
-        )
-
-    if name_needs_position and not des_needs_position:
-        return _build_pintext_name_position_attrs(
-            name_margin_mils=name_margin_mils,
-            name_ref_to_comp=name_ref_to_comp,
-            name_rotation=name_rotation,
-            name_font_id=name_font_id,
-            name_color=name_color,
-            designator_font_id=designator_font_id,
-            designator_color=designator_color,
-            des_has_customization=des_has_customization,
-        )
-
-    if des_has_customization and not name_has_customization:
-        return _build_pintext_single_custom_attrs(
-            is_name=False,
-            font_id=designator_font_id,
-            color=designator_color,
-        )
-
-    if name_has_customization and not des_has_customization:
-        return _build_pintext_single_custom_attrs(
-            is_name=True,
-            font_id=name_font_id,
-            color=name_color,
-        )
-
-    pin_text_data = PinTextData.create_both_format(
-        name_font_id=name_font_id,
-        designator_font_id=designator_font_id,
-        name_color=name_color,
-        designator_color=designator_color,
+    pin_text_data = PinTextData(
+        format_type="AUTO",
+        raw_data=bytearray(),
+        name_font_id=ctx["name_font_id"] if ctx["name_has_custom_font"] else None,
+        name_color=ctx["name_color"] if ctx["name_has_custom_font"] else None,
+        designator_font_id=(
+            ctx["designator_font_id"] if ctx["des_has_custom_font"] else None
+        ),
+        designator_color=(
+            ctx["designator_color"] if ctx["des_has_custom_font"] else None
+        ),
+        position=name_position,
+        name_position=name_position,
+        designator_position=designator_position,
     )
     return pin_text_data.serialize()
-
-
-def _append_pintext_record(result: bytearray, designator: str, attrs: bytes) -> None:
-    compressed = zlib.compress(attrs)
-    designator_bytes = designator.encode("iso-8859-1")
-    str_len = len(designator_bytes)
-    record_len = 2 + str_len + 4 + len(compressed)
-    result.extend(struct.pack("<I", record_len)[:3])
-    result.append(0x01)
-    result.append(0xD0)
-    result.append(str_len)
-    result.extend(designator_bytes)
-    result.extend(struct.pack("<I", len(compressed)))
-    result.extend(compressed)

@@ -41,6 +41,7 @@ class TrueTypeFont:
         # Parse required tables in order of dependency
         self.units_per_em = self._parse_head()
         hhea_asc, hhea_desc, hhea_gap, self.num_hmetrics = self._parse_hhea()
+        self.gdi_line_spacing = hhea_asc + abs(hhea_desc) + hhea_gap
 
         # IMPORTANT: GDI+ uses OS/2 table metrics, not hhea!
         # This is critical for fonts like Calibri where values differ.
@@ -68,6 +69,7 @@ class TrueTypeFont:
         # Build character-to-glyph mapping and get advance widths
         self.cmap = self._parse_cmap()
         self.advances, self.lsbs = self._parse_hmtx()
+        self.advance_heights = self._parse_vmtx()
 
         # Parse glyph bounding boxes for accurate RSB calculation
         self.glyph_widths = self._parse_glyph_bounds()
@@ -481,6 +483,28 @@ class TrueTypeFont:
 
         return advances, lsbs
 
+    def _parse_vmtx(self) -> list[int]:
+        """Parse normalized-height source metrics from optional vertical tables."""
+        if "vhea" not in self._tables or "vmtx" not in self._tables:
+            return []
+        try:
+            vhea = self._get_table("vhea")
+            number_of_metrics = struct.unpack(">H", vhea[34:36])[0]
+            maxp = self._get_table("maxp")
+            number_of_glyphs = struct.unpack(">H", maxp[4:6])[0]
+            if not 0 < number_of_metrics <= number_of_glyphs:
+                return []
+
+            vmtx = self._get_table("vmtx")
+            advances = [
+                struct.unpack(">H", vmtx[index * 4 : index * 4 + 2])[0]
+                for index in range(number_of_metrics)
+            ]
+            advances.extend([advances[-1]] * (number_of_glyphs - number_of_metrics))
+            return advances
+        except (KeyError, struct.error):
+            return []
+
     def _parse_glyph_bounds(self) -> list[int]:
         """
         Parse glyph bounding boxes from loca + glyf tables.
@@ -557,6 +581,16 @@ class TrueTypeFont:
             # Use last advance width for monospace trailing glyphs
             return self.advances[-1]
         return 0
+
+    def get_advance_height(self, glyph_id: int) -> int:
+        """Get the WPF-compatible advance height in font design units."""
+        if 0 <= glyph_id < len(self.advance_heights):
+            return self.advance_heights[glyph_id]
+        if self.advance_heights:
+            return self.advance_heights[-1]
+        if self.typo_ascender > 0:
+            return self.typo_ascender + self.typo_descender
+        return self.units_per_em
 
     def get_ascent(self, font_size_px: float) -> float:
         """

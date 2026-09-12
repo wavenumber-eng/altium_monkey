@@ -103,8 +103,14 @@ Installed system fonts are preferred, and callers can add search roots through
 bundled open-source fonts when unavailable: Arimo for Arial and Microsoft Sans
 Serif-style families, Tinos for Times New Roman-style families, and Cousine for
 Courier New or monospace families. When bundled fallback fonts are used,
-schematic SVG embeds those font faces so browser layout follows the same
-metrics used by the renderer.
+font resolution and measurement use those faces in all modes. SVG attachment is
+separate: the compact default emits no font payload, while
+`SchSvgRenderOptions(embed_bundled_fallback_fonts=True)` embeds only the exact
+package-owned fallback faces required by painted `<text>` elements. Installed,
+configured, alias, explicit-path, test, and general-search fonts are never
+attached. Polygon text has no browser-font dependency and does not attach a
+face. The renderer writes no font sidecars. Compact output can render
+differently on a viewer that does not have the selected fallback family.
 
 ## PCB SVG
 
@@ -417,7 +423,7 @@ Overlay groups are emitted after normal layer geometry when
 obscure review labels. With `pad_designator_overlay_z_order="layer"`,
 pad-designator groups stay inside the owning layer output.
 
-Generated corpus review HTML may promote overlay groups into viewer-owned
+Generated review HTML may promote overlay groups into viewer-owned
 overlay layers so reviewers can toggle labels and datum markers independently
 from fabrication layers. That promotion is a review UI behavior; the raw SVG
 contract remains the class and `data-*` metadata documented above.
@@ -500,5 +506,5 @@ contract here documents how that payload relates to the rendered SVG elements.
 ## Test Gates
 
 The SVG contract is protected by targeted unit tests, public example tests,
-corpus SVG lanes, and release signoff checks. The signoff gate also checks that
-these contract docs are synchronized into the released docs.
+representative SVG comparisons, and release validation. The release checks also
+verify that these contract docs are synchronized into the published docs.

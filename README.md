@@ -48,7 +48,8 @@ Common workflows:
 6. inspect PCB layers, drills, board outlines, nets, and net classes
 7. author and mutate PCB vias, including IPC-4761 protection metadata
 8. extract embedded fonts and 3D models
-9. generate project containers and run associated OutJobs
+9. generate project containers and, on Windows with Altium Designer installed,
+   run associated OutJobs
 10. create experimental Draftsman pages with notes, text, pictures, and
     generated board-assembly-view highlight artwork
 
@@ -67,16 +68,22 @@ or with `uv`:
 uv add altium-monkey
 ```
 
-For running the examples, prefer `uv run ...`. It is the highest-probability
-path for using the expected interpreter and dependencies without local
-environment drift.
+Install the optional example dependencies before running the full example set:
+
+```powershell
+pip install "altium-monkey[examples]"
+```
+
+With `uv`, use `uv run --extra examples ...` so examples that synthesize STEP
+geometry receive CadQuery without changing the core runtime environment.
 
 The package includes dependencies for SVG text shaping and STEP-model bounds.
-STEP bounds use `wn-geometer`, with published wheels currently available for
-Windows amd64, macOS arm64, and Linux x86_64 tagged `manylinux_2_39`. See
-[RELEASE_NOTES.md](RELEASE_NOTES.md) for platform and Python-version
-boundaries. The CadQuery dependency is only needed for the public example that
-synthesizes new STEP models.
+STEP bounds use the required `wn-geometer==2026.9.11` dependency. That release
+publishes wheels for Windows amd64, macOS arm64, and Linux x86_64/aarch64 using
+`manylinux_2_35`; other platforms are not currently part of the install support
+boundary. See [RELEASE_NOTES.md](RELEASE_NOTES.md) for platform and
+Python-version boundaries. CadQuery is needed only by examples that synthesize
+new STEP models.
 
 ## Public API Compatibility
 
@@ -94,7 +101,22 @@ Parse a project and emit the public design JSON contract:
 from altium_monkey import AltiumDesign
 
 design = AltiumDesign.from_prjpcb("example.PrjPcb")
-payload = design.to_json()
+payload = design.to_json(include_pnp=False)  # Schematic-only; no board parse.
+```
+
+Project loading is proportional to the requested work. The default `FULL`
+mode loads the schematic/compiler context but does not parse any referenced
+PcbDoc. Use `METADATA_ONLY` when a tool needs project parameters, variants, or
+document discovery without loading either schematics or boards:
+
+```python
+from altium_monkey import AltiumDesign, AltiumProjectLoadMode
+
+design = AltiumDesign.from_prjpcb(
+    "example.PrjPcb",
+    load_mode=AltiumProjectLoadMode.METADATA_ONLY,
+)
+board = design.load_pcbdoc()  # The board is parsed only when requested.
 ```
 
 Create or modify a schematic, then save it:
@@ -138,12 +160,13 @@ The public docs are Markdown-first for this release:
 4. [PcbLib](docs/pcblib.md)
 5. [PrjPcb](docs/prjpcb.md)
 6. [AltiumDesign](docs/altium_design.md)
-7. [IntLib](docs/intlib.md)
-8. [API patterns](docs/api_patterns/index.md)
-9. [Schema contracts](docs/schemas/index.md)
-10. [Format contracts](docs/format_contracts/index.md)
-11. [Docs style foundation](docs/style.md)
-12. [Examples](docs/examples/index.md)
+7. [Draftsman](docs/draftsman.md)
+8. [IntLib](docs/intlib.md)
+9. [API patterns](docs/api_patterns/index.md)
+10. [Schema contracts](docs/schemas/index.md)
+11. [Format contracts](docs/format_contracts/index.md)
+12. [Docs style foundation](docs/style.md)
+13. [Examples](docs/examples/index.md)
 
 The examples are the best starting point for public API usage. They are kept in
 [`examples/`](examples/) and are indexed from `examples/manifest.toml`.
@@ -159,8 +182,21 @@ When a common Altium/Windows family is unavailable, schematic rendering can use
 bundled open-source fallback fonts. Arial and Microsoft Sans Serif-style
 families substitute Arimo, Times New Roman-style families substitute Tinos, and
 Courier New or monospace families substitute Cousine. SVG output embeds bundled
-fallback faces when they are used so browser rendering follows the same metrics
-used to place text.
+fallback faces only when callers explicitly request a self-contained artifact:
+
+```python
+from altium_monkey import SchSvgRenderOptions
+
+svg = schdoc.to_svg(
+    options=SchSvgRenderOptions(embed_bundled_fallback_fonts=True)
+)
+```
+
+The default is `False`, which keeps SVG output compact. Font substitution and
+text measurement are unchanged in either mode. The option never embeds an
+installed, configured, or otherwise caller-provided font, and it does not write
+font sidecar files. A compact SVG viewed on a machine without the selected
+fallback family may not reproduce the renderer's text metrics exactly.
 
 gotIR carries font-resolution diagnostics for substitutions and fallbacks so
 downstream tools can surface a warning instead of silently using a hard

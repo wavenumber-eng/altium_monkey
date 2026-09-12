@@ -5,9 +5,9 @@ stylesheet at [../assets/altium-monkey-docs.css](../assets/altium-monkey-docs.cs
 is the shared visual foundation for current static docs and future generated
 HTML docs.
 
-The visual source of truth is the Monkey Kit `altium-monkey` golden bundle.
-The public docs copy uses the amber phosphor theme, the Altium Monkey ASCII
-mark, and the generated Altium Stroke font assets.
+The visual source of truth is the published `altium-monkey` style bundle. The
+public docs use the amber phosphor theme, the Altium Monkey ASCII mark, and the
+generated Altium Stroke font assets.
 
 ## Scope
 
@@ -57,8 +57,8 @@ code blocks or the ASCII monkey mark.
 
 ## Monkey Mark
 
-The Altium Monkey ASCII mark is maintained privately as a Monkey Kit golden
-bundle and is always written lowercase (`altium-monkey`). Generated HTML docs
+The Altium Monkey ASCII mark is published with the documentation assets and is
+always written lowercase (`altium-monkey`). Generated HTML docs
 can embed the mark when a branded status/header mark is useful; embeds assume
 `../assets/altium-monkey-docs.css` or the portable Monkey Kit CSS has already
 been loaded.

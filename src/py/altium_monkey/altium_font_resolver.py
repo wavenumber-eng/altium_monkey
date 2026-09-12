@@ -172,6 +172,20 @@ def _resolve_test_fonts_dir() -> Path:
 
 TEST_FONTS_DIR = _resolve_test_fonts_dir()
 PACKAGE_FONT_ROOT = Path(__file__).resolve().parent / "data" / "fonts"
+_PACKAGE_BUNDLED_FONT_RELATIVE_PATHS: tuple[str, ...] = (
+    "arimo/Arimo-Regular.ttf",
+    "arimo/Arimo-Bold.ttf",
+    "arimo/Arimo-Italic.ttf",
+    "arimo/Arimo-BoldItalic.ttf",
+    "tinos/Tinos-Regular.ttf",
+    "tinos/Tinos-Bold.ttf",
+    "tinos/Tinos-Italic.ttf",
+    "tinos/Tinos-BoldItalic.ttf",
+    "cousine/Cousine-Regular.ttf",
+    "cousine/Cousine-Bold.ttf",
+    "cousine/Cousine-Italic.ttf",
+    "cousine/Cousine-BoldItalic.ttf",
+)
 
 
 def get_bundled_font_search_dirs() -> tuple[Path, ...]:
@@ -185,6 +199,36 @@ def get_bundled_font_search_dirs() -> tuple[Path, ...]:
             croscore_root / "tinos",
             croscore_root / "cousine",
         ]
+    )
+
+
+@lru_cache(maxsize=1)
+def get_package_bundled_font_inventory() -> tuple[Path, ...]:
+    """Return canonical package-owned font files eligible for SVG attachment."""
+    try:
+        root = (PACKAGE_FONT_ROOT / "croscore").resolve(strict=True)
+    except (OSError, RuntimeError):
+        return ()
+    inventory: list[Path] = []
+    for relative_path in _PACKAGE_BUNDLED_FONT_RELATIVE_PATHS:
+        try:
+            candidate = (root / relative_path).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if candidate.is_file() and candidate.is_relative_to(root):
+            inventory.append(candidate)
+    return tuple(inventory)
+
+
+def canonical_package_bundled_font_path(value: Path | str) -> Path | None:
+    """Return the canonical eligible package font matching ``value``, if any."""
+    try:
+        candidate = Path(value).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    return next(
+        (path for path in get_package_bundled_font_inventory() if path == candidate),
+        None,
     )
 
 

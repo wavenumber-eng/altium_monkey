@@ -8,8 +8,12 @@ from .altium_common_enums import ComponentKind
 def parse_component_kind(record: dict[str, str]) -> ComponentKind:
     """Parse component kind from the versioned record fields."""
     v1 = int(record.get("COMPONENTKIND", record.get("ComponentKind", 0)))
-    v2 = int(record.get("COMPONENTKINDVERSION2", record.get("ComponentKindVersion2", 0)))
-    v3 = int(record.get("COMPONENTKINDVERSION3", record.get("ComponentKindVersion3", 0)))
+    v2 = int(
+        record.get("COMPONENTKINDVERSION2", record.get("ComponentKindVersion2", 0))
+    )
+    v3 = int(
+        record.get("COMPONENTKINDVERSION3", record.get("ComponentKindVersion3", 0))
+    )
 
     if v3 == 6:
         return ComponentKind(v3)

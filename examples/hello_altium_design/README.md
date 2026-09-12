@@ -12,12 +12,13 @@ project-loading and design-analysis API, not internal netlist plumbing.
 1. `AltiumDesign.from_prjpcb(...)`
 2. `AltiumDesign.to_json(...)`
 3. `AltiumDesign.to_netlist(...)`
-4. `AltiumDesign.to_bom(...)`
-5. `AltiumDesign.get_variants(...)`
-6. Reading compiled net `winning_name`, `alternate_names`, and `name_sources`
-7. Reading the Design b0 compiled schematic graph to find realized pages,
+4. `AltiumDesign.to_bom_payload()` for versioned schematic BOM JSON
+5. `AltiumDesign.to_bom(...)` for the established list-returning API
+6. `AltiumDesign.get_variants(...)`
+7. Reading compiled net `winning_name`, `alternate_names`, and `name_sources`
+8. Reading the Design b0 compiled schematic graph to find realized pages,
    components, local nets, terminals, and repeated/channel-safe drawing links
-8. Rendering project-aware physical schematic SVGs with
+9. Rendering project-aware physical schematic SVGs with
    `AltiumDesign.to_physical_svg(page_occurrence_ref)`
 
 ## Run
@@ -47,13 +48,18 @@ examples/hello_altium_design/output/compiled_schematic_graph_summary.json
 examples/hello_altium_design/output/physical_svg_manifest.json
 examples/hello_altium_design/output/physical_svgs/<physical-page>.svg
 examples/hello_altium_design/output/netlist.json
+examples/hello_altium_design/output/schematic_bom.json
 examples/hello_altium_design/output/compiled_net_name_examples.json
 examples/hello_altium_design/output/bom_all.json
 examples/hello_altium_design/output/variant_boms/<variant>.json
 ```
 
 `altium_design.json` uses the `altium_monkey.design.b0` schema. `netlist.json`
-uses the `altium_monkey.netlist.a0` schema.
+uses the current `altium_monkey.netlist.b0` schema, including structured
+`source_pages` and stable component identities. `schematic_bom.json` uses
+`altium_monkey.schematic_bom.a0`. The Design b0 root `nets` retain their own
+established `source_sheets` representation and are not standalone Netlist b0
+rows.
 
 `compiled_schematic_graph_summary.json` is a compact consumer-oriented view of
 the required `altium_monkey.compiled_schematic_graph.a0` transport. It shows

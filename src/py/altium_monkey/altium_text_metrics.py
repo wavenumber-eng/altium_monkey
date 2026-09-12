@@ -280,6 +280,228 @@ def measure_text_width(
     return _measure_table_fallback(text, font_size_px)
 
 
+def _measure_text_prefix_widths(
+    text: str,
+    font_size_px: float,
+    font_name: str,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+) -> list[tuple[float, float]]:
+    """Return cumulative widths with and without each final glyph's RSB."""
+    if not text:
+        return []
+    try:
+        from .altium_font_resolver import resolve_font_with_style
+        from .altium_ttf_metrics import get_font
+
+        resolution = resolve_font_with_style(font_name, bold=bold, italic=italic)
+        if resolution.path is None:
+            raise ValueError("font is unresolved")
+        font = get_font(str(resolution.path))
+        measurement_text = _normalize_text_for_gdiplus_compatible_ttf_metrics(text)
+        scale = font_size_px / font.units_per_em
+        total = 0.0
+        widths: list[tuple[float, float]] = []
+        for character in measurement_text:
+            glyph_id = font.cmap.get(ord(character), 0)
+            total += font.get_advance(glyph_id) * scale
+            widths.append((total, total - font.get_rsb(glyph_id) * font_size_px))
+        return widths
+    except (OSError, ValueError):
+        total = 0.0
+        widths = []
+        for character in text:
+            include_width = measure_text_width(
+                character,
+                font_size_px,
+                font_name,
+                bold=bold,
+                italic=italic,
+                include_rsb=True,
+            )
+            exclude_width = measure_text_width(
+                character,
+                font_size_px,
+                font_name,
+                bold=bold,
+                italic=italic,
+                include_rsb=False,
+            )
+            total += include_width
+            widths.append((total, total - (include_width - exclude_width)))
+        return widths
+
+
+def _measure_text_geometry_glyph_box(
+    text: str,
+    font_size_px: float,
+    font_name: str,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+) -> tuple[float, float]:
+    """Measure the unrotated TextGeometryItem glyph box, including spaces."""
+    if not text:
+        return 0.0, 0.0
+    try:
+        from ._altium_record_sch__harness_layout import _f32
+        from .altium_font_resolver import resolve_font_with_style
+        from .altium_ttf_metrics import get_font
+
+        resolution = resolve_font_with_style(font_name, bold=bold, italic=italic)
+        if resolution.path is None:
+            raise ValueError("font is unresolved")
+        font = get_font(str(resolution.path))
+        encoded = text.encode("utf-16-le", errors="surrogatepass")
+        code_units = [
+            int.from_bytes(encoded[index : index + 2], "little")
+            for index in range(0, len(encoded), 2)
+        ]
+        transformed_size = _f32(font_size_px)
+        width = 0.0
+        height = 0.0
+        for index, code_unit in enumerate(code_units):
+            glyph_id = font.cmap.get(code_unit)
+            if glyph_id is None:
+                continue
+            advance = _f32(font.get_advance(glyph_id) / font.units_per_em)
+            glyph_width = _f32(advance * transformed_size)
+            advance_height = _f32(font.get_advance_height(glyph_id) / font.units_per_em)
+            height = max(height, _f32(advance_height * transformed_size))
+            if index == len(code_units) - 1:
+                bearing = _f32(font.get_rsb(glyph_id))
+                glyph_width = _f32(glyph_width - _f32(bearing * transformed_size))
+            width = _f32(width + glyph_width)
+        return width, height
+    except (OSError, ValueError):
+        widths = _measure_text_prefix_widths(
+            text,
+            font_size_px,
+            font_name,
+            bold=bold,
+            italic=italic,
+        )
+        return (widths[-1][1], font_size_px) if widths else (0.0, 0.0)
+
+
+def measure_gdi_typographic_bounds(
+    text: str,
+    font_size_px: float,
+    font_name: str,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+) -> tuple[float, float]:
+    """Measure a managed ``GenericTypographic`` text box in pixel units."""
+    if not text:
+        return 0.0, 0.0
+
+    try:
+        from .altium_font_resolver import resolve_font_with_style
+        from .altium_ttf_metrics import get_font
+
+        resolution = resolve_font_with_style(font_name, bold=bold, italic=italic)
+        if resolution.path is None:
+            raise ValueError("font is unresolved")
+        font = get_font(str(resolution.path))
+        logical_lines = _gdi_typographic_lines(text)
+        raw_width = max(
+            (
+                measure_text_width(
+                    line.replace("\r", "").replace("\t", ""),
+                    font_size_px,
+                    font_name,
+                    bold=bold,
+                    italic=italic,
+                    include_rsb=True,
+                )
+                + line.count("\t") * font_size_px / font.units_per_em
+                for line in logical_lines
+            ),
+            default=0.0,
+        )
+        final_character = _last_non_space_character(text)
+        if final_character is not None and final_character not in "\r\n\t":
+            raw_width -= _right_side_bearing(
+                final_character,
+                font_size_px,
+                font_name,
+                bold=bold,
+                italic=italic,
+            )
+        cell_height = font.ascender + font.descender
+        height_units = (
+            font.gdi_line_spacing
+            if any(character in text for character in "\r\n\t")
+            else cell_height
+        )
+        height = len(logical_lines) * font_size_px * height_units / font.units_per_em
+        return raw_width, height
+    except (OSError, ValueError):
+        logical_lines = _gdi_typographic_lines(text)
+        width = max(
+            (
+                measure_text_width(
+                    line.replace("\r", "").replace("\t", ""),
+                    font_size_px,
+                    font_name,
+                    bold=bold,
+                    italic=italic,
+                )
+                for line in logical_lines
+            ),
+            default=0.0,
+        )
+        return width, len(logical_lines) * font_size_px
+
+
+def _gdi_typographic_lines(text: str) -> tuple[str, ...]:
+    lines: list[str] = []
+    start = 0
+    while start < len(text):
+        line_break = text.find("\n", start)
+        if line_break < 0:
+            line_break = len(text)
+        lines.append(text[start:line_break])
+        start = line_break + 1
+    return tuple(lines)
+
+
+def _last_non_space_character(text: str) -> str | None:
+    index = len(text) - 1
+    while index >= 0 and text[index] == " ":
+        index -= 1
+    return None if index < 0 else text[index]
+
+
+def _right_side_bearing(
+    character: str,
+    font_size_px: float,
+    font_name: str,
+    *,
+    bold: bool,
+    italic: bool,
+) -> float:
+    included = measure_text_width(
+        character,
+        font_size_px,
+        font_name,
+        bold=bold,
+        italic=italic,
+        include_rsb=True,
+    )
+    excluded = measure_text_width(
+        character,
+        font_size_px,
+        font_name,
+        bold=bold,
+        italic=italic,
+        include_rsb=False,
+    )
+    return included - excluded
+
+
 def measure_text_width_accurate(text: str, font_size_px: int = 8) -> float:
     """
     Alias for :func:`measure_text_width`.

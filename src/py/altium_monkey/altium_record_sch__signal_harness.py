@@ -9,6 +9,14 @@ if TYPE_CHECKING:
 from .altium_record_sch__bus import AltiumSchBus
 from .altium_record_sch__wire import wire_like_junction_geometry_ops
 from .altium_record_types import LineWidth, SchRecordType
+from .altium_serializer import (
+    AltiumSerializer,
+    CaseMode,
+    Fields,
+    read_dynamic_string_field,
+    write_dynamic_string_field,
+)
+from ._sch_managed_defaults import HARNESS_SIGNAL_COLOR
 
 
 class AltiumSchSignalHarness(AltiumSchBus):
@@ -22,6 +30,62 @@ class AltiumSchSignalHarness(AltiumSchBus):
     def __init__(self) -> None:
         super().__init__()
         self.line_width = LineWidth.MEDIUM  # Harnesses are thicker
+        self.color = HARNESS_SIGNAL_COLOR
+        self._has_unique_id: bool = False
+        self._used_utf8_unique_id: bool = False
+        self._used_utf8_assigned_interface: bool = False
+        self._used_utf8_assigned_interface_signal: bool = False
+        self._source_unique_id: str = str(self.unique_id or "")
+
+    def parse_from_record(
+        self,
+        record: dict[str, object],
+        font_manager: object | None = None,
+    ) -> None:
+        super().parse_from_record(record, font_manager)
+        serializer = AltiumSerializer()
+        view = self._record
+        (
+            self.assigned_interface,
+            _,
+            self._used_utf8_assigned_interface,
+        ) = read_dynamic_string_field(
+            serializer,
+            record,
+            view,
+            Fields.ASSIGNED_INTERFACE,
+            default="",
+        )
+        (
+            self.assigned_interface_signal,
+            _,
+            self._used_utf8_assigned_interface_signal,
+        ) = read_dynamic_string_field(
+            serializer,
+            record,
+            view,
+            Fields.ASSIGNED_INTERFACE_SIGNAL,
+            default="",
+        )
+        unique_id, self._has_unique_id, self._used_utf8_unique_id = (
+            read_dynamic_string_field(
+                serializer,
+                record,
+                view,
+                "UniqueID",
+                default="",
+            )
+        )
+        self.unique_id = unique_id or None
+        if not self._has_color:
+            self.color = 0
+        if not self._has_underline_color:
+            self.underline_color = 0
+        self._capture_graphical_source_state()
+        self._source_underline_color = self.underline_color
+        self._source_assigned_interface = self.assigned_interface
+        self._source_assigned_interface_signal = self.assigned_interface_signal
+        self._source_unique_id = str(self.unique_id or "")
 
     @property
     def record_type(self) -> SchRecordType:
@@ -29,15 +93,135 @@ class AltiumSchSignalHarness(AltiumSchBus):
 
     def serialize_to_record(self) -> dict[str, Any]:
         record = super().serialize_to_record()
-        # Signal harness shouldn't have OWNERINDEX or LOCATION.X/Y
-        # (verified from harness_example.SchDoc)
-        record.pop("OWNERINDEX", None)
-        record.pop("OwnerIndex", None)
+        serializer = AltiumSerializer(self._detect_case_mode())
+        raw = self._raw_record
+        if self._used_utf8_assigned_interface:
+            self._restore_raw_fallback(record, raw, "AssignedInterface")
+        if self._used_utf8_assigned_interface_signal:
+            self._restore_raw_fallback(record, raw, "AssignedInterfaceSignal")
+        write_dynamic_string_field(
+            serializer,
+            record,
+            Fields.ASSIGNED_INTERFACE,
+            self.assigned_interface,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_assigned_interface,
+            was_present=bool(
+                raw
+                and any(
+                    key.lower() in {"assignedinterface", "%utf8%assignedinterface"}
+                    for key in raw
+                )
+            ),
+            force=self.assigned_interface != self._source_assigned_interface,
+        )
+        write_dynamic_string_field(
+            serializer,
+            record,
+            Fields.ASSIGNED_INTERFACE_SIGNAL,
+            self.assigned_interface_signal,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_assigned_interface_signal,
+            was_present=bool(
+                raw
+                and any(
+                    key.lower()
+                    in {
+                        "assignedinterfacesignal",
+                        "%utf8%assignedinterfacesignal",
+                    }
+                    for key in raw
+                )
+            ),
+            force=(
+                self.assigned_interface_signal != self._source_assigned_interface_signal
+            ),
+        )
+        unique_id = str(self.unique_id or "")
+        if self._used_utf8_unique_id and raw is not None:
+            for key, value in raw.items():
+                if key.lower() == "uniqueid":
+                    record[key] = value
+                    break
+        write_dynamic_string_field(
+            serializer,
+            record,
+            "UniqueID",
+            unique_id,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_unique_id,
+            was_present=self._has_unique_id,
+            force=unique_id != self._source_unique_id,
+        )
+        # Signal harness has no family Location, but its data-object OwnerIndex
+        # remains part of the managed ownership chain.
         record.pop("LOCATION.X", None)
         record.pop("Location.X", None)
         record.pop("LOCATION.Y", None)
         record.pop("Location.Y", None)
+        if raw is None:
+            return self._authored_managed_order(record)
         return record
+
+    @staticmethod
+    def _restore_raw_fallback(
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+        field_name: str,
+    ) -> None:
+        if raw is None:
+            return
+        for key, value in raw.items():
+            if key.lower() == field_name.lower():
+                record[key] = value
+                return
+
+    def _detect_case_mode(self) -> CaseMode:
+        return CaseMode.PASCALCASE if self._use_pascal_case else CaseMode.UPPERCASE
+
+    @staticmethod
+    def _authored_managed_order(record: dict[str, object]) -> dict[str, object]:
+        family_order = (
+            "LineWidth",
+            "Color",
+            "UnderlineColor",
+            "LocationCount",
+            "ExtraLocationCount",
+            "UniqueID",
+            "%UTF8%UniqueID",
+            "AssignedInterface",
+            "%UTF8%AssignedInterface",
+            "AssignedInterfaceSignal",
+            "%UTF8%AssignedInterfaceSignal",
+        )
+        family_names = {name.lower(): name for name in family_order}
+        point_prefixes = ("x", "y", "ex", "ey")
+        family_values: dict[str, tuple[str, object]] = {}
+        point_values: list[tuple[str, object]] = []
+        result: dict[str, object] = {}
+        for key, value in record.items():
+            normalized = key.lower()
+            family_name = family_names.get(normalized)
+            is_point = normalized.startswith(point_prefixes) and any(
+                character.isdigit() for character in normalized
+            )
+            if family_name is not None:
+                family_values[family_name] = (key, value)
+            elif is_point:
+                point_values.append((key, value))
+            else:
+                result[key] = value
+        for family_name in family_order[:5]:
+            if family_name in family_values:
+                key, value = family_values[family_name]
+                result[key] = value
+        for key, value in point_values:
+            result[key] = value
+        for family_name in family_order[5:]:
+            if family_name in family_values:
+                key, value = family_values[family_name]
+                result[key] = value
+        return result
 
     def to_geometry(
         self,
@@ -61,6 +245,7 @@ class AltiumSchSignalHarness(AltiumSchBus):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
             make_pen,
             svg_coord_to_geometry,
             wrap_record_operations,
@@ -118,15 +303,15 @@ class AltiumSchSignalHarness(AltiumSchBus):
 
         background_pen = make_pen(
             background_color_raw,
-            width=int(round(background_width_px * units_per_px)),
+            width=_geometry_item_length(background_width_px, units_per_px=units_per_px),
         )
         hash_pen = make_pen(
             foreground_color_raw,
-            width=int(round(hash_width_px * units_per_px)),
+            width=_geometry_item_length(hash_width_px, units_per_px=units_per_px),
         )
         center_pen = make_pen(
             foreground_color_raw,
-            width=int(round(center_width_px * units_per_px)),
+            width=_geometry_item_length(center_width_px, units_per_px=units_per_px),
         )
 
         operations = []

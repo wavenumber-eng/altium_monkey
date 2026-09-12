@@ -14,7 +14,11 @@ import uuid
 from typing import Sequence
 
 from .altium_record_pcb__net import AltiumPcbNet
-from .altium_utilities import create_stream_from_records, decode_byte_array, parse_byte_record
+from .altium_utilities import (
+    create_stream_from_records,
+    decode_byte_array,
+    parse_byte_record,
+)
 
 
 def parse_net_stream(data: bytes) -> tuple[AltiumPcbNet, ...]:
@@ -26,11 +30,11 @@ def parse_net_stream(data: bytes) -> tuple[AltiumPcbNet, ...]:
     while offset < len(data):
         if len(data) < offset + 4:
             raise ValueError("Invalid Nets6/Data stream")
-        record_len = struct.unpack("<I", data[offset:offset + 4])[0]
+        record_len = struct.unpack("<I", data[offset : offset + 4])[0]
         offset += 4
         if len(data) < offset + record_len:
             raise ValueError("Invalid Nets6/Data stream")
-        raw_record = data[offset:offset + record_len]
+        raw_record = data[offset : offset + record_len]
         offset += record_len
         fields: dict[str, str] = {}
         for part in parse_byte_record(raw_record):

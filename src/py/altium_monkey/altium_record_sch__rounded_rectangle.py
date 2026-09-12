@@ -12,6 +12,7 @@ from .altium_record_types import (
     SchGraphicalObject,
     SchRecordType,
 )
+from ._sch_managed_defaults import GRAPHICAL_BORDER_COLOR, GRAPHICAL_FILL_COLOR
 from .altium_serializer import AltiumSerializer, Fields
 from .altium_sch_record_helpers import (
     _coord_scalar_to_native_units,
@@ -46,7 +47,9 @@ class AltiumSchRoundedRectangle(
 
     def __init__(self) -> None:
         super().__init__()
-        self.corner = CoordPoint()
+        self.color = GRAPHICAL_BORDER_COLOR
+        self.area_color = GRAPHICAL_FILL_COLOR
+        self.corner = CoordPoint(50, 50)
         self.corner_x_radius: int = 20
         self.corner_x_radius_frac: int = 0
         self.corner_y_radius: int = 20
@@ -89,6 +92,12 @@ class AltiumSchRoundedRectangle(
                 "CornerXRadius",
             )
         )
+        _, has_corner_x_radius_frac = s.read_int(
+            record, "CornerXRadius_Frac", default=0
+        )
+        self._has_corner_x_radius = (
+            self._has_corner_x_radius or has_corner_x_radius_frac
+        )
         if not self._has_corner_x_radius:
             self.corner_x_radius = 0
             self.corner_x_radius_frac = 0
@@ -97,6 +106,12 @@ class AltiumSchRoundedRectangle(
                 record,
                 "CornerYRadius",
             )
+        )
+        _, has_corner_y_radius_frac = s.read_int(
+            record, "CornerYRadius_Frac", default=0
+        )
+        self._has_corner_y_radius = (
+            self._has_corner_y_radius or has_corner_y_radius_frac
         )
         if not self._has_corner_y_radius:
             self.corner_y_radius = 0
@@ -111,6 +126,7 @@ class AltiumSchRoundedRectangle(
 
         # Parse is_solid
         self.is_solid, _ = s.read_bool(record, Fields.IS_SOLID, default=False)
+        self._apply_imported_color_defaults(area_color=True)
 
     def serialize_to_record(self) -> dict[str, Any]:
         """
@@ -121,38 +137,36 @@ class AltiumSchRoundedRectangle(
         # Determine case mode from raw record
         mode = self._detect_case_mode()
         s = AltiumSerializer(mode)
-        raw = self._raw_record
 
         # Write corner coordinates
-        s.write_coord(record, "Corner", "X", self.corner.x, self.corner.x_frac, raw)
-        s.write_coord(record, "Corner", "Y", self.corner.y, self.corner.y_frac, raw)
+        self._serialize_managed_family_coord(
+            record, s, "Corner", "X", self.corner.x, self.corner.x_frac
+        )
+        self._serialize_managed_family_coord(
+            record, s, "Corner", "Y", self.corner.y, self.corner.y_frac
+        )
 
         # Write corner radii using the native coord-style whole/fraction form.
-        s.write_coord(
+        self._serialize_managed_family_coord(
             record,
+            s,
             "CornerXRadius",
             "",
             self.corner_x_radius,
             self.corner_x_radius_frac,
-            raw,
         )
-        s.write_coord(
+        self._serialize_managed_family_coord(
             record,
+            s,
             "CornerYRadius",
             "",
             self.corner_y_radius,
             self.corner_y_radius_frac,
-            raw,
         )
 
         # Write line width - skip if default (0 = SMALLEST)
-        s.write_int(
-            record,
-            Fields.LINE_WIDTH,
-            self.line_width.value,
-            raw,
-            skip_if_default=True,
-            default=0,
+        self._serialize_managed_family_int(
+            record, s, Fields.LINE_WIDTH.canonical, self.line_width.value
         )
         # Note: RoundRectangle does NOT serialize LineStyle/LineStyleExt/Transparent
         # even if those stale fields were present in a parsed raw record.
@@ -161,9 +175,33 @@ class AltiumSchRoundedRectangle(
         s.remove_field(record, Fields.TRANSPARENT)
 
         # Write is_solid
-        s.write_bool(record, Fields.IS_SOLID, self.is_solid, raw)
+        self._serialize_managed_family_bool(
+            record, s, Fields.IS_SOLID.canonical, self.is_solid
+        )
 
-        return record
+        self._move_geometry_identity_to_end_if_needed(record)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Corner.X",
+                "Corner.X_Frac",
+                "Corner.Y",
+                "Corner.Y_Frac",
+                "CornerXRadius",
+                "CornerXRadius_Frac",
+                "CornerYRadius",
+                "CornerYRadius_Frac",
+                "LineWidth",
+                "Color",
+                "AreaColor",
+                "IsSolid",
+                "UniqueID",
+            ),
+        )
 
     _detect_case_mode = detect_case_mode_method_from_dotted_uppercase_fields
 
@@ -181,9 +219,10 @@ class AltiumSchRoundedRectangle(
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
+            make_rounded_rectangle_operation,
             make_pen,
             make_solid_brush,
-            svg_coord_to_geometry,
             wrap_record_operations,
         )
 
@@ -193,20 +232,12 @@ class AltiumSchRoundedRectangle(
         svg_right = max(float(x1), float(x2))
         svg_top = min(float(y1), float(y2))
         svg_bottom = max(float(y1), float(y2))
-        geo_left, geo_top = svg_coord_to_geometry(
-            svg_left,
-            svg_top,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
-        )
-        geo_right, geo_bottom = svg_coord_to_geometry(
-            svg_right,
-            svg_bottom,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
-        )
-        width_units = abs(float(x2) - float(x1))
-        height_units = abs(float(y2) - float(y1))
+        source_x1 = float(self.location.x) + (float(self.location.x_frac) / 100_000.0)
+        source_y1 = float(self.location.y) + (float(self.location.y_frac) / 100_000.0)
+        source_x2 = float(self.corner.x) + (float(self.corner.x_frac) / 100_000.0)
+        source_y2 = float(self.corner.y) + (float(self.corner.y_frac) / 100_000.0)
+        width_units = abs(source_x2 - source_x1)
+        height_units = abs(source_y2 - source_y1)
         corner_x_units = _coord_scalar_to_native_units(
             self.corner_x_radius,
             self.corner_x_radius_frac,
@@ -233,7 +264,10 @@ class AltiumSchRoundedRectangle(
         pen_width = (
             0
             if self.line_width == LineWidth.SMALLEST
-            else int(round(stroke_width_mils * units_per_px))
+            else _geometry_item_length(
+                stroke_width_mils * ctx.get_stroke_scale(),
+                units_per_px=units_per_px,
+            )
         )
         fill_color_raw = (
             int(ctx.area_color_override)
@@ -251,25 +285,31 @@ class AltiumSchRoundedRectangle(
         operations: list[SchGeometryOp] = []
         if self.is_solid:
             operations.append(
-                SchGeometryOp.rounded_rectangle(
-                    x1=geo_left,
-                    y1=geo_top,
-                    x2=geo_right,
-                    y2=geo_bottom,
-                    corner_x_radius=int(round(fill_radius_x_px * units_per_px)),
-                    corner_y_radius=int(round(fill_radius_y_px * units_per_px)),
+                make_rounded_rectangle_operation(
+                    x1_px=svg_left,
+                    y1_px=svg_top,
+                    x2_px=svg_right,
+                    y2_px=svg_bottom,
+                    sheet_height_px=float(ctx.sheet_height or 0.0),
+                    units_per_px=units_per_px,
+                    source_rotation=ctx.rotation,
+                    corner_x_radius_px=fill_radius_x_px,
+                    corner_y_radius_px=fill_radius_y_px,
                     brush=make_solid_brush(fill_color_raw),
                 )
             )
 
         operations.append(
-            SchGeometryOp.rounded_rectangle(
-                x1=geo_left,
-                y1=geo_top,
-                x2=geo_right,
-                y2=geo_bottom,
-                corner_x_radius=int(round(stroke_radius_x_px * units_per_px)),
-                corner_y_radius=int(round(stroke_radius_y_px * units_per_px)),
+            make_rounded_rectangle_operation(
+                x1_px=svg_left,
+                y1_px=svg_top,
+                x2_px=svg_right,
+                y2_px=svg_bottom,
+                sheet_height_px=float(ctx.sheet_height or 0.0),
+                units_per_px=units_per_px,
+                source_rotation=ctx.rotation,
+                corner_x_radius_px=stroke_radius_x_px,
+                corner_y_radius_px=stroke_radius_y_px,
                 pen=make_pen(
                     stroke_color_raw,
                     width=pen_width,
@@ -284,9 +324,10 @@ class AltiumSchRoundedRectangle(
         top = max(float(self.location.y), float(self.corner.y))
         inflate = stroke_width_mils + 2.0
 
+        unique_id = str(self.unique_id or "")
         return SchGeometryRecord(
-            handle=f"{document_id}\\{self.unique_id}",
-            unique_id=self.unique_id,
+            handle=f"{document_id}\\{unique_id}",
+            unique_id=unique_id,
             kind="roundrectangle",
             object_id="eRoundRectangle",
             bounds=SchGeometryBounds(
@@ -296,7 +337,7 @@ class AltiumSchRoundedRectangle(
                 bottom=int(round((bottom - inflate) * 100000)),
             ),
             operations=wrap_record_operations(
-                self.unique_id,
+                unique_id,
                 operations,
                 units_per_px=units_per_px,
             ),

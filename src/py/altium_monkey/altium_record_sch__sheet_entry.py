@@ -2,12 +2,12 @@
 
 from dataclasses import dataclass
 from enum import IntEnum
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .altium_font_manager import FontIDManager
-    from .altium_sch_geometry_oracle import SchGeometryRecord
+    from .altium_sch_geometry_oracle import SchGeometryOp, SchGeometryRecord
     from .altium_sch_svg_renderer import SchSvgRenderContext
 
 from .altium_record_types import SchPrimitive, SchRecordType
@@ -15,10 +15,21 @@ from .altium_sch_binding import SingleFontBindableRecordMixin
 from .altium_serializer import (
     AltiumSerializer,
     CaseMode,
+    FieldDef,
     Fields,
     read_dynamic_string_field,
+    write_dynamic_string_field,
 )
-from .altium_sch_record_helpers import BasicEntryDistanceMilsMixin
+from .altium_sch_record_helpers import (
+    BasicEntryDistanceMilsMixin,
+    validate_basic_entry_distance_fields,
+    validate_record_enum_value,
+)
+from ._sch_managed_defaults import (
+    SHEET_ENTRY_BORDER_COLOR,
+    SHEET_ENTRY_FILL_COLOR,
+    SHEET_ENTRY_TEXT_COLOR,
+)
 
 
 class SchSheetEntryArrowKind(IntEnum):
@@ -93,9 +104,10 @@ class AltiumSchSheetEntry(
 
     def __init__(self) -> None:
         super().__init__()
+        self._apply_authored_graphical_metadata_defaults()
         self._init_single_font_binding()
         # Core entry properties (from SchDataBasicEntry)
-        self.name: str = ""  # Entry signal name (NOT "text")
+        self.name: str = "0"  # Entry signal name (NOT "text")
         self.text_font_id: int = 1  # TextFontID (NOT "font_id")
         self.side: int = 0  # 0=Left, 1=Right, 2=Top, 3=Bottom
         self.io_type: int = (
@@ -107,15 +119,15 @@ class AltiumSchSheetEntry(
         self.distance_from_top_frac: int = 0
         self.distance_from_top_frac1: int = 0
         # Visual properties
-        self.color: int = 0x000000  # Border color
-        self.area_color: int = 0xFFFFFF  # Fill color
-        self.text_color: int = 0x000000  # Text color (usually same as color)
+        self.color: int = SHEET_ENTRY_BORDER_COLOR
+        self.area_color: int = SHEET_ENTRY_FILL_COLOR
+        self.text_color: int = SHEET_ENTRY_TEXT_COLOR
         # Arrow properties
         self.arrow_kind: int = (
             0  # Arrow kind: 0=Block&Triangle, 1=Triangle, 2=Arrow, 3=ArrowTail
         )
         self.style: int = 0  # Port arrow style (determines arrow position)
-        self.text_style: str = "Full"  # Display style: Full, Short, Abbreviated
+        self.text_style: str = "Full"  # Managed display style: Full or Prefix
         # Harness support
         self.harness_type: str = ""  # Associated harness type name
         # Track field presence for round-trip fidelity
@@ -133,8 +145,18 @@ class AltiumSchSheetEntry(
         self._has_style: bool = False
         self._has_text_style: bool = False
         self._has_harness_type: bool = False
-        self._legacy_text: str = ""
-        self._has_legacy_text: bool = False
+        self._used_utf8_name: bool = False
+        self._used_utf8_text_style: bool = False
+        self._used_utf8_harness_type: bool = False
+        self._used_utf8_arrow_kind: bool = False
+        self._has_unique_id: bool = False
+        self._used_utf8_unique_id: bool = False
+        self._source_name: str = self.name
+        self._source_text_style: str = self.text_style
+        self._source_harness_type: str = self.harness_type
+        self._source_arrow_kind: int = self.arrow_kind
+        self._source_style: int = self.style
+        self._source_unique_id: str = str(self.unique_id or "")
 
     def _font_binding_slot_name(self) -> str:
         return "text_font_id"
@@ -148,7 +170,7 @@ class AltiumSchSheetEntry(
         """
         Get the name to display (name field takes precedence).
         """
-        return self.name if self.name else self._legacy_text
+        return self.name
 
     @property
     def is_harness_entry(self) -> bool:
@@ -170,24 +192,18 @@ class AltiumSchSheetEntry(
                     font_manager: Optional FontIDManager for font ID translation
         """
         super().parse_from_record(record)
+        self._apply_imported_graphical_metadata_defaults()
         self._font_manager = font_manager
         self._public_font_spec = None
         s = AltiumSerializer()
         r = self._record
-        self.name, self._has_name, _ = read_dynamic_string_field(
+        self.name, self._has_name, self._used_utf8_name = read_dynamic_string_field(
             s,
             record,
             r,
             Fields.NAME,
             default="",
         )
-        self._legacy_text, self._has_legacy_text = s.read_str(
-            record, Fields.TEXT, default=""
-        )
-        if not self._has_name and self._legacy_text:
-            self.name = self._legacy_text
-            self._has_name = True
-
         # Parse TextFontID using the record field name used by this serializer.
         self.text_font_id, self._has_text_font_id = s.read_font_id(
             record, Fields.TEXT_FONT_ID, font_manager, default=1
@@ -195,9 +211,11 @@ class AltiumSchSheetEntry(
 
         # Parse Side
         self.side, self._has_side = s.read_int(record, Fields.SIDE, default=0)
+        validate_record_enum_value("Side", self.side, 3)
 
         # Parse IOType
         self.io_type, self._has_io_type = s.read_int(record, Fields.IO_TYPE, default=0)
+        validate_record_enum_value("IOType", self.io_type, 3)
 
         # Parse DistanceFromTop. Native V5 exports the whole 100-mil step
         # count plus optional DistanceFromTop_Frac1 millionths of one step.
@@ -210,133 +228,320 @@ class AltiumSchSheetEntry(
         self.distance_from_top_frac1, self._has_distance_from_top_frac1 = s.read_int(
             record, Fields.DISTANCE_FROM_TOP_FRAC1, default=0
         )
+        validate_basic_entry_distance_fields(
+            self.distance_from_top,
+            self.distance_from_top_frac,
+            self.distance_from_top_frac1,
+        )
 
         # Parse colors
-        self.color, self._has_color = s.read_int(record, Fields.COLOR, default=0)
-        self.area_color, self._has_area_color = s.read_int(
-            record, Fields.AREA_COLOR, default=0xFFFFFF
+        color, self._has_color = s.read_color(record, Fields.COLOR, default=0)
+        area_color, self._has_area_color = s.read_color(
+            record, Fields.AREA_COLOR, default=0
         )
-        self.text_color, self._has_text_color = s.read_int(
+        text_color, self._has_text_color = s.read_color(
             record, Fields.TEXT_COLOR, default=0
         )
+        self.color = int(color or 0)
+        self.area_color = int(area_color or 0)
+        self.text_color = int(text_color or 0)
 
         # Parse arrow properties
         # ArrowKind can be string ("Block & Triangle") or int
-        arrow_kind_raw, self._has_arrow_kind = s.read_str(
-            record, Fields.ARROW_KIND, default="0"
-        )
-        if isinstance(arrow_kind_raw, str) and not arrow_kind_raw.isdigit():
-            arrow_kind_map = {
-                "block & triangle": SchSheetEntryArrowKind.BLOCK_TRIANGLE,
-                "triangle": SchSheetEntryArrowKind.TRIANGLE,
-                "arrow": SchSheetEntryArrowKind.ARROW,
-                "arrow tail": SchSheetEntryArrowKind.ARROW_TAIL,
-                "arrowtail": SchSheetEntryArrowKind.ARROW_TAIL,
-            }
-            self.arrow_kind = arrow_kind_map.get(
-                arrow_kind_raw.lower(),
-                SchSheetEntryArrowKind.BLOCK_TRIANGLE,
-            ).value
-        else:
-            self.arrow_kind = int(arrow_kind_raw)
-        self.style, self._has_style = s.read_int(record, Fields.STYLE, default=0)
+        (
+            arrow_kind_raw,
+            self._has_arrow_kind,
+            self._used_utf8_arrow_kind,
+        ) = read_dynamic_string_field(s, record, r, Fields.ARROW_KIND, default="")
+        arrow_kind_map = {
+            "block & triangle": SchSheetEntryArrowKind.BLOCK_TRIANGLE,
+            "triangle": SchSheetEntryArrowKind.TRIANGLE,
+            "arrow": SchSheetEntryArrowKind.ARROW,
+            "arrow tail": SchSheetEntryArrowKind.ARROW_TAIL,
+        }
+        self.arrow_kind = arrow_kind_map.get(
+            str(arrow_kind_raw).lower(),
+            SchSheetEntryArrowKind.BLOCK_TRIANGLE,
+        ).value
+        source_style, self._has_style = s.read_int(record, Fields.STYLE, default=0)
+        validate_record_enum_value("Style", source_style, 7)
+        self.style = 0
 
         # Parse TextStyle - may be string or int
-        text_style_raw, self._has_text_style = s.read_str(
-            record, Fields.TEXT_STYLE, default="Full"
-        )
-        if isinstance(text_style_raw, str) and not text_style_raw.isdigit():
-            self.text_style = text_style_raw
-        else:
-            # Convert numeric to string
-            style_map = {0: "Full", 1: "Abbreviated", 2: "Short"}
-            self.text_style = style_map.get(int(text_style_raw), "Full")
+        (
+            text_style_raw,
+            self._has_text_style,
+            self._used_utf8_text_style,
+        ) = read_dynamic_string_field(s, record, r, Fields.TEXT_STYLE, default="")
+        text_style = str(text_style_raw).lower()
+        self.text_style = "Prefix" if text_style == "prefix" else "Full"
 
         # Parse harness type
-        self.harness_type, self._has_harness_type, _ = read_dynamic_string_field(
-            s,
-            record,
-            r,
-            Fields.HARNESS_TYPE,
-            default="",
+        (
+            self.harness_type,
+            self._has_harness_type,
+            self._used_utf8_harness_type,
+        ) = read_dynamic_string_field(s, record, r, Fields.HARNESS_TYPE, default="")
+        unique_id, self._has_unique_id, self._used_utf8_unique_id = (
+            read_dynamic_string_field(s, record, r, "UniqueID", default="")
         )
+        self.unique_id = unique_id or None
+        self._source_name = self.name
+        self._source_text_style = self.text_style
+        self._source_harness_type = self.harness_type
+        self._source_arrow_kind = self.arrow_kind
+        self._source_style = self.style
+        self._source_unique_id = str(self.unique_id or "")
 
     def serialize_to_record(self) -> dict[str, Any]:
         self._ensure_bound_public_font_ready()
+        self._validate_for_write()
         record = super().serialize_to_record()
-        mode = self._detect_case_mode()
-        s = AltiumSerializer(mode)
+        serializer = AltiumSerializer(self._detect_case_mode())
         raw = self._raw_record
 
-        # ArrowKind must be serialized as string, not integer (Issue #3)
-        arrow_kind_strings = {
-            0: "Block & Triangle",
-            1: "Triangle",
-            2: "Arrow",
-            3: "Arrow Tail",
-        }
-        arrow_kind_str = arrow_kind_strings.get(self.arrow_kind, "Block & Triangle")
+        self._write_name_and_font(serializer, record, raw)
+        self._write_position_fields(serializer, record, raw)
+        self._write_color_fields(serializer, record, raw)
+        self._write_style_fields(serializer, record, raw)
+        self._write_harness_and_identity(serializer, record, raw)
+        if raw is None:
+            return self._authored_managed_order(record)
+        return record
 
-        s.write_str(record, Fields.NAME, self.name, raw)
-        if self._has_legacy_text or self._legacy_text:
-            s.write_str(record, Fields.TEXT, self._legacy_text, raw)
-        s.write_int(record, Fields.TEXT_FONT_ID, self.text_font_id, raw)
+    def _validate_for_write(self) -> None:
+        validate_record_enum_value("Side", self.side, 3)
+        validate_record_enum_value("IOType", self.io_type, 3)
+        validate_record_enum_value("Style", self.style, 7)
+        validate_record_enum_value("ArrowKind", self.arrow_kind, 3)
+        validate_basic_entry_distance_fields(
+            self.distance_from_top,
+            self.distance_from_top_frac,
+            self.distance_from_top_frac1,
+        )
+        text_style = self.text_style.lower()
+        if text_style not in {"full", "prefix"}:
+            raise ValueError("TextStyle must be Full or Prefix")
+        self.text_style = "Prefix" if text_style == "prefix" else "Full"
 
-        # Only serialize Side when non-zero (Issue #6)
-        if self._has_side or self.side != 0:
-            s.write_int(record, Fields.SIDE, self.side, raw)
+    def _write_name_and_font(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+    ) -> None:
+        write_dynamic_string_field(
+            serializer,
+            record,
+            Fields.NAME,
+            self.name,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_name,
+            was_present=self._has_name,
+            force=self.name != self._source_name,
+        )
+        self._serialize_managed_font_id(
+            record,
+            serializer,
+            Fields.TEXT_FONT_ID.canonical,
+            self.text_font_id,
+            self._get_fallback_font_manager(),
+        )
 
-        if self._has_distance_from_top or self.distance_from_top != 0:
-            s.write_int(record, Fields.DISTANCE_FROM_TOP, self.distance_from_top, raw)
-        else:
-            s.remove_field(record, Fields.DISTANCE_FROM_TOP)
-        if self._has_distance_from_top_frac or self.distance_from_top_frac != 0:
-            s.write_int(
-                record,
+    def _write_position_fields(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+    ) -> None:
+        self._write_optional_int(
+            serializer,
+            record,
+            raw,
+            Fields.SIDE,
+            self.side,
+            self._has_side,
+        )
+        for field_name, value, was_present in (
+            (
+                Fields.DISTANCE_FROM_TOP,
+                self.distance_from_top,
+                self._has_distance_from_top,
+            ),
+            (
                 Fields.DISTANCE_FROM_TOP_FRAC,
                 self.distance_from_top_frac,
-                raw,
-                force=True,
-            )
-        else:
-            s.remove_field(record, Fields.DISTANCE_FROM_TOP_FRAC)
-        if self._has_distance_from_top_frac1 or self.distance_from_top_frac1 != 0:
-            s.write_int(
-                record,
+                self._has_distance_from_top_frac,
+            ),
+            (
                 Fields.DISTANCE_FROM_TOP_FRAC1,
                 self.distance_from_top_frac1,
-                raw,
-                force=True,
+                self._has_distance_from_top_frac1,
+            ),
+        ):
+            self._write_optional_int(
+                serializer, record, raw, field_name, value, was_present
             )
-        else:
-            s.remove_field(record, Fields.DISTANCE_FROM_TOP_FRAC1)
-        s.write_int(record, Fields.COLOR, self.color, raw, force=self.color != 0)
-        s.write_int(
+
+    @staticmethod
+    def _write_optional_int(
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+        field_name: FieldDef | str,
+        value: int,
+        was_present: bool,
+    ) -> None:
+        del was_present
+        field = field_name.canonical if isinstance(field_name, FieldDef) else field_name
+        source, _ = serializer.read_int(raw or {}, field, default=0)
+        if raw is not None and value == source:
+            return
+        serializer.remove_field(record, field)
+        if value != 0:
+            serializer.write_int(record, field, value, None, force=True)
+
+    def _write_color_fields(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+    ) -> None:
+        for field, value, was_present in (
+            (Fields.COLOR, self.color, self._has_color),
+            (Fields.AREA_COLOR, self.area_color, self._has_area_color),
+            (Fields.TEXT_COLOR, self.text_color, self._has_text_color),
+        ):
+            self._write_optional_color(
+                serializer, record, raw, field, value, was_present
+            )
+
+    @staticmethod
+    def _write_optional_color(
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+        field_name: FieldDef | str,
+        value: int,
+        was_present: bool,
+    ) -> None:
+        del was_present
+        field = field_name.canonical if isinstance(field_name, FieldDef) else field_name
+        source, _ = serializer.read_color(raw or {}, field, default=0)
+        if raw is not None and value == source:
+            return
+        serializer.remove_field(record, field)
+        if value != 0:
+            serializer.write_color(record, field, value, None, force=True)
+
+    def _write_style_fields(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+    ) -> None:
+        arrow_kind_str = (
+            "Block & Triangle",
+            "Triangle",
+            "Arrow",
+            "Arrow Tail",
+        )[self.arrow_kind]
+        write_dynamic_string_field(
+            serializer,
             record,
-            Fields.AREA_COLOR,
-            self.area_color,
-            raw,
-            force=self.area_color != 0xFFFFFF,
+            Fields.ARROW_KIND,
+            arrow_kind_str,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_arrow_kind,
+            was_present=self._has_arrow_kind,
+            force=self.arrow_kind != self._source_arrow_kind,
         )
-        if self._has_text_color or self.text_color:
-            # TextColor is optional in native records. Non-default mutations,
-            # such as white text on a black sheet-entry fill, must add it.
-            s.write_int(record, Fields.TEXT_COLOR, self.text_color, raw, force=True)
-        s.write_str(
-            record, Fields.ARROW_KIND, arrow_kind_str, raw
-        )  # Issue #3: string format
-        s.write_str(record, Fields.TEXT_STYLE, self.text_style, raw)
+        write_dynamic_string_field(
+            serializer,
+            record,
+            Fields.TEXT_STYLE,
+            self.text_style,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_text_style,
+            was_present=self._has_text_style,
+            force=self.text_style != self._source_text_style,
+        )
 
-        if self._has_io_type or self.io_type != 0:
-            s.write_int(record, Fields.IO_TYPE, self.io_type, raw)
-        if self._has_style or self.style != 0:
-            s.write_int(record, Fields.STYLE, self.style, raw)
+        self._write_optional_int(
+            serializer, record, raw, Fields.IO_TYPE, self.io_type, self._has_io_type
+        )
+        if self.style != self._source_style:
+            serializer.write_int(record, Fields.STYLE, self.style, raw, force=True)
 
+    def _write_harness_and_identity(
+        self,
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+    ) -> None:
         if self._has_harness_type or self.harness_type:
-            s.write_str(record, Fields.HARNESS_TYPE, self.harness_type, raw)
+            write_dynamic_string_field(
+                serializer,
+                record,
+                Fields.HARNESS_TYPE,
+                self.harness_type,
+                raw_record=raw,
+                used_utf8_sidecar=self._used_utf8_harness_type,
+                was_present=self._has_harness_type,
+                force=self.harness_type != self._source_harness_type,
+            )
 
-        s.remove_field(record, Fields.TEXT)
-        return record
+        unique_id = str(self.unique_id or "")
+        if self._used_utf8_unique_id and raw is not None:
+            for key, value in raw.items():
+                if key.lower() == "uniqueid":
+                    record[key] = value
+                    break
+        write_dynamic_string_field(
+            serializer,
+            record,
+            "UniqueID",
+            unique_id,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_unique_id,
+            was_present=self._has_unique_id,
+            force=unique_id != self._source_unique_id,
+        )
+
+    @staticmethod
+    def _authored_managed_order(record: dict[str, object]) -> dict[str, object]:
+        family_order = (
+            "Side",
+            "DistanceFromTop",
+            "DistanceFromTop_Frac",
+            "DistanceFromTop_Frac1",
+            "Color",
+            "AreaColor",
+            "TextColor",
+            "TextFontID",
+            "TextStyle",
+            "Name",
+            "HarnessType",
+            "UniqueID",
+            "%UTF8%UniqueID",
+            "IOType",
+            "Style",
+            "ArrowKind",
+        )
+        normalized_order = {name.lower(): name for name in family_order}
+        family_values: dict[str, tuple[str, Any]] = {}
+        result: dict[str, Any] = {}
+        for key, value in record.items():
+            family_name = normalized_order.get(key.lower())
+            if family_name is None:
+                result[key] = value
+            else:
+                family_values[family_name] = (key, value)
+        for family_name in family_order:
+            if family_name in family_values:
+                key, value = family_values[family_name]
+                result[key] = value
+        return result
 
     def _detect_case_mode(self) -> CaseMode:
         """
@@ -1322,6 +1527,7 @@ class AltiumSchSheetEntry(
             make_font_payload,
             make_pen,
             make_solid_brush,
+            make_text_with_overline_operations,
             split_overline_text,
             svg_coord_to_geometry,
             wrap_record_operations,
@@ -1379,19 +1585,17 @@ class AltiumSchSheetEntry(
             svg_coord_to_geometry,
         )
         if clean_text:
-            operations.append(
+            operations.extend(
                 self._sheet_entry_text_operation(
                     ctx,
-                    clean_text,
+                    display_text,
                     text_x,
                     text_y,
                     text_rotation,
                     baseline_font_size,
                     font_payload,
                     units_per_px,
-                    SchGeometryOp,
-                    make_solid_brush,
-                    svg_coord_to_geometry,
+                    make_text_with_overline_operations,
                 )
             )
 
@@ -1515,7 +1719,10 @@ class AltiumSchSheetEntry(
             else None
         )
         baseline_font_size = float(int(font_size_px))
-        clean_text, _ = split_overline_text(display_text)
+        clean_text, _ = split_overline_text(
+            display_text,
+            single_slash_negation=ctx.options.single_slash_negation,
+        )
         text_width = (
             measure_text_width(
                 clean_text,
@@ -1662,35 +1869,33 @@ class AltiumSchSheetEntry(
     def _sheet_entry_text_operation(
         self,
         ctx: "SchSvgRenderContext",
-        clean_text: str,
+        display_text: str,
         text_x: float,
         text_y: float,
         text_rotation: float,
         baseline_font_size: float,
-        font_payload: Any,
+        font_payload: object,
         units_per_px: int,
-        geometry_op_cls: Any,
-        make_solid_brush: Any,
-        svg_coord_to_geometry: Any,
-    ) -> Any:
-        if text_rotation != 0.0:
-            geometry_text_x_px = text_x - baseline_font_size
-            geometry_text_y_px = text_y
-        else:
-            geometry_text_x_px = text_x
-            geometry_text_y_px = text_y - baseline_font_size
-        geometry_text_x, geometry_text_y = svg_coord_to_geometry(
-            geometry_text_x_px,
-            geometry_text_y_px,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
+        make_text_with_overline_operations: Callable[..., list["SchGeometryOp"]],
+    ) -> list["SchGeometryOp"]:
+        font_name, font_size_px, font_bold, font_italic, _ = ctx.get_font_info(
+            self.text_font_id
         )
-        return geometry_op_cls.string(
-            x=geometry_text_x,
-            y=geometry_text_y,
-            text=clean_text,
-            font=font_payload,
-            brush=make_solid_brush(int(self.text_color or 0)),
+        return make_text_with_overline_operations(
+            text=display_text,
+            baseline_x_px=text_x,
+            baseline_y_px=text_y,
+            sheet_height_px=float(ctx.sheet_height or 0.0),
+            font_payload=font_payload,
+            font_size_px=font_size_px,
+            font_name=font_name,
+            bold=font_bold,
+            italic=font_italic,
+            brush_color_raw=int(self.text_color or 0),
+            rotation_deg=text_rotation,
+            units_per_px=units_per_px,
+            geometry_step_px=baseline_font_size,
+            single_slash_negation=ctx.options.single_slash_negation,
         )
 
     def _expand_text_bounds(

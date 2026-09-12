@@ -12,6 +12,8 @@ import json
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 
+from ._logical_source_identity import _logical_source_identity_key
+
 SOURCE_UUID_KEY = "sch.source_key.source_uuid"
 SOURCE_PATH_KEY = "sch.source_key.source_path"
 SOURCE_SUBOBJECT_KEY = "sch.source_key.source_subobject"
@@ -123,7 +125,7 @@ def compiled_schematic_graph_design_scope(
         )
     return {
         "source_cad": str(source_cad or "unknown").strip().casefold(),
-        "project_file": project_file.replace("\\", "/").casefold(),
+        "project_file": _logical_source_identity_key(project_file.replace("\\", "/")),
     }
 
 

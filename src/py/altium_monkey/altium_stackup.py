@@ -1419,9 +1419,7 @@ def _normalized_guid_key(value: object) -> str:
 
 
 def _type_id_for_layer(layer: object) -> str:
-    stackupx_type_id = _normalized_guid_key(
-        getattr(layer, "stackupx_type_id", "")
-    )
+    stackupx_type_id = _normalized_guid_key(getattr(layer, "stackupx_type_id", ""))
     if stackupx_type_id:
         return "{" + stackupx_type_id + "}"
     family = str(getattr(layer, "family", "")).strip().lower()

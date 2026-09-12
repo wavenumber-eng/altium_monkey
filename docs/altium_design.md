@@ -17,7 +17,13 @@ Use it when you need to:
 
 `AltiumDesign.to_json(...)` emits `altium_monkey.design.b0`.
 
-`AltiumDesign.to_netlist().to_json(...)` emits `altium_monkey.netlist.a0`.
+`AltiumDesign.to_netlist().to_json(...)` emits `altium_monkey.netlist.b0`.
+
+`AltiumDesign.to_bom_payload()` emits
+`altium_monkey.schematic_bom.a0` through an immutable
+`SchematicBomPayload`. Use its `to_json()`, `to_json_text()`, or
+`to_json_bytes()` methods for a versioned transport. The established
+list-returning `to_bom()` API remains available.
 
 `AltiumDesign.compile(force=False)` returns the beta compiled schematic model.
 Project netlist, design JSON, and physical schematic rendering now derive from
@@ -30,8 +36,9 @@ where one logical `.SchDoc` appears multiple times with different resolved
 designators such as `R1.1`, `R1.2`, `R1A`, or `R1B`.
 
 `AltiumDesign.to_pnp(...)` returns pick-and-place entries from the project
-PcbDoc. When a project has a PcbDoc, `AltiumDesign.to_json(...)` also includes
-the same data under the optional root `pnp` field.
+PcbDoc. With its default `include_pnp=True`, `AltiumDesign.to_json(...)` also
+includes the same data under the optional root `pnp` field when a PcbDoc is
+referenced.
 
 The default PnP coordinate mode is `altium-pick-place`. It matches Altium's
 Pick Place export by taking the center of the bounding box of component-owned
@@ -46,12 +53,61 @@ The `schema` field is the contract version. These payloads do not use a root
 
 The root `generator` field is `altium_monkey`.
 
+Standalone Netlist b0 uses structured `source_pages` and stable component
+identities. Design b0 owns a separate embedded-net compatibility projection;
+its root `nets` retain filename-only `source_sheets` and must not be interpreted
+as standalone Netlist b0 rows.
+
+Use `SchematicContractLimits` to lower the reviewed JSON resource ceilings.
+`SchematicContractError` provides a stable error code and JSON Pointer path for
+invalid Netlist b0 or schematic-BOM a0 payloads.
+
 See [schema contracts](schemas/index.md) for field-level contract notes.
 See [compiled design migration](api_patterns/compiled_design.md) for guidance
 when moving strict validators or SVG/component consumers from Design a2 to
 Design b0. The retained `altium_monkey.design.a2` schema describes archived
 physical-page payloads, and `altium_monkey.design.a1` describes the earlier
 project contract. Neither predecessor is emitted by the current API.
+
+## Project Load Modes
+
+`AltiumDesign.from_prjpcb(...)` accepts an `AltiumProjectLoadMode`:
+
+```python
+from altium_monkey import AltiumDesign, AltiumProjectLoadMode
+
+design = AltiumDesign.from_prjpcb(
+    "board.PrjPcb",
+    load_mode=AltiumProjectLoadMode.METADATA_ONLY,
+)
+```
+
+`FULL`, the default, loads the project and compile-participating SchDocs. It
+provides the compiler, netlist, Design JSON, BOM, schematic rendering, and
+schematic query APIs. Despite its name, it does not eagerly load a referenced
+PcbDoc: both project modes leave `design.pcbdoc` as `None` until an explicit
+PCB-dependent operation requests the board.
+
+Design JSON is a mixed schematic/PCB transport for compatibility. Its
+`include_pnp=True` default loads a referenced PcbDoc to populate the optional
+`pnp` field. Use `design.to_json(include_pnp=False)` for schematic-only Design
+JSON; that path does not parse the board.
+
+`METADATA_ONLY` reads neither SchDoc nor PcbDoc document bytes. It retains
+project metadata, compile options, project parameters, variants, DNP and
+component-override rows, and board discovery through `get_pcbdoc_paths()`.
+Its `schdocs` list and schematic-derived `sheet_parameters` are empty.
+`load_pcbdoc(...)` remains available and parses only the selected board.
+
+Schematic-dependent methods on a metadata-only design raise
+`AltiumProjectCapabilityError`; they do not return an empty result that could
+be mistaken for an empty design. A design does not upgrade its load mode in
+place. Construct a new `FULL` design when schematic capabilities are needed.
+
+Loaded PcbDocs are cached by resolved source path. Equivalent filename,
+relative-path, and absolute-path selectors return the same mutable object, so
+intentional in-memory edits remain visible. Construct a new design when fresh
+disk state is required.
 
 ## Compiled vs Logical Views
 
@@ -161,7 +217,7 @@ output yet.
 
 The compiled design path resolves hierarchical sheets, repeated channels,
 physical page instances, and annotation-file driven designator mapping for the
-governed release corpus. `.Annotation` files are parsed for compile-relevant
+supported project shapes. `.Annotation` files are parsed for compile-relevant
 physical designator and sheet/document metadata. Annotation `NetNameManager`
 records are preserved as annotation metadata, but are not applied as compiled
 flat-net renames because reference compile evidence does not apply those

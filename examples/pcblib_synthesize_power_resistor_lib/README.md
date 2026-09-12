@@ -32,6 +32,10 @@ Generate one explicit value:
 uv run --extra examples python examples\pcblib_synthesize_power_resistor_lib\pcblib_synthesize_power_resistor_lib.py --part SQP20AJB-10R
 ```
 
+On Windows with Python 3.14, the `examples` extra constrains CasADi below 3.8.
+This avoids a native process-shutdown fault observed after CadQuery STEP export;
+the example does not otherwise use CasADi directly.
+
 ## Outputs
 
 - `output/step_models/`: generated STEP files

@@ -1,0 +1,537 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:netlist_b0",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "altium_monkey.netlist.b0"
+    },
+    "generator": {
+      "type": "string",
+      "const": "altium_monkey"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NetlistB0Component"
+      }
+    },
+    "nets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NetlistB0Net"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "generator",
+    "components",
+    "nets"
+  ],
+  "unevaluatedProperties": {
+    "not": {}
+  },
+  "description": "Current semantic netlist transport.",
+  "title": "Altium Monkey netlist b0",
+  "$defs": {
+    "NetlistB0Component": {
+      "type": "object",
+      "properties": {
+        "component_id": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "designator": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "logical_designator": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "physical_designator": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "source_page": {
+          "$ref": "#/$defs/NetlistB0NullableSourcePage"
+        },
+        "value": {
+          "type": "string"
+        },
+        "footprint": {
+          "type": "string"
+        },
+        "library_ref": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "parameters": {
+          "$ref": "#/$defs/SchematicStringParameterMap"
+        }
+      },
+      "required": [
+        "component_id",
+        "designator",
+        "logical_designator",
+        "physical_designator",
+        "source_page",
+        "value",
+        "footprint",
+        "library_ref",
+        "description",
+        "parameters"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "NetlistB0Net": {
+      "type": "object",
+      "properties": {
+        "uid": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "name": {
+          "type": "string"
+        },
+        "auto_named": {
+          "type": "boolean"
+        },
+        "source_pages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SchematicSourcePage"
+          }
+        },
+        "terminals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NetlistB0Terminal"
+          }
+        },
+        "graphical": {
+          "$ref": "#/$defs/NetlistB0Graphical"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NetlistB0Endpoint"
+          }
+        },
+        "hierarchy_paths": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/NetlistB0HierarchyLevel"
+            }
+          }
+        }
+      },
+      "required": [
+        "uid",
+        "name",
+        "auto_named",
+        "source_pages",
+        "terminals",
+        "graphical",
+        "aliases",
+        "endpoints",
+        "hierarchy_paths"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "SchematicIdentityString": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Non-empty identity used by current schematic transport contracts."
+    },
+    "NullableString": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required field whose value may be a string or JSON null."
+    },
+    "NetlistB0NullableSourcePage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SchematicSourcePage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required source page whose value may be JSON null."
+    },
+    "SchematicStringParameterMap": {
+      "type": "object",
+      "properties": {},
+      "unevaluatedProperties": {
+        "type": "string"
+      },
+      "description": "String-only component parameters for current schematic transports."
+    },
+    "SchematicSourcePage": {
+      "type": "object",
+      "properties": {
+        "physical_document_id": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "source_sheet_file": {
+          "$ref": "#/$defs/NullableString"
+        }
+      },
+      "required": [
+        "physical_document_id",
+        "source_sheet_file"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      },
+      "description": "Correlated physical-page and logical-source identity."
+    },
+    "NetlistB0Terminal": {
+      "type": "object",
+      "properties": {
+        "component_id": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "designator": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "pin": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "pin_name": {
+          "type": "string"
+        },
+        "pin_type": {
+          "$ref": "#/$defs/NetlistB0PinType"
+        }
+      },
+      "required": [
+        "component_id",
+        "designator",
+        "pin",
+        "pin_name",
+        "pin_type"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "NetlistB0Graphical": {
+      "type": "object",
+      "properties": {
+        "wires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "junctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "power_ports": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sheet_entries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NetlistB0GraphicalPin"
+          }
+        }
+      },
+      "required": [
+        "wires",
+        "junctions",
+        "labels",
+        "power_ports",
+        "ports",
+        "sheet_entries",
+        "pins"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "NetlistB0Endpoint": {
+      "type": "object",
+      "properties": {
+        "endpoint_id": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "role": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "element_id": {
+          "type": "string"
+        },
+        "object_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source_page": {
+          "$ref": "#/$defs/NetlistB0NullableSourcePage"
+        },
+        "component_id": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "designator": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "pin": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "pin_name": {
+          "$ref": "#/$defs/NullableString"
+        },
+        "pin_type": {
+          "$ref": "#/$defs/NetlistB0NullablePinType"
+        },
+        "connection_point": {
+          "$ref": "#/$defs/NetlistB0NullableConnectionPoint"
+        }
+      },
+      "required": [
+        "endpoint_id",
+        "role",
+        "element_id",
+        "object_id",
+        "name",
+        "source_page",
+        "component_id",
+        "designator",
+        "pin",
+        "pin_name",
+        "pin_type",
+        "connection_point"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "NetlistB0HierarchyLevel": {
+      "type": "object",
+      "properties": {
+        "sheet_symbol_uid": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "child_filename": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "designator": {
+          "type": "string"
+        },
+        "channel_name": {
+          "type": "string"
+        },
+        "channel_index": {
+          "$ref": "#/$defs/NetlistB0NullableChannelIndex"
+        },
+        "repeat_value": {
+          "$ref": "#/$defs/NullableInt64"
+        }
+      },
+      "required": [
+        "sheet_symbol_uid",
+        "child_filename",
+        "designator",
+        "channel_name",
+        "channel_index",
+        "repeat_value"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "NetlistB0PinType": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "INPUT"
+        },
+        {
+          "type": "string",
+          "const": "IO"
+        },
+        {
+          "type": "string",
+          "const": "OUTPUT"
+        },
+        {
+          "type": "string",
+          "const": "OPEN_COLLECTOR"
+        },
+        {
+          "type": "string",
+          "const": "PASSIVE"
+        },
+        {
+          "type": "string",
+          "const": "TRISTATE"
+        },
+        {
+          "type": "string",
+          "const": "OPEN_EMITTER"
+        },
+        {
+          "type": "string",
+          "const": "POWER"
+        },
+        {
+          "type": "string",
+          "const": "UNKNOWN"
+        }
+      ],
+      "description": "Closed electrical pin-type inventory retained by the rich model."
+    },
+    "NetlistB0GraphicalPin": {
+      "type": "object",
+      "properties": {
+        "component_id": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "designator": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "pin": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        },
+        "svg_id": {
+          "$ref": "#/$defs/SchematicIdentityString"
+        }
+      },
+      "required": [
+        "component_id",
+        "designator",
+        "pin",
+        "svg_id"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "NetlistB0NullablePinType": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NetlistB0PinType"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required endpoint pin type whose value may be JSON null."
+    },
+    "NetlistB0NullableConnectionPoint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NetlistB0ConnectionPoint"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required connection point whose value may be JSON null."
+    },
+    "NetlistB0NullableChannelIndex": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NetlistB0NonNegativeInt64"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required non-negative channel index whose value may be JSON null."
+    },
+    "NullableInt64": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required field whose value may be a signed integer or JSON null."
+    },
+    "NetlistB0ConnectionPoint": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        "y": {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        "units": {
+          "type": "string",
+          "const": "altium_coord"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "units"
+      ],
+      "unevaluatedProperties": {
+        "not": {}
+      }
+    },
+    "NetlistB0NonNegativeInt64": {
+      "type": "integer",
+      "description": "Signed 64-bit JSON integer shared by schema and Rust boundaries.",
+      "x-altium-monkey-signed-integer-width": 64,
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "SignedInt64": {
+      "type": "integer",
+      "description": "Signed 64-bit JSON integer shared by schema and Rust boundaries.",
+      "x-altium-monkey-signed-integer-width": 64,
+      "minimum": -9223372036854775808,
+      "maximum": 9223372036854775807
+    }
+  }
+}

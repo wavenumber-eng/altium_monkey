@@ -43,6 +43,7 @@ from .altium_pcb_layer_ref import (
 )
 from .altium_pcb_rule import AltiumPlaneClearanceRule, AltiumPlaneConnectRule
 from .altium_record_types import PcbLayer
+from .altium_record_pcb__pad import AltiumPcbPad
 from .altium_board import resolve_outline_arc_segment
 from .altium_resolved_layer_stack import (
     ResolvedLayerStack,
@@ -4323,8 +4324,12 @@ def _build_component_pad_order(
             continue
         comp_ref = dedup_map.get(comp_idx) or comp.designator
         for pin_num, pad_idx in enumerate(pad_indices, 1):
-            comp_pad_map[pad_idx] = (comp_ref, str(pin_num))
-            ordered_pad_items.append((pad_idx, pcbdoc.pads[pad_idx]))
+            pad = pcbdoc.pads[pad_idx]
+            comp_pad_map[pad_idx] = (
+                comp_ref,
+                _physical_pad_pin_identity(pad, pin_num),
+            )
+            ordered_pad_items.append((pad_idx, pad))
             ordered_pad_indices.add(pad_idx)
 
     for pad_idx, pad in enumerate(pcbdoc.pads):
@@ -4333,6 +4338,11 @@ def _build_component_pad_order(
         ordered_pad_items.append((pad_idx, pad))
 
     return ordered_pad_items, comp_pad_map
+
+
+def _physical_pad_pin_identity(pad: AltiumPcbPad, fallback_ordinal: int) -> str:
+    """Return the stored pad designator or its package-order fallback."""
+    return pad.designator or str(fallback_ordinal)
 
 
 def _build_padstacks(ctx: PcbIpc2581Context, step: ET.Element) -> None:
@@ -5818,7 +5828,7 @@ def _emit_package(
 
     # Pins  -  Altium always uses RectCenter for Pin shapes
     for i, pad in enumerate(pads):
-        pin_name = pad.designator or str(i + 1)
+        pin_name = _physical_pad_pin_identity(pad, i + 1)
         px_mm = ctx.coord_to_mm(pad.x)
         py_mm = ctx.coord_to_mm(pad.y)
 

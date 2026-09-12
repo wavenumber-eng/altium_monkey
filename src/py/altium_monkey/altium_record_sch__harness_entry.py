@@ -14,13 +14,22 @@ from .altium_record_types import SchPrimitive, SchRecordType
 from .altium_sch_binding import SingleFontBindableRecordMixin
 from .altium_serializer import (
     AltiumSerializer,
+    FieldDef,
     Fields,
+    _read_param_boolean,
     read_dynamic_string_field,
+    write_dynamic_string_field,
 )
 from .altium_sch_record_helpers import (
     BasicEntryDistanceMilsMixin,
     _effective_basic_entry_distance_frac1,
     detect_case_mode_method_from_uppercase_fields,
+    validate_basic_entry_distance_fields,
+    validate_record_enum_value,
+)
+from ._sch_managed_defaults import (
+    HARNESS_ENTRY_COLOR,
+    SHEET_ENTRY_FILL_COLOR,
 )
 
 
@@ -30,8 +39,11 @@ class BusTextStyle(IntEnum):
     """
 
     FULL = 0
-    ABBREVIATED = 1
-    SHORT = 2
+    PREFIX = 1
+    # Compatibility aliases for the pre-AD26 Python enum. V5 persists both
+    # aliases canonically as Prefix.
+    ABBREVIATED = PREFIX
+    SHORT = PREFIX
 
 
 class AltiumSchHarnessEntry(
@@ -48,9 +60,10 @@ class AltiumSchHarnessEntry(
 
     def __init__(self) -> None:
         super().__init__()
+        self._apply_authored_graphical_metadata_defaults()
         self._init_single_font_binding()
         # From SchDataBasicEntry
-        self.name: str = ""  # Entry signal name (NOT "text")
+        self.name: str = "0"  # Authored SchDataBasicEntry default
         self.text_font_id: int = 1  # TextFontID (NOT "font_id")
         self.text_style: BusTextStyle = BusTextStyle.FULL
         self.harness_type: str = ""  # Associated harness type
@@ -59,11 +72,11 @@ class AltiumSchHarnessEntry(
         self.distance_from_top_frac: int = 0
         # Optional fractional component from DistanceFromTop_Frac1 (1,000,000ths of a step)
         self.distance_from_top_frac1: int = 0
-        self.color: int = 0x000000  # Border color
-        self.area_color: int = 0xFFFFFF  # Fill color
-        self.text_color: int = 0x000000  # Text color
+        self.color: int = HARNESS_ENTRY_COLOR
+        self.area_color: int = SHEET_ENTRY_FILL_COLOR
+        self.text_color: int = HARNESS_ENTRY_COLOR
         # Hierarchy flag - indicates this is a child of the preceding object
-        self.owner_index_additional_list: bool = True
+        self.owner_index_additional_list: bool = False
         # Child index in parent's child list:
         # - -2 (SUPPRESS_INDEX): First child (no IndexInSheet in record)
         # - 1, 2, 3...: Subsequent children
@@ -80,6 +93,18 @@ class AltiumSchHarnessEntry(
         self._has_color: bool = False
         self._has_area_color: bool = False
         self._has_text_color: bool = False
+        self._has_harness_type: bool = False
+        self._has_unique_id: bool = False
+        self._used_utf8_name: bool = False
+        self._used_utf8_text_style: bool = False
+        self._used_utf8_harness_type: bool = False
+        self._used_utf8_unique_id: bool = False
+        self._source_name: str = self.name
+        self._source_text_style: BusTextStyle = self.text_style
+        self._source_harness_type: str = self.harness_type
+        self._source_unique_id: str = str(self.unique_id or "")
+        self._source_distance: tuple[int, int, int] = (0, 0, 0)
+        self._source_area_color: int = self.area_color
 
     def _font_binding_slot_name(self) -> str:
         return "text_font_id"
@@ -101,13 +126,14 @@ class AltiumSchHarnessEntry(
                     font_manager: Optional FontIDManager for font ID translation
         """
         super().parse_from_record(record)
+        self._apply_imported_graphical_metadata_defaults()
         self._font_manager = font_manager
         self._public_font_spec = None
 
         # Use serializer for field reading
         s = AltiumSerializer()
         r = self._record
-        self.name, self._has_name, _ = read_dynamic_string_field(
+        self.name, self._has_name, self._used_utf8_name = read_dynamic_string_field(
             s,
             record,
             r,
@@ -118,26 +144,29 @@ class AltiumSchHarnessEntry(
             record, Fields.TEXT_FONT_ID, font_manager, default=1
         )
 
-        # Parse TextStyle - may be string ("Full"/"Short") or int
-        text_style_raw, self._has_text_style = s.read_str(
-            record, Fields.TEXT_STYLE, default="Full"
+        (
+            text_style_raw,
+            self._has_text_style,
+            self._used_utf8_text_style,
+        ) = read_dynamic_string_field(
+            s,
+            record,
+            r,
+            Fields.TEXT_STYLE,
+            default="",
         )
-        if isinstance(text_style_raw, str) and not text_style_raw.isdigit():
-            # String value like "Full", "Short", "Abbreviated"
-            if text_style_raw.lower() == "full":
-                self.text_style = BusTextStyle.FULL
-            elif text_style_raw.lower() == "short":
-                self.text_style = BusTextStyle.SHORT
-            elif text_style_raw.lower() in ("abbreviated", "abbrev"):
-                self.text_style = BusTextStyle.ABBREVIATED
-            else:
-                self.text_style = BusTextStyle.FULL
-        else:
-            # Numeric value
-            self.text_style = BusTextStyle(int(text_style_raw))
+        self.text_style = (
+            BusTextStyle.PREFIX
+            if text_style_raw.lower() == "prefix"
+            else BusTextStyle.FULL
+        )
 
         # Parse HarnessType
-        self.harness_type, _, _ = read_dynamic_string_field(
+        (
+            self.harness_type,
+            self._has_harness_type,
+            self._used_utf8_harness_type,
+        ) = read_dynamic_string_field(
             s,
             record,
             r,
@@ -147,6 +176,7 @@ class AltiumSchHarnessEntry(
 
         # Parse Side
         self.side, self._has_side = s.read_int(record, Fields.SIDE, default=0)
+        validate_record_enum_value("Side", self.side, 3)
 
         # Parse DistanceFromTop
         self.distance_from_top, self._has_distance_from_top = s.read_int(
@@ -160,23 +190,28 @@ class AltiumSchHarnessEntry(
         self.distance_from_top_frac1, self._has_distance_from_top_frac1 = s.read_int(
             record, Fields.DISTANCE_FROM_TOP_FRAC1, default=0
         )
+        validate_basic_entry_distance_fields(
+            self.distance_from_top,
+            self.distance_from_top_frac,
+            self.distance_from_top_frac1,
+        )
 
         # Parse colors using read_color
-        self.color, self._has_color = s.read_int(record, Fields.COLOR, default=0)
-        self.area_color, self._has_area_color = s.read_int(
-            record, Fields.AREA_COLOR, default=0xFFFFFF
+        color, self._has_color = s.read_color(record, Fields.COLOR, default=0)
+        area_color, self._has_area_color = s.read_color(
+            record, Fields.AREA_COLOR, default=0
         )
-        if self.area_color == 0:
-            self.area_color = 0xFFFFFF
-        self.text_color, self._has_text_color = s.read_int(
+        text_color, self._has_text_color = s.read_color(
             record, Fields.TEXT_COLOR, default=0
         )
+        self.color = int(color or 0)
+        self.area_color = int(area_color or 0)
+        self.text_color = int(text_color or 0)
 
         # Parse hierarchy flag
-        owner_additional, _ = s.read_bool(
-            record, Fields.OWNER_INDEX_ADDITIONAL_LIST, default=False
+        self.owner_index_additional_list = _read_param_boolean(
+            record, Fields.OWNER_INDEX_ADDITIONAL_LIST
         )
-        self.owner_index_additional_list = owner_additional
 
         # Parse child index (if present)
         index_val, has_index = s.read_int(record, Fields.INDEX_IN_SHEET, default=0)
@@ -185,8 +220,29 @@ class AltiumSchHarnessEntry(
         else:
             self.index_in_sheet = -2  # Suppress - first child has no IndexInSheet
 
+        unique_id, self._has_unique_id, self._used_utf8_unique_id = (
+            read_dynamic_string_field(s, record, r, "UniqueID", default="")
+        )
+        self.unique_id = unique_id or None
+        self._source_name = self.name
+        self._source_text_style = self.text_style
+        self._source_harness_type = self.harness_type
+        self._source_unique_id = str(self.unique_id or "")
+        self._source_distance = (
+            self.distance_from_top,
+            self.distance_from_top_frac,
+            self.distance_from_top_frac1,
+        )
+        self._source_area_color = self.area_color
+
     def serialize_to_record(self) -> dict[str, Any]:
         self._ensure_bound_public_font_ready()
+        validate_record_enum_value("Side", self.side, 3)
+        validate_basic_entry_distance_fields(
+            self.distance_from_top,
+            self.distance_from_top_frac,
+            self.distance_from_top_frac1,
+        )
         record = super().serialize_to_record()
 
         # Determine case mode from raw record
@@ -194,70 +250,69 @@ class AltiumSchHarnessEntry(
         s = AltiumSerializer(mode)
         raw = self._raw_record
 
-        s.write_str(record, Fields.NAME, self.name, raw)
-        s.write_int(record, Fields.TEXT_FONT_ID, self.text_font_id, raw)
-        s.write_str(record, Fields.TEXT_STYLE, self._text_style_to_string(), raw)
+        write_dynamic_string_field(
+            s,
+            record,
+            Fields.NAME,
+            self.name,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_name,
+            was_present=self._has_name,
+            force=self.name != self._source_name,
+        )
+        self._serialize_managed_font_id(
+            record,
+            s,
+            Fields.TEXT_FONT_ID.canonical,
+            self.text_font_id,
+            self._get_fallback_font_manager(),
+        )
+        write_dynamic_string_field(
+            s,
+            record,
+            Fields.TEXT_STYLE,
+            self._text_style_to_string(),
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_text_style,
+            was_present=self._has_text_style,
+            force=self.text_style != self._source_text_style,
+        )
 
-        if self.harness_type:
-            s.write_str(record, Fields.HARNESS_TYPE, self.harness_type, raw)
+        write_dynamic_string_field(
+            s,
+            record,
+            Fields.HARNESS_TYPE,
+            self.harness_type,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_harness_type,
+            was_present=self._has_harness_type,
+            force=self.harness_type != self._source_harness_type,
+        )
 
         # Only serialize Side when non-zero (0 is default, omitted in real files)
-        if self._has_side or self.side != 0:
-            s.write_int(record, Fields.SIDE, self.side, raw)
+        self._write_optional_int(s, record, raw, Fields.SIDE, self.side)
 
-        if self._has_distance_from_top or self.distance_from_top != 0:
-            s.write_int(record, Fields.DISTANCE_FROM_TOP, self.distance_from_top, raw)
-        else:
-            s.remove_field(record, Fields.DISTANCE_FROM_TOP)
-
-        if self._has_distance_from_top_frac or self.distance_from_top_frac != 0:
-            s.write_int(
-                record,
-                Fields.DISTANCE_FROM_TOP_FRAC,
-                self.distance_from_top_frac,
-                raw,
-                force=True,
-            )
-        else:
-            s.remove_field(record, Fields.DISTANCE_FROM_TOP_FRAC)
-        if self._has_distance_from_top_frac1 or self.distance_from_top_frac1 != 0:
-            s.write_int(
-                record,
-                Fields.DISTANCE_FROM_TOP_FRAC1,
-                self.distance_from_top_frac1,
-                raw,
-                force=True,
-            )
-        else:
-            s.remove_field(record, Fields.DISTANCE_FROM_TOP_FRAC1)
-        if self._has_color or self.color != 0:
-            s.write_int(record, Fields.COLOR, self.color, raw, force=self.color != 0)
-        else:
-            s.remove_field(record, Fields.COLOR)
-        if (
-            self._raw_record is None
-            or self._has_area_color
-            or self.area_color != 0xFFFFFF
+        for field, value in (
+            (Fields.DISTANCE_FROM_TOP, self.distance_from_top),
+            (Fields.DISTANCE_FROM_TOP_FRAC, self.distance_from_top_frac),
+            (Fields.DISTANCE_FROM_TOP_FRAC1, self.distance_from_top_frac1),
         ):
-            s.write_int(
-                record,
-                Fields.AREA_COLOR,
-                self.area_color,
-                raw,
-                force=self._raw_record is None or self.area_color != 0xFFFFFF,
-            )
-        else:
-            s.remove_field(record, Fields.AREA_COLOR)
-
-        # Only serialize TextColor when non-zero
-        if self._has_text_color or self.text_color != 0:
-            # TextColor is optional in native records. Non-default mutations
-            # must add it even when the source record omitted the field.
-            s.write_int(record, Fields.TEXT_COLOR, self.text_color, raw, force=True)
+            self._write_optional_int(s, record, raw, field, value)
+        for field, value in (
+            (Fields.COLOR, self.color),
+            (Fields.AREA_COLOR, self.area_color),
+            (Fields.TEXT_COLOR, self.text_color),
+        ):
+            self._write_optional_color(s, record, raw, field, value)
 
         # Hierarchy flag - must be present for Altium to attach entry to connector
-        if self.owner_index_additional_list:
-            s.write_bool(record, Fields.OWNER_INDEX_ADDITIONAL_LIST, True, raw)
+        self._write_optional_bool(
+            s,
+            record,
+            raw,
+            Fields.OWNER_INDEX_ADDITIONAL_LIST,
+            self.owner_index_additional_list,
+        )
 
         # Handle OwnerIndex for harness entry objects
         # Logic:
@@ -267,7 +322,7 @@ class AltiumSchHarnessEntry(
         record.pop("OWNERINDEX", None)
         record.pop("OwnerIndex", None)
         owner_index = cast(int, self.owner_index)
-        if owner_index > 0:
+        if owner_index != 0:
             s.write_int(record, Fields.OWNER_INDEX, owner_index, raw)
 
         # Handle IndexInSheet for child objects
@@ -279,9 +334,76 @@ class AltiumSchHarnessEntry(
             s.write_int(record, Fields.INDEX_IN_SHEET, self.index_in_sheet, raw)
         # Note: -2 means no IndexInSheet (already removed above)
 
+        unique_id = str(self.unique_id or "")
+        if self._used_utf8_unique_id and raw is not None:
+            for key, value in raw.items():
+                if key.lower() == "uniqueid":
+                    record[key] = value
+                    break
+        write_dynamic_string_field(
+            s,
+            record,
+            "UniqueID",
+            unique_id,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_unique_id,
+            was_present=self._has_unique_id,
+            force=unique_id != self._source_unique_id,
+        )
+
         record.pop("TEXT", None)
         record.pop("Text", None)
+        if raw is None:
+            return self._authored_managed_order(record)
         return record
+
+    @staticmethod
+    def _write_optional_int(
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+        field_name: FieldDef | str,
+        value: int,
+    ) -> None:
+        field = field_name.canonical if isinstance(field_name, FieldDef) else field_name
+        source, _ = serializer.read_int(raw or {}, field, default=0)
+        if raw is not None and value == source:
+            return
+        serializer.remove_field(record, field)
+        if value != 0:
+            serializer.write_int(record, field, value, None, force=True)
+
+    @staticmethod
+    def _write_optional_color(
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+        field_name: FieldDef | str,
+        value: int,
+    ) -> None:
+        field = field_name.canonical if isinstance(field_name, FieldDef) else field_name
+        source, _ = serializer.read_color(raw or {}, field, default=0)
+        if raw is not None and value == source:
+            return
+        serializer.remove_field(record, field)
+        if value != 0:
+            serializer.write_color(record, field, value, None, force=True)
+
+    @staticmethod
+    def _write_optional_bool(
+        serializer: AltiumSerializer,
+        record: dict[str, object],
+        raw: dict[str, object] | None,
+        field_name: FieldDef | str,
+        value: bool,
+    ) -> None:
+        field = field_name.canonical if isinstance(field_name, FieldDef) else field_name
+        source = _read_param_boolean(raw or {}, field)
+        if raw is not None and value == source:
+            return
+        serializer.remove_field(record, field)
+        if value:
+            serializer.write_bool(record, field, True, None, force=True)
 
     _detect_case_mode = detect_case_mode_method_from_uppercase_fields
 
@@ -291,11 +413,58 @@ class AltiumSchHarnessEntry(
         """
         if self.text_style == BusTextStyle.FULL:
             return "Full"
-        elif self.text_style == BusTextStyle.SHORT:
-            return "Short"
-        elif self.text_style == BusTextStyle.ABBREVIATED:
-            return "Abbreviated"
+        if self.text_style == BusTextStyle.PREFIX:
+            return "Prefix"
         return "Full"
+
+    @staticmethod
+    def _authored_managed_order(record: dict[str, object]) -> dict[str, object]:
+        managed_order = (
+            "RECORD",
+            "OwnerIndex",
+            "IsNotAccesible",
+            "OwnerIndexAdditionalList",
+            "IndexInSheet",
+            "IgnoreOnLoad",
+            "WiringDiagramOriginUniqueId",
+            "IsSchematicBlockObject",
+            "UniqueIDInReuseBlock",
+            "OwnerPartId",
+            "OwnerPartDisplayMode",
+            "SelectionMemory",
+            "UnionIndex",
+            "GraphicallyLocked",
+            "Side",
+            "DistanceFromTop",
+            "DistanceFromTop_Frac",
+            "DistanceFromTop_Frac1",
+            "Color",
+            "AreaColor",
+            "TextColor",
+            "TextFontID",
+            "TextStyle",
+            "%UTF8%TextStyle",
+            "Name",
+            "%UTF8%Name",
+            "HarnessType",
+            "%UTF8%HarnessType",
+            "UniqueID",
+            "%UTF8%UniqueID",
+        )
+        family_names = {name.lower(): name for name in managed_order}
+        family_values: dict[str, tuple[str, object]] = {}
+        result: dict[str, Any] = {}
+        for key, value in record.items():
+            family_name = family_names.get(key.lower())
+            if family_name is None:
+                result[key] = value
+            else:
+                family_values[family_name] = (key, value)
+        for family_name in managed_order:
+            if family_name in family_values:
+                key, value = family_values[family_name]
+                result[key] = value
+        return result
 
     def to_geometry(
         self,
@@ -318,9 +487,11 @@ class AltiumSchHarnessEntry(
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
             make_font_payload,
             make_pen,
             make_solid_brush,
+            make_text_with_overline_operations,
             split_overline_text,
             svg_coord_to_geometry,
             wrap_record_operations,
@@ -356,7 +527,10 @@ class AltiumSchHarnessEntry(
 
         dot_color_raw = int(self.text_color) if self.text_color is not None else 0
         text_to_render = self.name or ""
-        clean_text, _ = split_overline_text(text_to_render)
+        clean_text, _ = split_overline_text(
+            text_to_render,
+            single_slash_negation=ctx.options.single_slash_negation,
+        )
         text_width_px = (
             measure_text_width(
                 clean_text,
@@ -405,23 +579,23 @@ class AltiumSchHarnessEntry(
             sheet_height_px=float(ctx.sheet_height or 0.0),
             units_per_px=units_per_px,
         )
-        dot_radius_units = units_per_px
+        dot_radius_units = _geometry_item_length(1.0, units_per_px=units_per_px)
 
         operations = [
-            SchGeometryOp.rounded_rectangle(
-                x1=dot_geometry_x - dot_radius_units,
-                y1=dot_geometry_y - dot_radius_units,
-                x2=dot_geometry_x + dot_radius_units,
-                y2=dot_geometry_y + dot_radius_units,
+            SchGeometryOp.rounded_rectangle_from_item(
+                center_x=dot_geometry_x,
+                center_y=dot_geometry_y,
+                half_width=dot_radius_units,
+                half_height=dot_radius_units,
                 corner_x_radius=dot_radius_units,
                 corner_y_radius=dot_radius_units,
                 brush=make_solid_brush(dot_color_raw),
             ),
-            SchGeometryOp.rounded_rectangle(
-                x1=dot_geometry_x - dot_radius_units,
-                y1=dot_geometry_y - dot_radius_units,
-                x2=dot_geometry_x + dot_radius_units,
-                y2=dot_geometry_y + dot_radius_units,
+            SchGeometryOp.rounded_rectangle_from_item(
+                center_x=dot_geometry_x,
+                center_y=dot_geometry_y,
+                half_width=dot_radius_units,
+                half_height=dot_radius_units,
                 corner_x_radius=dot_radius_units,
                 corner_y_radius=dot_radius_units,
                 pen=make_pen(dot_color_raw, width=0),
@@ -429,26 +603,22 @@ class AltiumSchHarnessEntry(
         ]
 
         if text_to_render:
-            if parent_orientation in (2, 3):
-                geometry_text_x_px = text_x - baseline_font_size
-                geometry_text_y_px = text_y
-            else:
-                geometry_text_x_px = text_x
-                geometry_text_y_px = text_y - baseline_font_size
-            text_geometry_x, text_geometry_y = svg_coord_to_geometry(
-                geometry_text_x_px,
-                geometry_text_y_px,
-                sheet_height_px=float(ctx.sheet_height or 0.0),
-                units_per_px=units_per_px,
-            )
             font_payload["rotation"] = float(text_transform_rotation)
-            operations.append(
-                SchGeometryOp.string(
-                    x=text_geometry_x,
-                    y=text_geometry_y,
-                    text=clean_text,
-                    font=font_payload,
-                    brush=make_solid_brush(dot_color_raw),
+            operations.extend(
+                make_text_with_overline_operations(
+                    text=text_to_render,
+                    baseline_x_px=text_x,
+                    baseline_y_px=text_y,
+                    sheet_height_px=float(ctx.sheet_height or 0.0),
+                    font_payload=font_payload,
+                    font_size_px=font_size_px,
+                    font_name=font_name,
+                    bold=font_bold,
+                    italic=font_italic,
+                    brush_color_raw=dot_color_raw,
+                    rotation_deg=float(text_transform_rotation),
+                    units_per_px=units_per_px,
+                    single_slash_negation=ctx.options.single_slash_negation,
                 )
             )
 

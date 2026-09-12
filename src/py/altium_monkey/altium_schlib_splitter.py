@@ -10,6 +10,10 @@ automatically by the save() path.
 import logging
 from pathlib import Path
 
+from ._safe_artifact_name import (
+    dedupe_artifact_basename,
+    safe_schlib_output_name,
+)
 from .altium_schlib import AltiumSchLib
 
 log = logging.getLogger(__name__)
@@ -40,6 +44,7 @@ def split_schlib(
     log.info(f"Splitting {input_path.name}: {len(source.symbols)} symbols")
 
     results: dict[str, Path] = {}
+    used_output_names: dict[str, int] = {}
 
     for symbol in source.symbols:
         # Create a new single-symbol SchLib
@@ -49,24 +54,30 @@ def split_schlib(
         single.font_manager = source.font_manager
 
         # Add the symbol with all its objects
-        new_sym = single.add_symbol(symbol.name, symbol.description)
+        new_sym = single.add_symbol(
+            symbol.name,
+            symbol.description,
+            original_name=symbol.original_name,
+        )
         new_sym.part_count = symbol.part_count
         new_sym.component_record = symbol.component_record
-        for obj in symbol.objects:
-            new_sym.objects.append(obj)
+        new_sym._copy_objects_from(symbol)
 
         # Copy raw_records for round-trip fidelity (parsed symbols have these)
         new_sym.raw_records = symbol.raw_records
 
         # Copy embedded images referenced by this symbol
         for img in symbol.images:
-            filename = getattr(img, 'filename', None)
+            filename = getattr(img, "filename", None)
             if filename and filename in source.embedded_images:
                 single.embedded_images[filename] = source.embedded_images[filename]
 
         # Save
-        safe_name = _sanitize_filename(symbol.name)
-        output_path = output_dir / f"{safe_name}.SchLib"
+        output_name = dedupe_artifact_basename(
+            safe_schlib_output_name("{symbol_name}.SchLib", symbol.name),
+            used_output_names,
+        )
+        output_path = output_dir / output_name
         single.save(output_path, debug=debug)
         results[symbol.name] = output_path
 
@@ -75,11 +86,3 @@ def split_schlib(
 
     log.info(f"Split complete: {len(results)} files")
     return results
-
-
-def _sanitize_filename(name: str) -> str:
-    """
-    Remove characters that are illegal in filenames or OLE storage names.
-    """
-    illegal = '<>:"/\\|?*'
-    return ''.join(c if c not in illegal else '_' for c in name)

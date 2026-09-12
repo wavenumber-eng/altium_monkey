@@ -203,7 +203,7 @@ def parse_annotation_text(
             source_index=index,
         )
         for index, row in sorted(net_name_rows.items())
-        if row.get("original_net_name", "") and row.get("override_net_name", "")
+        if row.get("original_net_name", "") and "override_net_name" in row
     )
     return AnnotationFile(
         status="loaded",

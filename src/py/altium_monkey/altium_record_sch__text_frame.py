@@ -1,7 +1,7 @@
 """Schematic record model for SchRecordType.TEXT_FRAME."""
 
 import math
-from typing import Any
+from typing import Any, cast
 
 from .altium_record_types import (
     CoordPoint,
@@ -10,6 +10,7 @@ from .altium_record_types import (
     SchRecordType,
     TextOrientation,
 )
+from ._sch_managed_defaults import BOX_BORDER_COLOR, BOX_FILL_COLOR, LONG_TEXT_COLOR
 from .altium_sch_binding import SingleFontBindableRecordMixin
 from .altium_serializer import (
     AltiumSerializer,
@@ -18,6 +19,7 @@ from .altium_serializer import (
 )
 from .altium_sch_record_helpers import (
     RectangularBoundsMilsMixin,
+    _RecordFields,
     detect_case_mode_method_from_uppercase_fields,
 )
 from .altium_sch_svg_renderer import (
@@ -94,28 +96,33 @@ class AltiumSchTextFrame(
 
     def __init__(self) -> None:
         super().__init__()
+        if self.record_type is SchRecordType.TEXT_FRAME:
+            self.color = BOX_BORDER_COLOR
+            self.area_color = BOX_FILL_COLOR
         self._init_single_font_binding()
-        self.text: str = ""
+        self.text: str = "Type @ to refer to a designator"
         self.font_id: int = 1
         self.orientation: TextOrientation = TextOrientation.DEGREES_0
         self.is_mirrored: bool = False
         self.is_hidden: bool = False
 
         # Corner coordinate (opposite of location)
-        self.corner = CoordPoint()
+        self.corner = CoordPoint(50, 50)
 
-        # Text frame specific fields (defaults from native SVG testing)
-        # Alignment: 0=Center, 1=Left, 2=Right (opposite of typical convention!)
-        self.alignment: int = 0
-        self.word_wrap: bool = False  # Default: False (per native SVG testing)
-        self.clip_to_rect: bool = False  # Default: False (per native SVG testing)
+        # Authored defaults follow SchDataTextFrame.SetDefault. Sparse import
+        # overwrites these independently below without materializing fields.
+        self.alignment: int = 1
+        self.word_wrap: bool = True
+        self.clip_to_rect: bool = True
         self.show_border: bool = False  # Default: False
-        self.is_solid: bool = False  # Default: False
+        self.is_solid: bool = True
         self.line_width: LineWidth = LineWidth.SMALLEST  # Border line width
-        # TextMargin is in mils (TextMargin=5 -> 5 mil margin)
-        self.text_margin: int = 0  # Default: 0 (not 5!)
-        self.text_margin_frac: int = 0  # Fractional part
-        self.text_color: int | None = None  # Text color (separate from border color)
+        # Stored as split internal coordinates; use text_margin_mils for semantic access.
+        self.text_margin: int = 0
+        self.text_margin_frac: int = 5
+        self.text_color: int | None = (
+            LONG_TEXT_COLOR if self.record_type is SchRecordType.TEXT_FRAME else None
+        )
 
         # Track which fields were present for round-trip fidelity
         self._has_corner_x: bool = False
@@ -123,9 +130,30 @@ class AltiumSchTextFrame(
         self._has_alignment: bool = False
         self._has_word_wrap: bool = False
         self._has_clip_to_rect: bool = False
+        self._has_show_border: bool = False
+        self._has_is_solid: bool = False
         self._has_line_width: bool = False
+        self._has_text_margin: bool = False
+        self._has_text_margin_frac: bool = False
         self._has_text_color: bool = False
         self._used_utf8_text: bool = False  # True if original used %UTF8%Text key
+        self._capture_text_frame_source_state()
+
+    def _capture_text_frame_source_state(self) -> None:
+        """Remember parsed semantic state so sparse mutations can be detected."""
+        self._source_alignment = self.alignment
+        self._source_word_wrap = self.word_wrap
+        self._source_clip_to_rect = self.clip_to_rect
+        self._source_show_border = self.show_border
+        self._source_is_solid = self.is_solid
+        self._source_line_width = self.line_width
+        self._source_text_margin = self.text_margin
+        self._source_text_margin_frac = self.text_margin_frac
+        self._source_text_color = self.text_color
+        self._source_text = self.text
+        self._source_orientation = self.orientation
+        self._source_is_mirrored = self.is_mirrored
+        self._source_is_hidden = self.is_hidden
 
     @property
     def record_type(self) -> SchRecordType:
@@ -136,24 +164,31 @@ class AltiumSchTextFrame(
         """
         Text margin in mils, combining base and fractional parts.
 
-                Formula: text_margin + text_margin_frac / 100000.0
+                Formula: text_margin * 10 + text_margin_frac / 10000.0
 
                 Single source of truth for the combined margin value.
         """
-        return self.text_margin + self.text_margin_frac / 100000.0
+        return self.text_margin * 10 + self.text_margin_frac / 10000.0
 
     @text_margin_mils.setter
     def text_margin_mils(self, value: float) -> None:
         """
         Set text margin from mils value, decomposing to base + frac.
         """
-        internal = int(round(value * 100000))
+        if not math.isfinite(value):
+            raise ValueError("text_margin_mils must be finite")
+        internal = int(round(value * 10000))
         self.text_margin = internal // 100000
         self.text_margin_frac = internal % 100000
 
+    @property
+    def _text_margin_record_units(self) -> float:
+        """Return the margin in the legacy coordinate units used by SVG geometry."""
+        return self.text_margin + self.text_margin_frac / 100000.0
+
     def parse_from_record(
         self,
-        record: dict[str, Any],
+        record: _RecordFields,
         font_manager: Any | None = None,
     ) -> None:
         """
@@ -186,10 +221,12 @@ class AltiumSchTextFrame(
         self.font_id, _ = s.read_font_id(
             record, Fields.FONT_ID, font_manager, default=1
         )
-        orient_val, _ = s.read_int(record, Fields.ORIENTATION, default=0)
-        self.orientation = TextOrientation(orient_val)
-        self.is_mirrored, _ = s.read_bool(record, Fields.IS_MIRRORED, default=False)
-        self.is_hidden, _ = s.read_bool(record, Fields.IS_HIDDEN, default=False)
+        # TextFrame's V5 codec does not import these inherited compatibility
+        # fields. Keep their raw spellings losslessly, but do not let stale
+        # values alter the typed TextFrame state.
+        self.orientation = TextOrientation.DEGREES_0
+        self.is_mirrored = False
+        self.is_hidden = False
 
         # Parse corner coordinates with presence tracking
         corner_x, corner_x_frac, self._has_corner_x = s.read_coord(
@@ -211,25 +248,37 @@ class AltiumSchTextFrame(
         self.clip_to_rect, self._has_clip_to_rect = s.read_bool(
             record, Fields.CLIP_TO_RECT, default=False
         )
-        self.show_border, _ = s.read_bool(record, Fields.SHOW_BORDER, default=False)
-        self.is_solid, _ = s.read_bool(record, Fields.IS_SOLID, default=False)
+        self.show_border, self._has_show_border = s.read_bool(
+            record, Fields.SHOW_BORDER, default=False
+        )
+        self.is_solid, self._has_is_solid = s.read_bool(
+            record, Fields.IS_SOLID, default=False
+        )
         line_width_val, self._has_line_width = s.read_int(
             record, Fields.LINE_WIDTH, default=0
         )
         self.line_width = LineWidth(line_width_val)
 
-        # Text margin with fractional part (default 0, not 5!)
-        self.text_margin, _ = s.read_int(record, Fields.TEXT_MARGIN, default=0)
-        self.text_margin_frac, _ = s.read_int(
+        # Import_Coord_WithDefault supplies five internal units when absent.
+        self.text_margin, _, self._has_text_margin = s.read_coord(
+            record, Fields.TEXT_MARGIN.canonical
+        )
+        self.text_margin_frac, self._has_text_margin_frac = s.read_int(
             record, Fields.TEXT_MARGIN_FRAC, default=0
         )
+        if not self._has_text_margin_frac:
+            self.text_margin_frac = 5
 
         # Text color (separate from border color)
         self.text_color, self._has_text_color = s.read_color(
             record, Fields.TEXT_COLOR, default=None
         )
+        self._apply_imported_color_defaults(area_color=True)
+        if not self._has_text_color:
+            self.text_color = 0
+        self._capture_text_frame_source_state()
 
-    def serialize_to_record(self) -> dict[str, Any]:
+    def serialize_to_record(self) -> _RecordFields:
         self._ensure_bound_public_font_ready()
         record = super().serialize_to_record()
 
@@ -238,55 +287,263 @@ class AltiumSchTextFrame(
         s = AltiumSerializer(mode)
         raw = self._raw_record
         encoded_text = _encode_altium_multiline_text(self.text)
+        self._serialize_text_frame_text(record, s, raw, encoded_text)
+        self._serialize_text_frame_corners(record, s, raw)
+        self._serialize_text_frame_layout(record, s, raw)
+        self._serialize_text_frame_margin_and_color(record, s, raw)
+        self._serialize_text_frame_orientation(record, s, raw)
+        self._move_geometry_identity_to_end_if_needed(record)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Corner.X",
+                "Corner.X_Frac",
+                "Corner.Y",
+                "Corner.Y_Frac",
+                "LineWidth",
+                "Color",
+                "AreaColor",
+                "TextColor",
+                "FontID",
+                "IsSolid",
+                "ShowBorder",
+                "Alignment",
+                "WordWrap",
+                "ClipToRect",
+                "Text",
+                "TextMargin",
+                "TextMargin_Frac",
+                "UniqueID",
+            ),
+        )
 
-        # Text content - preserve %UTF8%Text key for Unicode content
-        if self._used_utf8_text:
-            record["%UTF8%Text"] = encoded_text
-        else:
-            s.write_str(record, Fields.TEXT, encoded_text, raw)
-        s.write_int(record, Fields.FONT_ID, self.font_id, raw)
+    def _serialize_text_frame_text(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+        encoded_text: str,
+    ) -> None:
+        if raw_record is None or self.text != self._source_text:
+            if not encoded_text:
+                serializer.remove_field(record, Fields.TEXT)
+                serializer.remove_field(record, "%UTF8%Text")
+            elif self._used_utf8_text:
+                serializer.remove_field(record, "%UTF8%Text")
+                record["%UTF8%Text"] = encoded_text
+            else:
+                serializer.remove_field(record, Fields.TEXT)
+                serializer.remove_field(record, "%UTF8%Text")
+                serializer.write_str(
+                    record, Fields.TEXT, encoded_text, None, force=True
+                )
+        self._serialize_managed_font_id(
+            record,
+            serializer,
+            Fields.FONT_ID.canonical,
+            self.font_id,
+            self._get_fallback_font_manager(),
+        )
 
-        # Corner coordinates
-        if self._has_corner_x or self.corner.x != 0:
-            s.write_coord(record, "Corner", "X", self.corner.x, self.corner.x_frac, raw)
-        if self._has_corner_y or self.corner.y != 0:
-            s.write_coord(record, "Corner", "Y", self.corner.y, self.corner.y_frac, raw)
+    def _serialize_text_frame_corners(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        self._serialize_managed_family_coord(
+            record, serializer, "Corner", "X", self.corner.x, self.corner.x_frac
+        )
+        self._serialize_managed_family_coord(
+            record, serializer, "Corner", "Y", self.corner.y, self.corner.y_frac
+        )
 
-        # Text frame fields
-        if self._has_alignment or self.alignment != 0:
-            s.write_int(record, Fields.ALIGNMENT, self.alignment, raw)
+    def _serialize_text_frame_layout(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        self._serialize_text_frame_alignment(record, serializer, raw_record)
+        self._serialize_text_frame_border(record, serializer, raw_record)
 
-        if self._has_word_wrap or self.word_wrap:
-            s.write_bool(record, Fields.WORD_WRAP, self.word_wrap, raw)
+    def _serialize_text_frame_alignment(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        if self.record_type is SchRecordType.NOTE:
+            if (
+                (raw_record is None and self.alignment != 0)
+                or self._has_alignment
+                or self.alignment != self._source_alignment
+            ):
+                serializer.write_int(
+                    record,
+                    Fields.ALIGNMENT,
+                    self.alignment,
+                    raw_record,
+                    force=raw_record is None
+                    or self.alignment != self._source_alignment,
+                )
+            for field, value, source, present in (
+                (
+                    Fields.WORD_WRAP,
+                    self.word_wrap,
+                    self._source_word_wrap,
+                    self._has_word_wrap,
+                ),
+                (
+                    Fields.CLIP_TO_RECT,
+                    self.clip_to_rect,
+                    self._source_clip_to_rect,
+                    self._has_clip_to_rect,
+                ),
+            ):
+                if (raw_record is None and value) or present or value != source:
+                    serializer.write_bool(
+                        record,
+                        field,
+                        value,
+                        raw_record,
+                        force=raw_record is None or value != source,
+                    )
+            return
+        self._serialize_managed_family_int(
+            record, serializer, Fields.ALIGNMENT.canonical, self.alignment
+        )
+        self._serialize_managed_family_bool(
+            record, serializer, Fields.WORD_WRAP.canonical, self.word_wrap
+        )
+        self._serialize_managed_family_bool(
+            record, serializer, Fields.CLIP_TO_RECT.canonical, self.clip_to_rect
+        )
 
-        if self._has_clip_to_rect or self.clip_to_rect:
-            s.write_bool(record, Fields.CLIP_TO_RECT, self.clip_to_rect, raw)
+    def _serialize_text_frame_border(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        if self.record_type is SchRecordType.NOTE:
+            for field, value, source, present in (
+                (
+                    Fields.SHOW_BORDER,
+                    self.show_border,
+                    self._source_show_border,
+                    self._has_show_border,
+                ),
+                (
+                    Fields.IS_SOLID,
+                    self.is_solid,
+                    self._source_is_solid,
+                    self._has_is_solid,
+                ),
+            ):
+                if (raw_record is None and value) or present or value != source:
+                    serializer.write_bool(
+                        record,
+                        field,
+                        value,
+                        raw_record,
+                        force=raw_record is None or value != source,
+                    )
+            if (
+                (raw_record is None and self.line_width.value != 0)
+                or self._has_line_width
+                or self.line_width != self._source_line_width
+            ):
+                serializer.write_int(
+                    record,
+                    Fields.LINE_WIDTH,
+                    self.line_width.value,
+                    raw_record,
+                    force=raw_record is None
+                    or self.line_width != self._source_line_width,
+                )
+            return
+        self._serialize_managed_family_bool(
+            record, serializer, Fields.SHOW_BORDER.canonical, self.show_border
+        )
+        self._serialize_managed_family_bool(
+            record, serializer, Fields.IS_SOLID.canonical, self.is_solid
+        )
+        self._serialize_managed_family_int(
+            record, serializer, Fields.LINE_WIDTH.canonical, self.line_width.value
+        )
 
-        s.write_bool(record, Fields.SHOW_BORDER, self.show_border, raw)
-        s.write_bool(record, Fields.IS_SOLID, self.is_solid, raw)
+    def _serialize_text_frame_margin_and_color(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        self._serialize_text_frame_margin(record, serializer, raw_record)
+        self._serialize_text_frame_color(record, serializer, raw_record)
 
-        if self._has_line_width or self.line_width != LineWidth.SMALLEST:
-            s.write_int(record, Fields.LINE_WIDTH, self.line_width.value, raw)
+    def _serialize_text_frame_margin(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        changed = (
+            self.text_margin != self._source_text_margin
+            or self.text_margin_frac != self._source_text_margin_frac
+        )
+        if raw_record is not None and not changed:
+            return
 
-        # Text margin
-        s.write_int(record, Fields.TEXT_MARGIN, self.text_margin, raw)
-        if self.text_margin_frac:
-            s.write_int(record, Fields.TEXT_MARGIN_FRAC, self.text_margin_frac, raw)
+        serializer.remove_field(record, Fields.TEXT_MARGIN)
+        serializer.remove_field(record, Fields.TEXT_MARGIN_FRAC)
+        serializer.write_coord(
+            record,
+            Fields.TEXT_MARGIN.canonical,
+            "",
+            self.text_margin,
+            self.text_margin_frac,
+            raw_record,
+            force=True,
+        )
 
-        # Text color (if set)
-        if self.text_color is not None:
-            s.write_color(record, Fields.TEXT_COLOR, self.text_color, raw, force=True)
+    def _serialize_text_frame_color(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        if raw_record is not None and self.text_color == self._source_text_color:
+            return
+        serializer.remove_field(record, Fields.TEXT_COLOR)
+        if self.text_color not in (None, 0):
+            serializer.write_color(
+                record, Fields.TEXT_COLOR, self.text_color, None, force=True
+            )
 
-        # Orientation (if non-default)
-        if self.orientation != TextOrientation.DEGREES_0:
-            s.write_int(record, Fields.ORIENTATION, self.orientation.value, raw)
-
-        if self.is_mirrored:
-            s.write_bool(record, Fields.IS_MIRRORED, self.is_mirrored, raw)
-        if self.is_hidden:
-            s.write_bool(record, Fields.IS_HIDDEN, self.is_hidden, raw)
-
-        return record
+    def _serialize_text_frame_orientation(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        del serializer
+        if raw_record is None:
+            self._remove_fields_case_insensitively(
+                record,
+                [
+                    "Orientation",
+                    "IsMirrored",
+                    "IsHidden",
+                    "LineStyle",
+                    "LineStyleExt",
+                    "Transparent",
+                ],
+            )
 
     _detect_case_mode = detect_case_mode_method_from_uppercase_fields
 
@@ -319,60 +576,150 @@ class AltiumSchTextFrame(
         Returns:
             List of text lines
         """
-        from .altium_text_metrics import measure_text_width
-
+        paragraphs = text.split("\n")
+        if text.endswith("\n"):
+            paragraphs.pop()
         if not self.word_wrap:
-            # No wrapping: split only on explicit line breaks
-            return text.split("\n")
+            return paragraphs
 
-        lines = []
-        for paragraph in text.split("\n"):
-            if not paragraph:
-                lines.append("")
-                continue
-
-            # Word wrap algorithm (matches Altium's GetSubstringByWidth)
-            remaining = paragraph
+        lines: list[str] = []
+        for paragraph in paragraphs:
+            remaining = self._text_to_utf16_units(paragraph)
             while remaining:
-                # Fast path: entire text fits
-                text_width = measure_text_width(
-                    remaining, font_size_px, font_name, bold=is_bold, italic=is_italic
+                length = self._substring_utf16_length_by_width(
+                    remaining,
+                    max_width_px,
+                    font_name,
+                    font_size_px,
+                    is_bold=is_bold,
+                    is_italic=is_italic,
                 )
-                if text_width <= max_width_px:
-                    lines.append(remaining)
-                    break
-
-                # Character-by-character until overflow
-                fit_text = ""
-                for char in remaining:
-                    test = fit_text + char
-                    test_width = measure_text_width(
-                        test, font_size_px, font_name, bold=is_bold, italic=is_italic
-                    )
-                    if test_width > max_width_px:
-                        # Overshoot - use accumulated text before this char
-                        break
-                    fit_text = test
-
-                if not fit_text:
-                    # Can't fit even one char - force at least one
-                    fit_text = remaining[0]
-
-                # Backtrack to word boundary if not at end of remaining
-                if (
-                    len(fit_text) < len(remaining)
-                    and remaining[len(fit_text)] not in " \t"
-                ):
-                    # Not at word boundary - find last space/tab
-                    for j in range(len(fit_text) - 1, -1, -1):
-                        if fit_text[j] in " \t":
-                            fit_text = fit_text[: j + 1]
-                            break
-
-                lines.append(fit_text)
-                remaining = remaining[len(fit_text) :]
-
+                if length == 0:
+                    forced = [remaining[0]]
+                    length = 1
+                    if len(remaining) > 1 and remaining[1] in {ord(" "), ord("\t")}:
+                        forced.append(remaining[0])
+                        length = 2
+                    lines.append(self._utf16_units_to_text(forced))
+                else:
+                    lines.append(self._utf16_units_to_text(remaining[:length]))
+                remaining = remaining[length:]
         return lines
+
+    @staticmethod
+    def _text_to_utf16_units(text: str) -> list[int]:
+        encoded = text.encode("utf-16-le", errors="surrogatepass")
+        return [
+            encoded[index] | (encoded[index + 1] << 8)
+            for index in range(0, len(encoded), 2)
+        ]
+
+    @staticmethod
+    def _utf16_units_to_text(units: list[int]) -> str:
+        encoded = bytearray(len(units) * 2)
+        for index, unit in enumerate(units):
+            encoded[index * 2] = unit & 0xFF
+            encoded[index * 2 + 1] = unit >> 8
+        return encoded.decode("utf-16-le", errors="surrogatepass")
+
+    def _substring_utf16_length_by_width(
+        self,
+        text: list[int],
+        max_width_px: float,
+        font_name: str,
+        font_size_px: float,
+        *,
+        is_bold: bool,
+        is_italic: bool,
+    ) -> int:
+        length = self._initial_utf16_fit_length(
+            text,
+            max_width_px,
+            font_name,
+            font_size_px,
+            is_bold=is_bold,
+            is_italic=is_italic,
+        )
+        if length < len(text) and self._is_layout_unit(text[length]):
+            length += 1
+        if length in {0, len(text)} or self._is_layout_unit(text[length]):
+            return length
+        return self._backtrack_utf16_word_boundary(text, length)
+
+    def _initial_utf16_fit_length(
+        self,
+        text: list[int],
+        max_width_px: float,
+        font_name: str,
+        font_size_px: float,
+        *,
+        is_bold: bool,
+        is_italic: bool,
+    ) -> int:
+        if (
+            self._measure_tabbed_units_width_px(
+                text,
+                font_name,
+                font_size_px,
+                is_bold=is_bold,
+                is_italic=is_italic,
+            )
+            <= max_width_px
+        ):
+            return len(text)
+        length = 1
+        if (
+            self._measure_tabbed_units_width_px(
+                text[:length],
+                font_name,
+                font_size_px,
+                is_bold=is_bold,
+                is_italic=is_italic,
+            )
+            < max_width_px
+        ):
+            while length < len(text):
+                length += 1
+                width = self._measure_tabbed_units_width_px(
+                    text[:length],
+                    font_name,
+                    font_size_px,
+                    is_bold=is_bold,
+                    is_italic=is_italic,
+                )
+                if width >= max_width_px:
+                    if width > max_width_px:
+                        length -= 1
+                    break
+        return length
+
+    @staticmethod
+    def _backtrack_utf16_word_boundary(text: list[int], length: int) -> int:
+        boundary = length - 1
+        while boundary > 0 and not AltiumSchTextFrame._is_layout_unit(text[boundary]):
+            boundary -= 1
+        return length if boundary == 0 else boundary + 1
+
+    @staticmethod
+    def _is_layout_unit(unit: int) -> bool:
+        return unit in {ord(" "), ord("\t")}
+
+    def _measure_tabbed_units_width_px(
+        self,
+        units: list[int],
+        font_name: str,
+        font_size_px: float,
+        *,
+        is_bold: bool,
+        is_italic: bool,
+    ) -> float:
+        return self._measure_tabbed_line_width_px(
+            self._utf16_units_to_text(units),
+            font_name,
+            font_size_px,
+            is_bold=is_bold,
+            is_italic=is_italic,
+        )
 
     def _measure_aligned_line_width_px(
         self,
@@ -403,6 +750,111 @@ class AltiumSchTextFrame(
             include_rsb=include_rsb,
         )
 
+    def _measure_tabbed_line_width_px(
+        self,
+        line: str,
+        font_name: str,
+        font_size_px: float,
+        *,
+        is_bold: bool,
+        is_italic: bool,
+        include_rsb: bool = True,
+    ) -> float:
+        tab_width = self._managed_tab_width_internal(
+            font_name,
+            font_size_px,
+            is_bold=is_bold,
+            is_italic=is_italic,
+        )
+        if tab_width == 0:
+            tab_width = 4_000_000
+        width = 0
+        remaining = line
+        while remaining:
+            word, separator, remaining = remaining.partition("\t")
+            width += int(
+                self._measure_aligned_line_width_px(
+                    word.replace("\r", ""),
+                    font_name,
+                    font_size_px,
+                    is_bold=is_bold,
+                    is_italic=is_italic,
+                    include_rsb=include_rsb,
+                )
+                * 100_000
+            )
+            if separator:
+                width = (
+                    width + tab_width
+                    if width % tab_width == 0
+                    else math.ceil(width / tab_width) * tab_width
+                )
+        return width / 100_000
+
+    def _managed_tab_width_internal(
+        self,
+        font_name: str,
+        font_size_px: float,
+        *,
+        is_bold: bool,
+        is_italic: bool,
+    ) -> int:
+        alphabet_width = int(
+            self._measure_aligned_line_width_px(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+                font_name,
+                font_size_px,
+                is_bold=is_bold,
+                is_italic=is_italic,
+                include_rsb=True,
+            )
+            * 100_000
+        )
+        return int(alphabet_width * 8 / 52)
+
+    def _managed_tab_runs(
+        self,
+        text: str,
+        start_x: float,
+        font_name: str,
+        font_size_px: float,
+        *,
+        is_bold: bool,
+        is_italic: bool,
+    ) -> list[tuple[str, float]]:
+        if not text:
+            return []
+        tab_width = self._managed_tab_width_internal(
+            font_name,
+            font_size_px,
+            is_bold=is_bold,
+            is_italic=is_italic,
+        )
+        runs: list[tuple[str, float]] = []
+        cursor = 0
+        remaining = text
+        while True:
+            word, separator, remaining = remaining.partition("\t")
+            runs.append((word, start_x + cursor / 100_000))
+            if not separator or not remaining:
+                return runs
+            cursor += int(
+                self._measure_aligned_line_width_px(
+                    word.replace("\r", ""),
+                    font_name,
+                    font_size_px,
+                    is_bold=is_bold,
+                    is_italic=is_italic,
+                    include_rsb=True,
+                )
+                * 100_000
+            )
+            cursor = (
+                cursor + tab_width
+                if tab_width == 0 or cursor % tab_width == 0
+                else math.ceil(cursor / tab_width) * tab_width
+            )
+
     def _get_aligned_line_x(
         self,
         text_area_x: float,
@@ -425,11 +877,13 @@ class AltiumSchTextFrame(
 
         return text_area_x + (text_area_width - line_width_px) / 2
 
-    def _get_geometry_pen_width(self, units_per_px: int) -> int:
+    def _get_geometry_pen_width(self, units_per_px: int) -> float:
+        from .altium_sch_geometry_oracle import _geometry_item_length
+
         if self.line_width == LineWidth.SMALLEST:
             return 0
         stroke_width_mils = LINE_WIDTH_MILS.get(self.line_width, 1.0)
-        return int(round(stroke_width_mils * units_per_px))
+        return _geometry_item_length(stroke_width_mils, units_per_px=units_per_px)
 
     def _measure_layout_advance_px(
         self,
@@ -556,6 +1010,7 @@ class AltiumSchTextFrame(
         )
         text = self.text.replace("~1", "\n")
         text = ctx.substitute_parameters(text)
+        text = self._restore_managed_line_endings(text)
         lines = self._wrap_text_to_lines(
             text,
             text_area_width,
@@ -564,9 +1019,7 @@ class AltiumSchTextFrame(
             is_bold,
             is_italic,
         )
-        had_trailing_empty_line = bool(lines and lines[-1] == "")
-        if had_trailing_empty_line:
-            lines.pop()
+        had_trailing_empty_line = False
         return (
             font_name,
             font_size_px,
@@ -576,6 +1029,17 @@ class AltiumSchTextFrame(
             lines,
             had_trailing_empty_line,
         )
+
+    @staticmethod
+    def _restore_managed_line_endings(text: str) -> str:
+        restored: list[str] = []
+        previous = ""
+        for character in text:
+            if character == "\n" and previous != "\r":
+                restored.append("\r")
+            restored.append(character)
+            previous = character
+        return "".join(restored)
 
     def _text_frame_clip_geometry(
         self,
@@ -616,21 +1080,27 @@ class AltiumSchTextFrame(
         last_non_empty_line_index: int,
     ) -> tuple[str | None, bool, str, bool, bool, str]:
         next_line = lines[index + 1] if index + 1 < len(lines) else None
-        has_trailing_layout_space = line.endswith((" ", "\t"))
+        layout_line = line.removesuffix("\r")
+        layout_next_line = (
+            next_line.removesuffix("\r") if next_line is not None else None
+        )
+        has_trailing_layout_space = layout_line.endswith((" ", "\t"))
         trailing_layout = (
-            line[len(line.rstrip(" \t")) :] if has_trailing_layout_space else ""
+            layout_line[len(layout_line.rstrip(" \t")) :]
+            if has_trailing_layout_space
+            else ""
         )
         split_token_continuation = (
-            line != ""
-            and next_line not in {"", None}
+            layout_line != ""
+            and layout_next_line not in {"", None}
             and not has_trailing_layout_space
-            and not str(next_line).startswith((" ", "\t"))
+            and not str(layout_next_line).startswith((" ", "\t"))
         )
         has_explicit_break_after_line = next_line is not None or (
             had_trailing_empty_line and index == len(lines) - 1
         )
         include_rsb = (
-            line != ""
+            layout_line != ""
             and not split_token_continuation
             and not has_trailing_layout_space
             and (index != last_non_empty_line_index or has_explicit_break_after_line)
@@ -664,10 +1134,10 @@ class AltiumSchTextFrame(
         split_token_continuation: bool,
         has_trailing_layout_space: bool,
     ) -> str:
+        if line.endswith("\r"):
+            return line
         if line == "":
             return "\r"
-        if line.isspace():
-            return line + "\r"
         if split_token_continuation:
             return line
         if index == len(lines) - 1 and not had_trailing_empty_line:
@@ -687,10 +1157,15 @@ class AltiumSchTextFrame(
         font_payload: Any,
         text_brush: Any,
     ) -> None:
-        from .altium_sch_geometry_oracle import SchGeometryOp
+        from .altium_sch_geometry_oracle import (
+            SchGeometryOp,
+            _geometry_clip_can_draw,
+        )
 
         if clip_geometry is not None:
             clip_x1, clip_y1, clip_x2, clip_y2 = clip_geometry
+            if not _geometry_clip_can_draw(clip_x1, clip_y1, clip_x2, clip_y2):
+                return
             operations.append(
                 SchGeometryOp.push_clip(
                     x1=clip_x1,
@@ -764,7 +1239,11 @@ class AltiumSchTextFrame(
         )
         text_brush = make_solid_brush(text_color_raw)
         last_non_empty_line_index = max(
-            (index for index, line in enumerate(lines) if line != ""),
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.removesuffix("\r") != ""
+            ),
             default=-1,
         )
         clip_geometry = self._text_frame_clip_geometry(
@@ -778,64 +1257,46 @@ class AltiumSchTextFrame(
 
         operations: list[SchGeometryOp] = []
         for index, line in enumerate(lines):
-            (
-                next_line,
-                has_trailing_layout_space,
-                trailing_layout,
-                split_token_continuation,
-                include_rsb,
-                payload_text,
-            ) = self._text_frame_line_state(
+            (*_, include_rsb, payload_text) = self._text_frame_line_state(
                 index=index,
                 line=line,
                 lines=lines,
                 had_trailing_empty_line=had_trailing_empty_line,
                 last_non_empty_line_index=last_non_empty_line_index,
             )
-            line_width_px = self._measure_aligned_line_width_px(
-                line,
-                font_name,
-                font_size_for_width,
-                is_bold=is_bold,
-                is_italic=is_italic,
-                include_rsb=include_rsb,
+            line_width_px = (
+                0.0
+                if self.alignment == 1
+                else self._measure_tabbed_line_width_px(
+                    line,
+                    font_name,
+                    font_size_for_width,
+                    is_bold=is_bold,
+                    is_italic=is_italic,
+                    include_rsb=include_rsb,
+                )
             )
             line_x = self._get_aligned_line_x(
                 text_area_x,
                 text_area_width,
                 line_width_px,
             )
-            geometry_x, geometry_y = svg_coord_to_geometry(
+            _, geometry_y = svg_coord_to_geometry(
                 line_x,
                 current_y - baseline_offset,
                 sheet_height_px=sheet_height_px,
                 units_per_px=units_per_px,
             )
-            self._append_text_frame_string_op(
-                operations,
-                clip_geometry=clip_geometry,
-                geometry_x=geometry_x,
-                geometry_y=geometry_y,
-                payload_text=payload_text,
-                font_payload=font_payload,
-                text_brush=text_brush,
-            )
-            if (
-                getattr(ctx, "native_svg_export", False)
-                and has_trailing_layout_space
-                and "\t" in trailing_layout
-                and next_line not in {"", None}
+            for run_text, run_x in self._managed_tab_runs(
+                payload_text,
+                line_x,
+                font_name,
+                font_size_for_width,
+                is_bold=is_bold,
+                is_italic=is_italic,
             ):
-                trailing_cursor_x = line_x + self._measure_trailing_layout_cursor_px(
-                    line,
-                    font_name,
-                    font_size_px,
-                    is_bold=is_bold,
-                    is_italic=is_italic,
-                    use_altium_algorithm=True,
-                )
-                trailing_geometry_x, _ = svg_coord_to_geometry(
-                    trailing_cursor_x,
+                run_geometry_x, _ = svg_coord_to_geometry(
+                    run_x,
                     current_y - baseline_offset,
                     sheet_height_px=sheet_height_px,
                     units_per_px=units_per_px,
@@ -843,9 +1304,9 @@ class AltiumSchTextFrame(
                 self._append_text_frame_string_op(
                     operations,
                     clip_geometry=clip_geometry,
-                    geometry_x=trailing_geometry_x,
+                    geometry_x=run_geometry_x,
                     geometry_y=geometry_y,
-                    payload_text="\r",
+                    payload_text=run_text,
                     font_payload=font_payload,
                     text_brush=text_brush,
                 )
@@ -864,9 +1325,9 @@ class AltiumSchTextFrame(
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            make_rounded_rectangle_operation,
             make_pen,
             make_solid_brush,
-            svg_coord_to_geometry,
             wrap_record_operations,
         )
 
@@ -882,30 +1343,20 @@ class AltiumSchTextFrame(
         if frame_width == 0 or frame_height == 0:
             return None
 
-        geo_left, geo_top = svg_coord_to_geometry(
-            frame_x,
-            frame_y,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
-        )
-        geo_right, geo_bottom = svg_coord_to_geometry(
-            frame_x + frame_width,
-            frame_y + frame_height,
-            sheet_height_px=float(ctx.sheet_height or 0.0),
-            units_per_px=units_per_px,
-        )
-
         operations: list[SchGeometryOp] = []
         if self.is_solid:
             fill_color_raw = (
                 int(self.area_color) if self.area_color is not None else 0xFFFFFF
             )
             operations.append(
-                SchGeometryOp.rounded_rectangle(
-                    x1=geo_left,
-                    y1=geo_top,
-                    x2=geo_right,
-                    y2=geo_bottom,
+                make_rounded_rectangle_operation(
+                    x1_px=frame_x,
+                    y1_px=frame_y,
+                    x2_px=frame_x + frame_width,
+                    y2_px=frame_y + frame_height,
+                    sheet_height_px=float(ctx.sheet_height or 0.0),
+                    units_per_px=units_per_px,
+                    source_rotation=ctx.rotation,
                     brush=make_solid_brush(fill_color_raw),
                 )
             )
@@ -914,11 +1365,14 @@ class AltiumSchTextFrame(
                 # and routes solid/no-border frames through RectangleDrawGraphObject,
                 # which emits an area-colored outline in addition to the fill.
                 operations.append(
-                    SchGeometryOp.rounded_rectangle(
-                        x1=geo_left,
-                        y1=geo_top,
-                        x2=geo_right,
-                        y2=geo_bottom,
+                    make_rounded_rectangle_operation(
+                        x1_px=frame_x,
+                        y1_px=frame_y,
+                        x2_px=frame_x + frame_width,
+                        y2_px=frame_y + frame_height,
+                        sheet_height_px=float(ctx.sheet_height or 0.0),
+                        units_per_px=units_per_px,
+                        source_rotation=ctx.rotation,
                         pen=make_pen(
                             fill_color_raw,
                             width=self._get_geometry_pen_width(units_per_px),
@@ -930,11 +1384,14 @@ class AltiumSchTextFrame(
         if self.show_border:
             stroke_color_raw = int(self.color) if self.color is not None else 0
             operations.append(
-                SchGeometryOp.rounded_rectangle(
-                    x1=geo_left,
-                    y1=geo_top,
-                    x2=geo_right,
-                    y2=geo_bottom,
+                make_rounded_rectangle_operation(
+                    x1_px=frame_x,
+                    y1_px=frame_y,
+                    x2_px=frame_x + frame_width,
+                    y2_px=frame_y + frame_height,
+                    sheet_height_px=float(ctx.sheet_height or 0.0),
+                    units_per_px=units_per_px,
+                    source_rotation=ctx.rotation,
                     pen=make_pen(
                         stroke_color_raw,
                         width=self._get_geometry_pen_width(units_per_px),
@@ -948,7 +1405,7 @@ class AltiumSchTextFrame(
             border_width = (
                 LINE_WIDTH_MILS.get(self.line_width, 1.0) * ctx.get_stroke_scale()
             )
-        margin_svg = self.text_margin_mils * ctx.scale + border_width
+        margin_svg = self._text_margin_record_units * ctx.scale + border_width
         text_area_x = frame_x + margin_svg
         text_area_y = frame_y + margin_svg
         text_area_width = frame_width - 2 * margin_svg
@@ -982,9 +1439,10 @@ class AltiumSchTextFrame(
         right = max(float(self.location.x), float(self.corner.x))
         bottom = min(float(self.location.y), float(self.corner.y))
         top = max(float(self.location.y), float(self.corner.y))
+        unique_id = cast(str, self.unique_id)
         return SchGeometryRecord(
             handle=f"{document_id}\\{self.unique_id}",
-            unique_id=self.unique_id,
+            unique_id=unique_id,
             kind="textframe",
             object_id="eTextFrame",
             bounds=SchGeometryBounds(
@@ -994,7 +1452,7 @@ class AltiumSchTextFrame(
                 bottom=int(round(bottom)),
             ),
             operations=wrap_record_operations(
-                self.unique_id,
+                unique_id,
                 operations,
                 units_per_px=units_per_px,
             ),

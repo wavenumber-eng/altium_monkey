@@ -70,7 +70,7 @@ additional Draftsman object families are modeled.
 
 ## Test Gates
 
-The Draftsman contract is protected by private L9 Draftsman tests, public
-example tests, public documentation sync checks, and release signoff checks.
+The Draftsman contract is protected by focused document tests, executable
+public examples, documentation synchronization checks, and release validation.
 Manual Altium open/save checks are used for generated samples before expanding
 the authored object surface.

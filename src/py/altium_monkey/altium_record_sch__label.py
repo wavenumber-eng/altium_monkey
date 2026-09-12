@@ -2,7 +2,7 @@
 
 import math
 from functools import partial
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .altium_font_manager import FontIDManager
@@ -17,6 +17,7 @@ from .altium_record_types import (
     color_to_hex,
     rgb_to_win32_color,
 )
+from ._sch_managed_defaults import GRAPHICAL_FILL_COLOR, TEXT_COLOR
 from .altium_sch_binding import SingleFontBindableRecordMixin
 from .altium_serializer import (
     AltiumSerializer,
@@ -25,6 +26,7 @@ from .altium_serializer import (
     write_dynamic_string_field,
 )
 from .altium_sch_record_helpers import (
+    _RecordFields,
     detect_case_mode_method_from_dotted_uppercase_fields,
     rotate_point_about_origin,
 )
@@ -50,8 +52,11 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
 
     def __init__(self) -> None:
         super().__init__()
+        self.color = TEXT_COLOR
+        self.area_color = GRAPHICAL_FILL_COLOR
+        self._init_family_dynamic_unique_id()
         self._init_single_font_binding()
-        self.text: str = ""
+        self.text: str = "Text"
         self.font_id = 1  # Descriptor handles type enforcement
         self.orientation: TextOrientation = TextOrientation.DEGREES_0
         self.justification: TextJustification = TextJustification.BOTTOM_LEFT
@@ -65,6 +70,17 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         self._has_justification: bool = False
         self._has_url: bool = False
         self._used_utf8_text: bool = False
+        self._used_utf8_url: bool = False
+        self._capture_graphical_source_state()
+        self._capture_label_source_state()
+
+    def _capture_label_source_state(self) -> None:
+        self._source_text = self.text
+        self._source_font_id = int(self.font_id)
+        self._source_orientation = self.orientation
+        self._source_justification = self.justification
+        self._source_is_mirrored = self.is_mirrored
+        self._source_url = self.url
 
     @property
     def record_type(self) -> SchRecordType:
@@ -72,7 +88,7 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
 
     def parse_from_record(
         self,
-        record: dict[str, Any],
+        record: _RecordFields,
         font_manager: "FontIDManager | None" = None,
     ) -> None:
         """
@@ -89,6 +105,7 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         # Use serializer for field reading (case-insensitive)
         s = AltiumSerializer()
         r = self._record
+        self._parse_family_dynamic_unique_id(s, record)
 
         # Parse text fields with presence tracking
         self.text, self._has_text, self._used_utf8_text = read_dynamic_string_field(
@@ -116,10 +133,19 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
 
         # Parse boolean properties
         self.is_mirrored, _ = s.read_bool(record, Fields.IS_MIRRORED, default=False)
-        self.url, self._has_url = s.read_str(record, Fields.URL, default="")
+        self.url, self._has_url, self._used_utf8_url = read_dynamic_string_field(
+            s,
+            record,
+            r,
+            Fields.URL,
+            default="",
+        )
         self.is_hidden = False
+        self._apply_imported_color_defaults(area_color=False)
+        self._apply_nonpersisted_area_color_default()
+        self._capture_label_source_state()
 
-    def serialize_to_record(self) -> dict[str, Any]:
+    def serialize_to_record(self) -> _RecordFields:
         """
         Serialize to a record.
         """
@@ -131,67 +157,136 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         mode = self._detect_case_mode()
         s = AltiumSerializer(mode)
         raw = self._raw_record
+        self._serialize_managed_family_color(
+            record, s, Fields.COLOR.canonical, int(self.color or 0)
+        )
+        self._serialize_label_text(record, s, raw)
+        self._serialize_label_style(record, s, raw)
+        self._serialize_label_options(record, s, raw)
+        self._normalize_synthesized_label_fields(record, s)
+        self._serialize_family_dynamic_unique_id(record, s)
+        return self._order_authored_graphical_fields(
+            record,
+            (
+                "Location.X",
+                "Location.X_Frac",
+                "Location.Y",
+                "Location.Y_Frac",
+                "Orientation",
+                "Justification",
+                "Color",
+                "FontID",
+                "Text",
+                "IsMirrored",
+                "URL",
+                "UniqueID",
+            ),
+        )
 
-        # Write text fields - only if present or non-default
-        if self._has_text or self.text:
-            write_dynamic_string_field(
-                s,
-                record,
-                Fields.TEXT,
-                self.text,
-                raw_record=raw,
-                used_utf8_sidecar=self._used_utf8_text,
-                was_present=self._has_text,
-            )
+    def _serialize_label_text(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        if self._has_text or self.text != self._source_text or raw_record is None:
+            if self.text != self._source_text and not self.text:
+                self._remove_fields_case_insensitively(record, ["Text", "%UTF8%Text"])
+            else:
+                write_dynamic_string_field(
+                    serializer,
+                    record,
+                    Fields.TEXT,
+                    self.text,
+                    raw_record=raw_record,
+                    used_utf8_sidecar=self._used_utf8_text,
+                    was_present=self._has_text,
+                    force=self.text != self._source_text,
+                )
         else:
             write_dynamic_string_field(
-                s,
+                serializer,
                 record,
                 Fields.TEXT,
                 "",
-                raw_record=raw,
+                raw_record=raw_record,
                 used_utf8_sidecar=False,
                 was_present=False,
             )
+
+    def _serialize_label_style(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
         font_id = cast(int, self.font_id)
 
-        if self._has_font_id or font_id != 1:
-            s.write_int(record, Fields.FONT_ID, font_id, raw)
-        if self._has_orientation or self.orientation != TextOrientation.DEGREES_0:
-            s.write_int(record, Fields.ORIENTATION, self.orientation.value, raw)
-        if (
-            self._has_justification
-            or self.justification != TextJustification.BOTTOM_LEFT
-        ):
-            s.write_int(record, Fields.JUSTIFICATION, self.justification.value, raw)
+        self._serialize_managed_font_id(
+            record,
+            serializer,
+            Fields.FONT_ID.canonical,
+            font_id,
+            self._get_fallback_font_manager(),
+        )
+        self._serialize_managed_family_int(
+            record,
+            serializer,
+            Fields.ORIENTATION.canonical,
+            self.orientation.value,
+        )
+        self._serialize_managed_family_int(
+            record,
+            serializer,
+            Fields.JUSTIFICATION.canonical,
+            self.justification.value,
+        )
 
-        # Write boolean properties (only if True)
-        if self.is_mirrored:
-            s.write_bool(record, Fields.IS_MIRRORED, True, raw)
+    def _serialize_label_options(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+        raw_record: _RecordFields | None,
+    ) -> None:
+        self._serialize_managed_family_bool(
+            record,
+            serializer,
+            Fields.IS_MIRRORED.canonical,
+            self.is_mirrored,
+        )
+
+        if self.url != self._source_url and not self.url:
+            self._remove_fields_case_insensitively(record, ["URL", "%UTF8%URL"])
         else:
-            s.remove_field(record, Fields.IS_MIRRORED)
+            write_dynamic_string_field(
+                serializer,
+                record,
+                Fields.URL,
+                self.url,
+                raw_record=raw_record,
+                used_utf8_sidecar=self._used_utf8_url,
+                was_present=self._has_url,
+                force=self.url != self._source_url,
+            )
 
-        if self._has_url or self.url:
-            s.write_str(record, Fields.URL, self.url, raw)
-        else:
-            s.remove_field(record, Fields.URL)
+        if self.record_type not in {
+            SchRecordType.SHEET_NAME,
+            SchRecordType.FILE_NAME,
+            SchRecordType.HARNESS_TYPE,
+        }:
+            serializer.remove_field(record, Fields.IS_HIDDEN)
 
-        # V5 label export/import does not persist IsHidden.
-        s.remove_field(record, Fields.IS_HIDDEN)
-
-        # For SchLib Labels (synthesis mode - no raw record), remove fields that
-        # Altium doesn't include in its Make SchLib output
+    def _normalize_synthesized_label_fields(
+        self,
+        record: _RecordFields,
+        serializer: AltiumSerializer,
+    ) -> None:
         if self._raw_record is None:
-            # OwnerIndex is NOT exported for Labels in SchLib (when owner_index=0)
-            # BUT for SchDoc SheetName/FileName, owner_index > 0 means it has a parent
             if self.owner_index == 0:
-                s.remove_field(record, Fields.OWNER_INDEX)
-            # Location.Y is NOT exported if it's 0
+                serializer.remove_field(record, Fields.OWNER_INDEX)
             if self.location.y == 0 and self.location.y_frac == 0:
-                s.remove_field(record, Fields.LOCATION_Y)
-                s.remove_field(record, Fields.LOCATION_Y_FRAC)
-
-        return record
+                serializer.remove_field(record, Fields.LOCATION_Y)
+                serializer.remove_field(record, Fields.LOCATION_Y_FRAC)
 
     _detect_case_mode = detect_case_mode_method_from_dotted_uppercase_fields
 
@@ -209,7 +304,9 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            make_font_payload,
             make_solid_brush,
+            svg_coord_to_geometry,
         )
 
         if self.is_hidden or not self.text:
@@ -220,7 +317,6 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
             return None
 
         anchor_x, anchor_y = ctx.transform_coord_precise(self.location)
-        anchor_x, anchor_y = round(anchor_x, 3), round(anchor_y, 3)
         baseline_x, baseline_y = anchor_x, anchor_y
 
         fill_color_raw = int(self.color) if self.color is not None else 0
@@ -335,17 +431,13 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
         min_y = min(point[1] for point in corners)
         max_y = max(point[1] for point in corners)
 
-        font_payload = {
-            "name": str(font_name),
-            "size": float(font_size_px) * units_per_px,
-            "rotation": rotation_deg,
-            "underline": bool(is_underline),
-            "italic": bool(is_italic),
-            "bold": bool(is_bold),
-            "strikeout": False,
-        }
-
         sheet_height = float(ctx.sheet_height or 0.0)
+        geometry_x_units, geometry_y_units = svg_coord_to_geometry(
+            geometry_x,
+            geometry_y,
+            sheet_height_px=sheet_height,
+            units_per_px=units_per_px,
+        )
 
         return SchGeometryRecord(
             handle=f"{document_id}\\{self.unique_id}",
@@ -364,10 +456,19 @@ class AltiumSchLabel(SingleFontBindableRecordMixin, SchGraphicalObject):
                 SchGeometryOp.begin_group("DocumentMainGroup"),
                 SchGeometryOp.begin_group(self.unique_id),
                 SchGeometryOp.string(
-                    x=geometry_x * units_per_px,
-                    y=(geometry_y - sheet_height) * units_per_px + units_per_px * 1000,
+                    x=geometry_x_units,
+                    y=geometry_y_units,
                     text=display_text,
-                    font=font_payload,
+                    font=make_font_payload(
+                        name=font_name,
+                        size_px=font_size_px,
+                        units_per_px=units_per_px,
+                        rotation=rotation_deg,
+                        underline=is_underline,
+                        italic=is_italic,
+                        bold=is_bold,
+                        strikeout=False,
+                    ),
                     brush=make_solid_brush(fill_color_raw),
                 ),
                 SchGeometryOp.end_group(),

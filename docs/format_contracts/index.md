@@ -16,13 +16,14 @@ rows, and mechanical-kind metadata.
 
 1. [SchDoc](schdoc.md)
 2. [SchLib](schlib.md)
-3. [PcbDoc](pcbdoc.md)
-4. [PcbLib](pcblib.md)
-5. [PrjPcb](prjpcb.md)
-6. [AltiumDesign](altium_design.md)
-7. [IntLib](intlib.md)
-8. [SVG](svg.md)
-9. [Draftsman](draftsman.md)
+3. [Schematic JSON interoperability](schematic_interop.md)
+4. [PcbDoc](pcbdoc.md)
+5. [PcbLib](pcblib.md)
+6. [PrjPcb](prjpcb.md)
+7. [AltiumDesign](altium_design.md)
+8. [IntLib](intlib.md)
+9. [SVG](svg.md)
+10. [Draftsman](draftsman.md)
 
 ## Publication Rule
 

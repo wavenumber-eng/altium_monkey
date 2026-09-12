@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from enum import IntEnum
+
+from ._sch_source_admission import _SourceAdmission
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -12,13 +14,24 @@ if TYPE_CHECKING:
     from .altium_sch_geometry_oracle import SchGeometryRecord
     from .altium_sch_svg_renderer import SchSvgRenderContext
 
-from .altium_record_types import LineWidth, SchGraphicalObject, SchRecordType
-from .altium_serializer import AltiumSerializer, Fields
+from .altium_record_types import (
+    LineWidth,
+    SchGraphicalObject,
+    SchPrimitive,
+    SchRecordType,
+)
+from .altium_serializer import (
+    AltiumSerializer,
+    Fields,
+    read_dynamic_string_field,
+    write_dynamic_string_field,
+)
 from .altium_sch_record_helpers import (
     bound_schematic_owner,
     detect_case_mode_method_from_uppercase_fields,
     remove_named_entry,
 )
+from ._sch_managed_defaults import HARNESS_AREA_COLOR, HARNESS_COLOR
 
 
 class SchHarnessConnectorSide(IntEnum):
@@ -52,10 +65,16 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         self.primary_connection_position: int = 0
         self.primary_connection_position_frac: int = 0
         self.line_width: LineWidth = LineWidth.SMALL
-        # Children (entries and type label) - populated during hierarchy building
-        self.children: list = []
+        self.color = HARNESS_COLOR
+        self.area_color = HARNESS_AREA_COLOR
+        from .altium_record_sch__harness_type import AltiumSchHarnessType
+
+        # Managed connectors always own one replaceable connector-type field.
+        default_type_label = AltiumSchHarnessType()
+        default_type_label.parent = self
+        self.children: list = [default_type_label]
         self.entries: list = []  # AltiumSchHarnessEntry objects
-        self.type_label: AltiumSchHarnessType | None = None
+        self.type_label: AltiumSchHarnessType | None = default_type_label
         # Track field presence
         self._has_xsize: bool = False
         self._has_xsize_frac: bool = False
@@ -65,6 +84,9 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         self._has_primary_connection_position: bool = False
         self._has_primary_connection_position_frac: bool = False
         self._has_line_width: bool = False
+        self._has_unique_id: bool = False
+        self._used_utf8_unique_id: bool = False
+        self._source_unique_id: str = str(self.unique_id or "")
 
     @property
     def record_type(self) -> SchRecordType:
@@ -81,11 +103,11 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         s = AltiumSerializer()
 
         # Parse XSize/YSize (from SchDataRectangularGroup)
-        self.xsize, self._has_xsize = s.read_int(record, Fields.X_SIZE, default=80)
+        self.xsize, self._has_xsize = s.read_int(record, Fields.X_SIZE, default=0)
         self.xsize_frac, self._has_xsize_frac = s.read_int(
             record, "XSize_Frac", default=0
         )
-        self.ysize, self._has_ysize = s.read_int(record, Fields.Y_SIZE, default=50)
+        self.ysize, self._has_ysize = s.read_int(record, Fields.Y_SIZE, default=0)
         self.ysize_frac, self._has_ysize_frac = s.read_int(
             record, "YSize_Frac", default=0
         )
@@ -105,6 +127,22 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
             record, Fields.LINE_WIDTH, default=0
         )
         self.line_width = LineWidth(line_width_val)
+        if not self._has_color:
+            self.color = 0
+        if not self._has_area_color:
+            self.area_color = 0
+        self._capture_graphical_source_state()
+        unique_id, self._has_unique_id, self._used_utf8_unique_id = (
+            read_dynamic_string_field(
+                s,
+                record,
+                self._record,
+                "UniqueID",
+                default="",
+            )
+        )
+        self.unique_id = unique_id or None
+        self._source_unique_id = str(self.unique_id or "")
 
     def serialize_to_record(self) -> dict[str, Any]:
         record = super().serialize_to_record()
@@ -114,61 +152,86 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         s = AltiumSerializer(mode)
         raw = self._raw_record
 
-        if self._has_xsize or self.xsize != 0:
-            s.write_int(record, Fields.X_SIZE, self.xsize, raw)
-        else:
-            s.remove_field(record, Fields.X_SIZE)
-        if self._has_xsize_frac or self.xsize_frac != 0:
-            s.write_int(record, "XSize_Frac", self.xsize_frac, raw)
-        else:
-            s.remove_field(record, "XSize_Frac")
-        if self._has_ysize or self.ysize != 0:
-            s.write_int(record, Fields.Y_SIZE, self.ysize, raw)
-        else:
-            s.remove_field(record, Fields.Y_SIZE)
-        if self._has_ysize_frac or self.ysize_frac != 0:
-            s.write_int(record, "YSize_Frac", self.ysize_frac, raw)
-        else:
-            s.remove_field(record, "YSize_Frac")
-        if self._has_side or self.side != SchHarnessConnectorSide.LEFT:
-            s.write_int(record, Fields.HARNESS_CONNECTOR_SIDE, self.side.value, raw)
-        else:
-            s.remove_field(record, Fields.HARNESS_CONNECTOR_SIDE)
-        if (
-            self._has_primary_connection_position
-            or self.primary_connection_position != 0
-        ):
-            s.write_int(
-                record,
-                Fields.PRIMARY_CONNECTION_POSITION,
+        for field, value in (
+            (Fields.X_SIZE.canonical, self.xsize),
+            ("XSize_Frac", self.xsize_frac),
+            (Fields.Y_SIZE.canonical, self.ysize),
+            ("YSize_Frac", self.ysize_frac),
+            (Fields.HARNESS_CONNECTOR_SIDE.canonical, self.side.value),
+            (
+                Fields.PRIMARY_CONNECTION_POSITION.canonical,
                 self.primary_connection_position,
-                raw,
-            )
-        else:
-            s.remove_field(record, Fields.PRIMARY_CONNECTION_POSITION)
-        if (
-            self._has_primary_connection_position_frac
-            or self.primary_connection_position_frac != 0
+            ),
+            ("PrimaryConnectionPosition_Frac", self.primary_connection_position_frac),
         ):
-            s.write_int(
-                record,
-                "PrimaryConnectionPosition_Frac",
-                self.primary_connection_position_frac,
-                raw,
-            )
-        else:
-            s.remove_field(record, "PrimaryConnectionPosition_Frac")
-        if self._has_line_width or self.line_width != LineWidth.SMALLEST:
-            s.write_int(record, Fields.LINE_WIDTH, self.line_width.value, raw)
-        else:
-            s.remove_field(record, Fields.LINE_WIDTH)
+            self._serialize_managed_family_int(record, s, field, value)
+        self._serialize_managed_family_int(
+            record, s, Fields.LINE_WIDTH.canonical, self.line_width.value
+        )
+        self._serialize_managed_family_color(
+            record, s, Fields.COLOR.canonical, int(self.color or 0)
+        )
+        self._serialize_managed_family_color(
+            record, s, Fields.AREA_COLOR.canonical, int(self.area_color or 0)
+        )
 
-        # Connector is a root object - remove OWNERINDEX (only children have this)
-        record.pop("OWNERINDEX", None)
-        record.pop("OwnerIndex", None)
+        unique_id = str(self.unique_id or "")
+        if self._used_utf8_unique_id and raw is not None:
+            for key, value in raw.items():
+                if key.lower() == "uniqueid":
+                    record[key] = value
+                    break
+        write_dynamic_string_field(
+            s,
+            record,
+            "UniqueID",
+            unique_id,
+            raw_record=raw,
+            used_utf8_sidecar=self._used_utf8_unique_id,
+            was_present=self._has_unique_id,
+            force=unique_id != self._source_unique_id,
+        )
+
+        if raw is None:
+            return self._authored_managed_order(record)
         return record
 
     _detect_case_mode = detect_case_mode_method_from_uppercase_fields
+
+    @staticmethod
+    def _authored_managed_order(record: dict[str, object]) -> dict[str, object]:
+        family_order = (
+            "Location.X",
+            "Location.X_Frac",
+            "Location.Y",
+            "Location.Y_Frac",
+            "XSize",
+            "XSize_Frac",
+            "YSize",
+            "YSize_Frac",
+            "LineWidth",
+            "Color",
+            "AreaColor",
+            "PrimaryConnectionPosition",
+            "PrimaryConnectionPosition_Frac",
+            "HarnessConnectorSide",
+            "UniqueID",
+            "%UTF8%UniqueID",
+        )
+        family_names = {name.lower(): name for name in family_order}
+        family_values: dict[str, tuple[str, object]] = {}
+        result: dict[str, Any] = {}
+        for key, value in record.items():
+            family_name = family_names.get(key.lower())
+            if family_name is None:
+                result[key] = value
+            else:
+                family_values[family_name] = (key, value)
+        for family_name in family_order:
+            if family_name in family_values:
+                key, value = family_values[family_name]
+                result[key] = value
+        return result
 
     def to_geometry(
         self,
@@ -184,13 +247,15 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
             SchGeometryBounds,
             SchGeometryOp,
             SchGeometryRecord,
+            _geometry_item_length,
             make_pen,
             make_solid_brush,
             svg_coord_to_geometry,
+            unwrap_record_operations,
             wrap_record_operations,
         )
 
-        x, y = ctx.transform_point(self.location.x, self.location.y)
+        x, y = ctx.transform_coord_precise(self.location)
         width = self.xsize * ctx.scale
         height = self.ysize * ctx.scale
 
@@ -209,6 +274,7 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
             10 * ctx.scale,
             7.5 * ctx.scale,
             height / 3,
+            source_admission=ctx._source_admission,
         )
         geometry_polygon = [
             svg_coord_to_geometry(
@@ -233,12 +299,12 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
 
         arc_radius = self._calculate_arc_radius() * ctx.scale
         r = float(arc_radius)
-        brace_side = self._get_brace_side()
+        brace_side = self._get_brace_side(ctx._source_admission)
         pcp = self.primary_connection_position
         cy = y + height * (pcp / self.ysize if self.ysize > 0 else 0.5)
         pen = make_pen(
             border_color_raw,
-            width=int(round(border_width * units_per_px)),
+            width=_geometry_item_length(border_width, units_per_px=units_per_px),
         )
 
         def add_arc(
@@ -254,8 +320,8 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
                 SchGeometryOp.arc(
                     center_x=geometry_center_x,
                     center_y=geometry_center_y,
-                    width=2 * r * units_per_px,
-                    height=2 * r * units_per_px,
+                    width=_geometry_item_length(2 * r, units_per_px=units_per_px),
+                    height=_geometry_item_length(2 * r, units_per_px=units_per_px),
                     start_angle=start_angle,
                     end_angle=end_angle,
                     pen=pen,
@@ -326,6 +392,28 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
             add_line(x + r, edge - r, arc_cx - brace_hw, edge - r)
             add_line(arc_cx + brace_hw, edge - r, x + width - r, edge - r)
 
+        for child, child_record in self._child_geometry_records(
+            ctx,
+            document_id=document_id,
+            units_per_px=units_per_px,
+            parent_x=x,
+            parent_y=y,
+            parent_width=width,
+            parent_height=height,
+        ):
+            operations.append(
+                SchGeometryOp.begin_group(
+                    child.unique_id,
+                    render_group_id=ctx.render_group_id(child) or None,
+                    render_group_identity=ctx.render_group_identity(child),
+                    render_source_id=id(child),
+                )
+            )
+            operations.extend(
+                unwrap_record_operations(child_record, unique_id=child.unique_id)
+            )
+            operations.append(SchGeometryOp.end_group())
+
         return SchGeometryRecord(
             handle=f"{document_id}\\{self.unique_id}",
             unique_id=self.unique_id,
@@ -348,7 +436,61 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
             ),
         )
 
-    def _get_brace_side(self) -> str:
+    def _child_geometry_records(
+        self,
+        ctx: "SchSvgRenderContext",
+        *,
+        document_id: str,
+        units_per_px: int,
+        parent_x: float,
+        parent_y: float,
+        parent_width: float,
+        parent_height: float,
+    ) -> list[tuple[SchPrimitive, "SchGeometryRecord"]]:
+        from ._sch_source_projection import (
+            _hierarchy_bound_children,
+            _hierarchy_render_children,
+        )
+        from .altium_record_sch__harness_entry import AltiumSchHarnessEntry
+        from .altium_sch_geometry_oracle import SchGeometryRecord
+
+        children = _hierarchy_bound_children(
+            self,
+            _hierarchy_render_children(self, ctx._source_admission),
+            parent_by_source_id=ctx._source_admission.parent_by_source_id,
+        )
+        records: list[tuple[SchPrimitive, SchGeometryRecord]] = []
+        for child in children:
+            kwargs: dict[str, object] = {}
+            if isinstance(child, AltiumSchHarnessEntry):
+                side = int(self.side)
+                kwargs = {
+                    "parent_x": parent_x,
+                    "parent_y": parent_y,
+                    "parent_width": parent_width,
+                    "parent_height": parent_height,
+                    "parent_orientation": (
+                        side if side in (2, 3) else 1 - int(child.side)
+                    ),
+                }
+            to_geometry = getattr(child, "to_geometry", None)
+            if not callable(to_geometry):
+                continue
+            record = to_geometry(
+                ctx,
+                document_id=document_id,
+                units_per_px=units_per_px,
+                **kwargs,
+            )
+            if isinstance(record, SchGeometryRecord) and isinstance(
+                child, SchPrimitive
+            ):
+                records.append((child, record))
+        return records
+
+    def _get_brace_side(
+        self, source_admission: _SourceAdmission = _SourceAdmission()
+    ) -> str:
         """
         Determine which side the brace should be on based on entry positions.
 
@@ -358,13 +500,23 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
 
         For TOP/BOTTOM connectors, returns 'top' or 'bottom'.
         """
+        from .altium_record_sch__harness_entry import AltiumSchHarnessEntry
+
         if self.side in (SchHarnessConnectorSide.TOP, SchHarnessConnectorSide.BOTTOM):
             return "top" if self.side == SchHarnessConnectorSide.TOP else "bottom"
 
         # For LEFT/RIGHT connectors, check entry side
         # Default: brace matches connector side (entries on opposite)
-        if self.entries:
-            first_entry_side = self.entries[0].side
+        first_entry = next(
+            (
+                entry
+                for entry in source_admission.children(self, self.entries)
+                if isinstance(entry, AltiumSchHarnessEntry)
+            ),
+            None,
+        )
+        if first_entry is not None:
+            first_entry_side = first_entry.side
             # Entry side 0 = entries on LEFT, so brace on RIGHT
             # Entry side 1 = entries on RIGHT, so brace on LEFT
             return "right" if first_entry_side == 0 else "left"
@@ -399,6 +551,8 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         corner_radius: float,
         brace_depth: float,
         brace_half_height: float,
+        *,
+        source_admission: _SourceAdmission = _SourceAdmission(),
     ) -> list[tuple[float, float]]:
         """
         Build polygon points for connector shape with brace.
@@ -416,7 +570,7 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         arc = self._calculate_arc_radius()
 
         # Determine brace side
-        brace_side = self._get_brace_side()
+        brace_side = self._get_brace_side(source_admission)
 
         if brace_side == "right":
             # RIGHT: Brace on right edge
@@ -760,6 +914,7 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
                 "entry is already attached to a different harness connector"
             )
         entry.parent = self
+        entry.owner_index_additional_list = True
         self.entries.append(entry)
         self._notify_owner_structure_changed()
 
@@ -773,6 +928,7 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         self._notify_owner_structure_changed()
         if getattr(entry, "parent", None) is self:
             entry.parent = None
+        entry.owner_index_additional_list = False
         if hasattr(entry, "_bound_schematic_context"):
             entry._bound_schematic_context = None
         return True
@@ -831,6 +987,7 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
             self.children.remove(existing)
 
         type_label.parent = self
+        type_label.owner_index_additional_list = True
         self.type_label = type_label
         if type_label not in self.children:
             self.children.append(type_label)
@@ -840,6 +997,7 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
                 existing._bound_schematic_context = None
             if getattr(existing, "parent", None) is self:
                 existing.parent = None
+            existing.owner_index_additional_list = False
 
     def clear_type_label(self) -> bool:
         """
@@ -854,6 +1012,7 @@ class AltiumSchHarnessConnector(SchGraphicalObject):
         self._notify_owner_structure_changed()
         if getattr(current_type, "parent", None) is self:
             current_type.parent = None
+        current_type.owner_index_additional_list = False
         if hasattr(current_type, "_bound_schematic_context"):
             current_type._bound_schematic_context = None
         return True

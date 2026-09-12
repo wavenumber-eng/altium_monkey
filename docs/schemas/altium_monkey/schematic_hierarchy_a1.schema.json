@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:altium-monkey:schema:schematic_hierarchy_a1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "altium_monkey.schematic_hierarchy.a1"
+    },
+    "requested_scope": {
+      "type": "string"
+    },
+    "effective_scope": {
+      "type": "string"
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HierarchyDocument"
+      }
+    },
+    "sheet_symbols": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HierarchySheetSymbol"
+      }
+    },
+    "hierarchy_paths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HierarchyPathRecord"
+      }
+    },
+    "channels": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HierarchyChannel"
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HierarchyLink"
+      }
+    },
+    "harness_bundle_links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HarnessBundleLink"
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/JsonObject"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "requested_scope",
+    "effective_scope",
+    "documents",
+    "sheet_symbols",
+    "hierarchy_paths",
+    "channels",
+    "links",
+    "unresolved"
+  ],
+  "unevaluatedProperties": {
+    "not": {}
+  },
+  "description": "Standalone schematic hierarchy a1 transport.",
+  "title": "Altium Monkey schematic hierarchy a1",
+  "$defs": {
+    "HierarchyDocument": {
+      "type": "object",
+      "properties": {
+        "sheet_index": {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        "filename": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "is_top_level": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "$ref": "#/$defs/JsonObject"
+        }
+      },
+      "required": [
+        "sheet_index",
+        "filename",
+        "path",
+        "is_top_level",
+        "metadata"
+      ],
+      "unevaluatedProperties": {}
+    },
+    "HierarchySheetSymbol": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parent_sheet_index": {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        "designator": {
+          "type": "string"
+        },
+        "child_filename": {
+          "type": "string"
+        },
+        "child_sheet_indices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SignedInt64"
+          }
+        },
+        "repeat": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JsonObject"
+          }
+        },
+        "metadata": {
+          "$ref": "#/$defs/JsonObject"
+        }
+      },
+      "required": [
+        "id",
+        "parent_sheet_index",
+        "designator",
+        "child_filename",
+        "child_sheet_indices",
+        "entries",
+        "metadata"
+      ],
+      "unevaluatedProperties": {}
+    },
+    "HierarchyPathRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "source_sheet_index": {
+          "$ref": "#/$defs/NullableInt64"
+        },
+        "compiled_sheet_index": {
+          "$ref": "#/$defs/NullableInt64"
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HierarchyLevel"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "levels"
+      ],
+      "unevaluatedProperties": {}
+    },
+    "HierarchyChannel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sheet_symbol_id": {
+          "type": "string"
+        },
+        "parent_sheet_index": {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        "child_sheet_index": {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        "compiled_child_sheet_index": {
+          "$ref": "#/$defs/NullableInt64"
+        },
+        "instance_index": {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        "channel_name": {
+          "type": "string"
+        },
+        "hierarchy_path_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sheet_symbol_id",
+        "parent_sheet_index",
+        "child_sheet_index",
+        "instance_index",
+        "hierarchy_path_id"
+      ],
+      "unevaluatedProperties": {}
+    },
+    "HierarchyLink": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "parent": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "child": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "match_kind": {
+          "type": "string"
+        },
+        "hierarchy_path_id": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/JsonObject"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "parent",
+        "child",
+        "match_kind",
+        "hierarchy_path_id",
+        "metadata"
+      ],
+      "unevaluatedProperties": {}
+    },
+    "HarnessBundleLink": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "harness_bundle"
+        },
+        "topology": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "child": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "bundle": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "match_kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/JsonObject"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "topology",
+        "name",
+        "parent",
+        "child",
+        "bundle",
+        "match_kind",
+        "metadata"
+      ],
+      "unevaluatedProperties": {}
+    },
+    "JsonObject": {
+      "type": "object",
+      "properties": {},
+      "unevaluatedProperties": {},
+      "description": "Arbitrary JSON object retained at an explicitly open compatibility seam."
+    },
+    "SignedInt64": {
+      "type": "integer",
+      "description": "Signed 64-bit JSON integer shared by schema and Rust boundaries.",
+      "x-altium-monkey-signed-integer-width": 64,
+      "minimum": -9223372036854775808,
+      "maximum": 9223372036854775807
+    },
+    "NullableInt64": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SignedInt64"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required field whose value may be a signed integer or JSON null."
+    },
+    "HierarchyLevel": {
+      "type": "object",
+      "properties": {},
+      "unevaluatedProperties": {}
+    }
+  }
+}

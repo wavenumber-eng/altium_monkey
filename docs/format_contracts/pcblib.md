@@ -39,6 +39,19 @@
   supports Code 39 and Code 128 option sets shared with PcbDoc text authoring.
 - Extract embedded 3D model payloads.
 
+## Loading And Creation
+
+`AltiumPcbLib(existing_file)` and `AltiumPcbLib.from_file(existing_file)` both
+parse the complete library. `AltiumPcbLib()` creates an empty library. For
+the established destination-metadata behavior, a nonexistent path also creates an
+empty library associated with that path; normal new authoring should prefer
+the no-argument constructor followed by `save(output_path)`.
+
+An existing invalid file raises its parse error instead of silently producing
+an empty library, and a directory path raises `IsADirectoryError`.
+`from_bytes(data, filename=...)` always parses only `data`: `filename` is
+metadata even when it names a different existing file on disk.
+
 ## Object Model
 
 `AltiumPcbLib` owns footprints and embedded model streams.

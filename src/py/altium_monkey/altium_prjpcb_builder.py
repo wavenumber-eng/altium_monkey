@@ -17,6 +17,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
+from ._logical_source_identity import (
+    _logical_source_identity_key,
+    _normalize_project_document_identity,
+)
 from .altium_api_markers import public_api
 
 from .altium_prjpcb import (
@@ -30,7 +34,21 @@ def _normalize_project_document_path(path: Path | str) -> str:
     """
     Normalize a project document path to Altium's expected separator style.
     """
-    return str(path).replace("/", "\\")
+    return _normalize_project_document_identity(str(path)).replace("/", "\\")
+
+
+def _validate_unique_documents(
+    entries: Iterable[AltiumPrjPcbDocumentEntry],
+) -> tuple[AltiumPrjPcbDocumentEntry, ...]:
+    retained = tuple(entries)
+    seen: set[str] = set()
+    for entry in retained:
+        normalized = _normalize_project_document_path(entry.path)
+        identity = _logical_source_identity_key(normalized)
+        if identity in seen:
+            raise ValueError(f"duplicate project document path: {entry.path}")
+        seen.add(identity)
+    return retained
 
 
 def _generate_document_unique_id() -> str:
@@ -144,13 +162,13 @@ class AltiumPrjPcbBuilder:
         """
         Append one document entry using the provided relative project path.
         """
-        self.documents.append(
-            AltiumPrjPcbDocumentEntry.create(
-                path,
-                unique_id=unique_id,
-                options=options,
-            )
+        candidate = AltiumPrjPcbDocumentEntry.create(
+            path,
+            unique_id=unique_id,
+            options=options,
         )
+        _validate_unique_documents((*self.documents, candidate))
+        self.documents.append(candidate)
         return self
 
     def _add_typed_document(
@@ -258,13 +276,15 @@ class AltiumPrjPcbBuilder:
         """
         Append multiple pre-built document entries in order.
         """
-        self.documents.extend(entries)
+        candidates = _validate_unique_documents((*self.documents, *entries))
+        self.documents[:] = candidates
         return self
 
     def build(self) -> AltiumPrjPcb:
         """
         Materialize the queued builder state into an `AltiumPrjPcb`.
         """
+        documents = _validate_unique_documents(self.documents)
         project = AltiumPrjPcb.create_minimal(self.name)
         project.config.set(
             "Design", "HierarchyMode", str(int(self.net_identifier_scope))
@@ -283,7 +303,7 @@ class AltiumPrjPcbBuilder:
                     ("DocumentUniqueId", entry.unique_id),
                 ],
             }
-            for entry in self.documents
+            for entry in documents
         ]
         return project
 

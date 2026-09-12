@@ -18,6 +18,7 @@ def _default_options_for_compile_netlist(
     project: "AltiumPrjPcb | None",
 ) -> "NetlistOptions":
     from .altium_netlist_options import NetlistOptions
+    from ._compiler_source import _compiler_document_source
 
     if project is None:
         return NetlistOptions()
@@ -25,7 +26,7 @@ def _default_options_for_compile_netlist(
     result = NetlistOptions.from_prjpcb(project)
     sheet_params: dict[str, str] = {}
     for schdoc in schdocs:
-        sheet_params.update(schdoc.get_parameter_dict())
+        sheet_params.update(_compiler_document_source(schdoc).get_parameter_dict())
     result.sheet_parameters = sheet_params
     return result
 

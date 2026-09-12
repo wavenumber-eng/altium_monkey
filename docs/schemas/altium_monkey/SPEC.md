@@ -9,10 +9,24 @@ the generic cross-CAD `design_a0` data-model contract.
 ## Bundled Entry Points
 
 - `design_b0.schema.json`: schema for current `altium_monkey.design.b0`
+- `compiled_schematic_graph_a0.schema.json`: standalone schema for
+  `altium_monkey.compiled_schematic_graph.a0`
+- `schematic_hierarchy_a1.schema.json`: standalone schema for
+  `altium_monkey.schematic_hierarchy.a1`
+- `netlist_b0.schema.json`: schema for current `altium_monkey.netlist.b0`
+- `schematic_bom_a0.schema.json`: schema for
+  `altium_monkey.schematic_bom.a0`
+- `compiled_design_model_b0.schema.json`: strict diagnostic schema for
+  `altium_monkey.sch.compiled_design_model.b0`
 - `design_a2.schema.json`: schema for predecessor `altium_monkey.design.a2`
 - `design_a1.schema.json`: schema for predecessor `altium_monkey.design.a1`
 - `design_a0.schema.json`: schema for predecessor `altium_monkey.design.a0`
-- `netlist_a0.schema.json`: schema for `altium_monkey.netlist.a0`
+- `netlist_a0.schema.json`: frozen predecessor schema for
+  `altium_monkey.netlist.a0`
+- `schdoc_interop_a0.schema.json`: schema for
+  `altium_monkey.schdoc.interop.a0`
+- `schlib_interop_a0.schema.json`: schema for
+  `altium_monkey.schlib.interop.a0`
 - `pcb_svg_enrichment_a0.schema.json`: schema for
   `altium_monkey.pcb.svg.enrichment.a0`
 - `embedded_assets_a0.schema.json`: schema for
@@ -24,9 +38,22 @@ The prose specification is intentionally kept next to the machine-readable
 schemas so downstream tools and AI agents can discover the contract intent
 without reading Python source.
 
-`design_b0.schema.json` is self-contained for strict validation. Older sibling
-schemas remain bundled for consumers pinned to earlier contracts or validating
-other payload families directly.
+The SchDoc and SchLib envelopes are described in the
+[schematic interoperability format contract](../../format_contracts/schematic_interop.md).
+
+The reviewed [`typespec/`](typespec/main.tsp) sources are published with this
+bundle. They define six schematic transport roots: Design b0, compiled-graph
+a0, hierarchy a1, Netlist a0, Netlist b0, and schematic-BOM a0. The new Netlist
+b0 and schematic-BOM a0 schemas are synchronized from those definitions.
+Previously published same-ID schema artifacts, including Design b0 and Netlist
+a0, are kept byte-for-byte stable even when a newer generator would format an
+equivalent model differently. A semantic shape change requires a new schema ID.
+
+The compiled-design diagnostic schema is handwritten and versioned because it
+describes the compiler-native model. Generated Python DTOs are internal;
+supported Python consumers use the handwritten emitters, wrappers, limits, and
+errors. Older Design and Netlist schemas remain bundled for stored payloads and
+consumers pinned to predecessor contracts.
 
 ## Revision Scheme
 
@@ -72,7 +99,7 @@ Required root fields:
 
 Optional root fields:
 
-- `pnp`: PCB-backed pick-and-place data when a PcbDoc is available
+- `pnp`: PCB-backed pick-and-place data when `include_pnp=True` and a PcbDoc is available
 - `compile`: compact compiled-design metadata emitted when
   `include_compile_metadata=True`
 - `diagnostics`: compile, annotation, document, sheet-symbol, component, and
@@ -229,8 +256,9 @@ When `include_indexes=True`, compatibility indexes may include
 
 ### Design Nets
 
-Design JSON net rows follow the public netlist shape and may add compiled
-name-source provenance:
+Design JSON net rows retain Design b0's established embedded-net shape with
+filename-only `source_sheets` and may add compiled name-source provenance. They
+are not standalone Netlist b0 rows.
 
 - `aliases`: alternate net names discovered while merging compiled
   connectivity
@@ -268,38 +296,39 @@ contracts. Current `AltiumDesign.to_json(...)` output uses
 payload must be rejected with a clear migration error rather than synthesized
 from Design a2 `physical_pages`.
 
-## `altium_monkey.netlist.a0`
+## `altium_monkey.netlist.b0`
 
 Emitter: `Netlist.to_json(...)` and `AltiumDesign.to_netlist().to_json(...)`
 
 Generator: `altium_monkey`
 
-This is the compiled schematic connectivity contract. It is intentionally
-smaller than the design contract and is meant for electrical-connectivity
-consumers.
+This is the current compiled schematic connectivity contract. It is
+intentionally smaller than the Design contract and carries stable physical
+component and structured source-page identity.
 
 Required root fields:
 
-- `schema`: always `altium_monkey.netlist.a0`
+- `schema`: always `altium_monkey.netlist.b0`
 - `generator`: always `altium_monkey`
 - `components`: component summaries copied into the compiled netlist
 - `nets`: compiled nets
 
 Component fields:
 
-- `designator`
-- `value`
-- `footprint`
-- `library_ref`
-- `description`
-- `parameters`
+- `component_id`: nonempty compiled-component identity
+- `designator`: resolved display designator
+- `logical_designator`: required string or JSON null
+- `physical_designator`: required string or JSON null
+- `source_page`: required structured page or JSON null
+- `value`, `footprint`, `library_ref`, and `description`
+- `parameters`: string-valued component parameters
 
 Net fields:
 
 - `uid`
 - `name`
 - `auto_named`
-- `source_sheets`
+- `source_pages`: structured physical-document/source-sheet identities
 - `terminals`
 - `graphical`
 - `aliases`
@@ -308,24 +337,25 @@ Net fields:
 
 Terminal fields:
 
+- `component_id`
 - `designator`
 - `pin`
 - `pin_name`
-- `pin_type`
+- `pin_type`: closed electrical pin-type value
 
 `endpoints` contains source-owned semantic trace endpoints for downstream
 schematic visualization. Unlike `graphical`, endpoint `role` values are not
-inferred from SVG ids or rendered text. Endpoint records contain:
+inferred from SVG ids or rendered text. Every endpoint contains:
 
 - `endpoint_id`
 - `role`
 - `element_id`: current render target id
 - `object_id`: source electrical object id when it differs from the render id
 - `name`
-- `source_sheet`
-- optional pin fields (`designator`, `pin`, `pin_name`, `pin_type`)
-- optional `sheet_index` and `compiled_sheet_index`
-- optional `connection_point` in `altium_coord` source schematic units
+- `source_page`: required structured page or JSON null
+- required nullable pin fields (`component_id`, `designator`, `pin`,
+  `pin_name`, `pin_type`)
+- required nullable `connection_point` in `altium_coord` source schematic units
 
 `graphical` groups related schematic SVG IDs by record type:
 
@@ -345,6 +375,28 @@ half-away-from-zero before exact endpoint matching.
 
 The netlist contract does not classify nets as power or ground. Those are
 analysis heuristics and belong in downstream applications.
+
+Netlist a0 remains bundled as a frozen predecessor schema. It used
+filename-only `source_sheets` and lacked b0 component identity. The current API
+does not emit a0 and provides no legacy-output switch.
+
+Design b0 owns a separate embedded-net compatibility projection. Its `nets`
+retain the established `source_sheets` representation and are not standalone
+Netlist b0 rows.
+
+## `altium_monkey.schematic_bom.a0`
+
+Emitter: `AltiumDesign.to_bom_payload()`
+
+The immutable `SchematicBomPayload` wrapper exposes canonical mappings, text,
+and UTF-8 bytes plus strict `from_json*()` validation. Each component row has
+stable component, logical/physical designator, and structured source-page
+identity; metadata and parameters; and inverse `fitted`/`dnp` flags. The
+list-returning `AltiumDesign.to_bom()` API remains supported.
+
+`SchematicContractLimits` lets callers lower the reviewed resource ceilings.
+`SchematicContractError` exposes a stable error `code`, JSON Pointer `path`, and
+detail for schema, type, resource, and semantic failures.
 
 ## `altium_monkey.pcb.svg.enrichment.a0`
 
