@@ -55,3 +55,14 @@ jobs:
           fi
           wheel="${wheels[0]}"
           uv run --locked --python 3.14 python tools/validate_wheel.py --mode core --python 3.14 --wheel "${wheel}" --tests-root tests
+
+      - name: Validate Python 3.12 package imports
+        shell: bash
+        run: |
+          mapfile -d '' wheels < <(find dist -maxdepth 1 -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "Expected exactly one wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          uv run --locked --python 3.14 python tools/validate_wheel.py --mode core --python 3.12 --wheel "${wheel}" --tests-root tests

@@ -1,5 +1,7 @@
 """Schematic record model for SchRecordType.BUS_ENTRY."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from ._sch_managed_defaults import WIRE_COLOR

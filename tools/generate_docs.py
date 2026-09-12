@@ -118,19 +118,23 @@ def render_examples_index(examples: list[dict[str, object]]) -> str:
 
 def write_docs(*, check: bool) -> int:
     rendered = render_examples_index(_load_manifest())
+    existing = (
+        EXAMPLES_INDEX_PATH.read_text(encoding="utf-8")
+        if EXAMPLES_INDEX_PATH.exists()
+        else ""
+    )
     if check:
-        existing = (
-            EXAMPLES_INDEX_PATH.read_text(encoding="utf-8")
-            if EXAMPLES_INDEX_PATH.exists()
-            else ""
-        )
         if existing != rendered:
             print(f"generated docs are stale: {EXAMPLES_INDEX_PATH}", file=sys.stderr)
             return 1
         return 0
 
+    if existing == rendered:
+        print(f"current {EXAMPLES_INDEX_PATH.relative_to(PUBLIC_ROOT)}")
+        return 0
+
     EXAMPLES_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    EXAMPLES_INDEX_PATH.write_text(rendered, encoding="utf-8")
+    EXAMPLES_INDEX_PATH.write_text(rendered, encoding="utf-8", newline="\n")
     print(f"wrote {EXAMPLES_INDEX_PATH.relative_to(PUBLIC_ROOT)}")
     return 0
 

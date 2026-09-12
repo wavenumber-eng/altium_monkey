@@ -113,8 +113,10 @@ def _installed_wheel_check_code(expected_version: str | None) -> str:
     )
     return (
         "from importlib.metadata import version as dist_version\n"
+        "from importlib import import_module\n"
         "from importlib.util import find_spec\n"
         "from pathlib import Path\n"
+        "from pkgutil import walk_packages\n"
         "import sys\n"
         "import altium_monkey\n"
         f"{version_assertion}"
@@ -123,6 +125,15 @@ def _installed_wheel_check_code(expected_version: str | None) -> str:
         "assert package_path.is_relative_to(prefix), (package_path, prefix)\n"
         "assert find_spec('altium_monkey.altium_pcb_source_snapshot') is None\n"
         "assert find_spec('altium_monkey.pcb_manufacturing') is None\n"
+        "modules = sorted(\n"
+        "    item.name\n"
+        "    for item in walk_packages(\n"
+        "        altium_monkey.__path__, altium_monkey.__name__ + '.'\n"
+        "    )\n"
+        ")\n"
+        "for module_name in modules:\n"
+        "    import_module(module_name)\n"
+        "print(f'imported package modules: {len(modules)}')\n"
         "print(package_path)\n"
         "print(dist_version('altium-monkey'))\n"
     )

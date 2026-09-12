@@ -1,3 +1,23 @@
+# altium-monkey 2026.09.12 Release Notes
+
+Package version: `2026.9.12`
+
+This is a focused compatibility hotfix for the `2026.9.11` release.
+
+## Changes
+
+- Fixed package imports on Python 3.12. A schematic bus-entry annotation was
+  evaluated at import time even though its type dependency was intentionally
+  available only to static type checking.
+
+- Release validation now imports every packaged module from isolated wheels
+  under both Python 3.12 and Python 3.14. This guards against similar eager
+  annotation and interpreter-specific import failures.
+
+No public API or file-format behavior changes are included in this hotfix.
+
+---
+
 # altium-monkey 2026.09.11 Release Notes
 
 Package version: `2026.9.11`

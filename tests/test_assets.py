@@ -439,6 +439,7 @@ def test_python_314_workflows_build_before_installed_wheel_tests() -> None:
         "validate_wheel.py --mode test"
     )
     assert "validate_wheel.py --mode core" in validation
+    assert "--mode core --python 3.12" in validation
 
     assert "release:" in release
     assert "types: [published]" in release
@@ -451,6 +452,7 @@ def test_python_314_workflows_build_before_installed_wheel_tests() -> None:
         < release.index("pypa/gh-action-pypi-publish")
     )
     assert "validate_wheel.py --mode core" in release
+    assert "--mode core --python 3.12" in release
 
 
 def test_manifest_inputs_and_assets_do_not_use_ignored_output_dirs() -> None:
@@ -767,6 +769,29 @@ def test_generated_docs_are_current() -> None:
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_generated_docs_writer_preserves_lf_line_endings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = PUBLIC_ROOT / "tools" / "generate_docs.py"
+    spec = importlib.util.spec_from_file_location("public_generate_docs", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    output_path = tmp_path / "index.md"
+    monkeypatch.setattr(module, "PUBLIC_ROOT", tmp_path)
+    monkeypatch.setattr(module, "EXAMPLES_INDEX_PATH", output_path)
+    monkeypatch.setattr(module, "_load_manifest", lambda: [])
+
+    assert module.write_docs(check=False) == 0
+    assert b"\r\n" not in output_path.read_bytes()
+    fixed_mtime_ns = 1_000_000_000
+    os.utime(output_path, ns=(fixed_mtime_ns, fixed_mtime_ns))
+    assert module.write_docs(check=False) == 0
+    assert output_path.stat().st_mtime_ns == fixed_mtime_ns
 
 
 def test_public_markdown_links_resolve() -> None:
