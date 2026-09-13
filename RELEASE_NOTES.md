@@ -1,3 +1,17 @@
+# altium-monkey 2026.09.12-3 Release Notes
+
+Package version: `2026.9.12.post2`
+
+This third 2026.09.12 release is a focused Geometer compatibility update.
+
+## Changes
+
+- Updated the required native geometry package to `wn-geometer==2026.9.12`.
+  The new release accepts governed large illustration attachments while keeping
+  the public Altium Monkey API and file-format behavior unchanged.
+
+---
+
 # altium-monkey 2026.09.12-2 Release Notes
 
 Package version: `2026.9.12.post1`
@@ -91,7 +105,7 @@ public surface.
 ## Supported Environments And Validation
 
 Normal GIL-enabled CPython 3.12 through 3.14 is supported. The required
-`wn-geometer==2026.9.11` wheels define the current platform boundary: Windows
+`wn-geometer==2026.9.12` wheels define the current platform boundary: Windows
 amd64, macOS arm64, and Linux x86_64/aarch64 using `manylinux_2_35`. The release
 distribution is built from an sdist-derived wheel and validated in clean Python
 3.14 test and core-only environments, including the complete installed-wheel

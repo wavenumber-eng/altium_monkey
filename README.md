@@ -78,7 +78,7 @@ With `uv`, use `uv run --extra examples ...` so examples that synthesize STEP
 geometry receive CadQuery without changing the core runtime environment.
 
 The package includes dependencies for SVG text shaping and STEP-model bounds.
-STEP bounds use the required `wn-geometer==2026.9.11` dependency. That release
+STEP bounds use the required `wn-geometer==2026.9.12` dependency. That release
 publishes wheels for Windows amd64, macOS arm64, and Linux x86_64/aarch64 using
 `manylinux_2_35`; other platforms are not currently part of the install support
 boundary. See [RELEASE_NOTES.md](RELEASE_NOTES.md) for platform and
