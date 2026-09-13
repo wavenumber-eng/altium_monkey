@@ -162,7 +162,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "twine", marker = "extra == 'release'", specifier = ">=5.0" },
     { name = "uharfbuzz" },
-    { name = "wn-geometer", specifier = "==2026.9.12" },
+    { name = "wn-geometer", specifier = "==2026.9.13" },
 ]
 provides-extras = ["examples", "release", "test"]
 
@@ -1998,13 +1998,13 @@ wheels = [
 
 [[package]]
 name = "wn-geometer"
-version = "2026.9.12"
+version = "2026.9.13"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ef/75/39eaf2685fc34609c4cad176332a1f1ec33963e8574b6b0c60cd88f13d1a/wn_geometer-2026.9.12-py3-none-macosx_11_0_arm64.whl", hash = "sha256:af89f6abef3a96f7558ca136ce424c50720e33eb1a0b5990d216454ad11ba478", size = 12242702, upload-time = "2026-09-13T02:09:48.21Z" },
-    { url = "https://files.pythonhosted.org/packages/04/0a/88d95a3f0fda1a28de550f1b38b7d4681fb99d08acd8bbc1babd1df71455/wn_geometer-2026.9.12-py3-none-manylinux_2_35_aarch64.whl", hash = "sha256:92a30651e0a89d9ab1e22d679ffa0faaea61259055217050d0bae464b463d75b", size = 15519057, upload-time = "2026-09-13T02:09:51.609Z" },
-    { url = "https://files.pythonhosted.org/packages/82/ab/802b61ef9639cd812064d04d1230484bc7fb5eca2906b78d65b90004801d/wn_geometer-2026.9.12-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:015a2c1a01df024c9820b25b0091e40dcb8cc9aa77355dc77c7184acd6d346a2", size = 16340066, upload-time = "2026-09-13T02:09:54.978Z" },
-    { url = "https://files.pythonhosted.org/packages/b4/44/c33cb1b8bbeefd949b6a57bb854dff8360576f4bde4fa4e5c41bea5f7d54/wn_geometer-2026.9.12-py3-none-win_amd64.whl", hash = "sha256:5fe31299c86d4f5a31b20a77e46860fa06402434f9a2a1feae26b8bb2a1f7197", size = 8577998, upload-time = "2026-09-13T02:09:57.662Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/e5/7386ae6b0ea06f847eb0bfc92f254459ad4328ed1ff09d060540ebd75e47/wn_geometer-2026.9.13-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9c539bc7c088ccfe957532521ed63a7b4efd474fed9de5706bf72e54f498cd64", size = 12367948, upload-time = "2026-09-13T19:47:10.329Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/e4/49cc71c9ea5a5d0863e29762053c050fb5e6cbb1b09d76e20c5ebb453883/wn_geometer-2026.9.13-py3-none-manylinux_2_35_aarch64.whl", hash = "sha256:975481d530d079749a7ed4d4c1b9776758a86d9cbd65adb9ee290b381c6c9873", size = 15675583, upload-time = "2026-09-13T19:47:13.481Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/b8/b8e89f464555252411b497fc5e85dbb471ceb2e29efaaba1b77e81835383/wn_geometer-2026.9.13-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:496294283a885bff981707a17099796a2721fd06cc202269e3269b22a3bd84dd", size = 16504366, upload-time = "2026-09-13T19:47:16.88Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/40/63c90411d76d8312cbdffc6b62273c51f54d6dfb0f00a43d1ddc24224e04/wn_geometer-2026.9.13-py3-none-win_amd64.whl", hash = "sha256:dcccae78d419e184b65ac398bd111ae21f53d79cafa165876e1c15987d82550e", size = 8673892, upload-time = "2026-09-13T19:47:19.516Z" },
 ]
 
 [[package]]

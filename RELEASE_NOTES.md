@@ -1,3 +1,21 @@
+# altium-monkey 2026.09.13 Release Notes
+
+Package version: `2026.9.13`
+
+This release advances the native geometry dependency used for embedded STEP
+model bounds and projections.
+
+## Changes
+
+- Updated the required native geometry package to `wn-geometer==2026.9.13`.
+  The release adds direct STEP and analytic illustration operations, makes Fast
+  detail and Fast Mesh Shadow the default HLR modes, and retains usable STEP
+  faces with warnings when individual faces cannot be tessellated.
+
+No Altium Monkey API or file-format behavior changes are included.
+
+---
+
 # altium-monkey 2026.09.12-3 Release Notes
 
 Package version: `2026.9.12.post2`
