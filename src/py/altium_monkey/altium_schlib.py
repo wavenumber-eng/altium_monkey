@@ -62,7 +62,8 @@ from .altium_font_manager import FontIDManager
 from .altium_sch_auxiliary_codec import (
     SchAuxiliaryReadLimits,
     SchAuxiliaryStreamError,
-    decode_auxiliary_stream,
+    _decode_managed_auxiliary_stream,
+    _first_managed_storage_entries,
 )
 from .altium_json_apply_helpers import (
     JsonBlobBudget,
@@ -98,7 +99,9 @@ from .altium_sch_json_object_types import (
 )
 from .altium_sch_image_payload import (
     SchEmbeddedImageEntry,
+    SchEmbeddedImagePayloadError,
     build_embedded_image_storage,
+    decode_sch_embedded_image_payload,
     resolve_embedded_image_group,
 )
 from .altium_sch_pin_vertical_margin_data import (
@@ -4020,10 +4023,10 @@ class AltiumSchLib(JsonApplyMixin):
             tuple(len(entry.raw_data) for _, entry in modifier.entries),
         )
 
-        for index, pin in enumerate(symbol.pins):
-            pin_text_data = modifier.get_entry(str(index))
-            if not pin_text_data:
-                continue
+        for index, pin_text_data in modifier._applicable_entries(len(symbol.pins)):
+            pin = symbol.pins[index]
+            pin.name_settings.position_mode = PinItemMode.DEFAULT
+            pin.designator_settings.position_mode = PinItemMode.DEFAULT
             if pin_text_data.name_position:
                 self._apply_pin_position_settings(
                     pin.name_settings,
@@ -4044,6 +4047,8 @@ class AltiumSchLib(JsonApplyMixin):
                     pin_text_anchor=PinTextAnchor,
                     rotation90=Rotation90,
                 )
+            pin.name_settings.font_mode = PinItemMode.DEFAULT
+            pin.designator_settings.font_mode = PinItemMode.DEFAULT
             self._apply_pin_font_settings(pin, pin_text_data)
 
     def _apply_pin_vertical_margin_data(
@@ -4585,14 +4590,14 @@ class AltiumSchLib(JsonApplyMixin):
             self._header_table_coherent = symbol_plan.header_coherent
             storage_data = self._source_streams.get("Storage")
             try:
-                storage_entries = (
-                    decode_auxiliary_stream(
+                storage_result = (
+                    _decode_managed_auxiliary_stream(
                         storage_data,
                         expected_header="Icon storage",
                         limits=self._auxiliary_limits(budget),
                     )
                     if storage_data is not None
-                    else []
+                    else None
                 )
             except SchAuxiliaryStreamError as exc:
                 raise SchLibContainerError(
@@ -4601,15 +4606,27 @@ class AltiumSchLib(JsonApplyMixin):
                     stream="Storage",
                     byte_offset=exc.offset,
                 ) from exc
+            storage_entries = storage_result.entries if storage_result else ()
             budget.consume_stream("Storage", len(storage_entries), 0)
+            budget.consume_decompressed(
+                "Storage", tuple(len(entry.data) for entry in storage_entries)
+            )
+            for index, entry in enumerate(storage_entries, start=1):
+                try:
+                    decode_sch_embedded_image_payload(entry.data)
+                except SchEmbeddedImagePayloadError as exc:
+                    raise SchLibContainerError(
+                        "malformed",
+                        str(exc),
+                        stream="Storage",
+                        record_index=index,
+                    ) from exc
+            storage_entries = _first_managed_storage_entries(storage_entries)
             self.embedded_images = {entry.name: entry.data for entry in storage_entries}
             self._raw_storage_entries = {
                 entry.name: (entry.binary_header, entry.compressed_data)
                 for entry in storage_entries
             }
-            budget.consume_decompressed(
-                "Storage", tuple(len(data) for data in self.embedded_images.values())
-            )
             self.font_manager = FontIDManager.load_from_record(self.file_header)
 
             for symbol_entry in symbol_plan.entries:

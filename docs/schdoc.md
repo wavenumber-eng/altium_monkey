@@ -125,6 +125,15 @@ as `TdxPNGImage`, SVG rendering and `extract_embedded_images(...)` prefer the
 native payload so PNG alpha is preserved. Plain 32-bit BMP alpha is preserved
 when present; plain 24-bit BMP remains opaque.
 
+The Storage reader also accepts Altium-tolerated legacy streams whose physical
+rows extend beyond the effective declared count. Only rows selected by the
+managed header are interpreted; selected framing, compression, and payloads
+remain strictly validated and charged to decompression limits. If selected
+rows repeat a case-insensitive name, image lookup retains the first row. When
+the effective Storage count, duplicate names, or header termination needs
+repair, saving regenerates a canonical count and header from the selected live
+entries.
+
 Use `schdoc.extract_embedded_images(output_dir)` when writing embedded images
 as standalone files. Direct `image.image_data` access is a preservation API: it
 returns the raw Storage payload and may include Altium wrapper bytes before the

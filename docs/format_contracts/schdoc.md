@@ -64,6 +64,15 @@ includes a root `viewBox`; strict native/oracle output may omit it by default.
 
 See [SVG](svg.md) for the shared rendering contract.
 
+## Embedded Storage Compatibility
+
+Root Storage uses Altium-compatible, bounded declared-prefix semantics for
+legacy image streams. Only selected entries are interpreted, and selected
+framing, compression, and image payload errors still fail. Storage with a
+stale effective count, missing header terminator, or case-insensitive duplicate
+name is regenerated canonically when saved. Every selected payload is validated
+and budgeted; image lookup retains the first selected name.
+
 ## Symbol Extraction
 
 `AltiumSchDoc.extract_schlib(...)` returns an in-memory `AltiumSchLib` for the

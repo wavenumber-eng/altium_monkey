@@ -9,10 +9,11 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
 from .altium_sch_auxiliary_codec import (
-    SchAuxiliaryEntry,
     SchAuxiliaryReadLimits,
+    _ManagedAuxiliaryReadResult,
+    _decode_managed_auxiliary_stream,
     _error as _codec_error,
-    decode_auxiliary_stream,
+    _try_parse_managed_i32,
     encode_auxiliary_stream,
 )
 from .altium_sch_enums import PinTextOrientation
@@ -87,7 +88,7 @@ def _margin_to_dxp(value: float, field: str) -> int:
 
 def _decode_pintext_stream(
     data: bytes, limits: SchAuxiliaryReadLimits | None = None
-) -> tuple[SchAuxiliaryEntry, ...]:
+) -> _ManagedAuxiliaryReadResult:
     active_limits = limits or SchAuxiliaryReadLimits()
     pin_limits = replace(
         active_limits,
@@ -96,16 +97,11 @@ def _decode_pintext_stream(
             _MAX_PIN_TEXT_PAYLOAD_BYTES,
         ),
     )
-    decoded = decode_auxiliary_stream(
+    return _decode_managed_auxiliary_stream(
         data,
         expected_header="PinTextData",
         limits=pin_limits,
     )
-    if not decoded:
-        raise _codec_error(
-            "malformed", 4, "PinTextData requires an explicit positive Weight"
-        )
-    return decoded
 
 
 def _validate_pin_index_name(name: str, offset: int) -> None:
@@ -584,6 +580,8 @@ class PinTextDataModifier:
             tuple[str, PinTextData]
         ] = []  # List of (designator, PinTextData)
         self._raw_compressed: dict[str, bytes] = {}
+        self._compatibility_diagnostics: tuple[str, ...] = ()
+        self._unread_suffix = b""
 
     def parse(
         self,
@@ -600,16 +598,25 @@ class PinTextDataModifier:
         Returns:
             True if successfully parsed
         """
-        decoded = _decode_pintext_stream(data, limits)
+        result = _decode_pintext_stream(data, limits)
         parsed_entries: list[tuple[str, PinTextData]] = []
         raw_compressed: dict[str, bytes] = {}
-        for entry in decoded:
-            _validate_pin_index_name(entry.name, entry.offset)
+        for entry in result.entries:
             parsed_entries.append((entry.name, PinTextData.parse(entry.data)))
             raw_compressed[entry.name] = entry.compressed_data
         self.entries = parsed_entries
         self._raw_compressed = raw_compressed
+        self._compatibility_diagnostics = result.diagnostics
+        self._unread_suffix = result.unread_suffix
         return True
+
+    def _applicable_entries(self, pin_count: int) -> list[tuple[int, PinTextData]]:
+        applicable: list[tuple[int, PinTextData]] = []
+        for name, pin_data in self.entries:
+            index = _try_parse_managed_i32(name)
+            if index is not None and 0 <= index < pin_count:
+                applicable.append((index, pin_data))
+        return applicable
 
     def get_entry(self, designator: str) -> PinTextData | None:
         """
@@ -769,7 +776,7 @@ class PinTextDataModifier:
             _validate_pin_index_name(pin_index, 0)
         raw_compressed = dict(self._raw_compressed)
         if original_data is not None:
-            original_entries = _decode_pintext_stream(original_data)
+            original_entries = _decode_pintext_stream(original_data).entries
             raw_compressed.update(
                 {entry.name: entry.compressed_data for entry in original_entries}
             )

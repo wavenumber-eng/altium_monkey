@@ -6931,7 +6931,7 @@ class AltiumSchDoc(JsonApplyMixin):
             existing_position = record_positions.pop(id(existing))
             # Stable positions are required until the owner pass finishes; the
             # caller removes these temporary tombstones before returning.
-            cast(list[SchGeometryRecord | None], records)[existing_position] = None
+            cast("list[SchGeometryRecord | None]", records)[existing_position] = None
         if geometry_record is None:
             if type(owner) is AltiumSchHarnessLayoutCovering:
                 suppressed_coverings.append(owner)

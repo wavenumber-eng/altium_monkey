@@ -1,3 +1,26 @@
+# altium-monkey 2026.09.13-2 Release Notes
+
+Package version: `2026.9.13.post1`
+
+This patch release restores bounded compatibility with schematic auxiliary
+streams that Altium accepts but does not write in its current canonical form.
+
+## Changes
+
+- SchLib `PinTextData` now follows Altium's managed-reader behavior for the
+  declared stream prefix. Selected numeric pin aliases are applied in source
+  order, including later rows that reset pin-text modes to their defaults.
+- Embedded-image `Storage` in SchLib and SchDoc now follows Altium's declared
+  prefix and case-insensitive first-name selection behavior. Every selected
+  payload is still structurally validated and counted against resource limits,
+  including duplicate names that are not chosen for linkage.
+- Unchanged noncanonical `PinTextData` streams are replayed byte-for-byte.
+  Explicit semantic synchronization continues to emit strict canonical output.
+
+No public API or compiled-schematic contract changes are included.
+
+---
+
 # altium-monkey 2026.09.13 Release Notes
 
 Package version: `2026.9.13`

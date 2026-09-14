@@ -56,6 +56,17 @@ newly authored libraries and preserves the previous output.
 
 See [SVG](svg.md) for the shared rendering contract.
 
+## Auxiliary Stream Compatibility
+
+SchLib reads `PinTextData` and embedded-image Storage using Altium-compatible,
+bounded declared-prefix semantics. This accepts evidenced legacy header and
+row-name spellings without treating malformed selected data as valid. Clean
+PinTextData aliases apply in source order and a later default row clears prior
+custom state. Storage validates and budgets every selected row, then retains
+the first case-insensitive name. Clean PinTextData saves preserve source bytes;
+an explicit semantic synchronization
+writes the canonical current representation.
+
 ## Test Gates
 
 The SchLib contract is covered by symbol parsing, split/merge, extraction,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import struct
 import zlib
 from collections.abc import Iterable, Mapping
@@ -82,6 +83,17 @@ class SchAuxiliaryEntry:
     compressed_data: bytes
     binary_header: bytes
     offset: int
+
+
+@dataclass(frozen=True)
+class _ManagedAuxiliaryReadResult:
+    """Internal result for the bounded Altium-managed reader profile."""
+
+    entries: tuple[SchAuxiliaryEntry, ...]
+    declared_weight: int
+    header_terminated: bool
+    unread_suffix: bytes
+    diagnostics: tuple[str, ...]
 
 
 def _error(
@@ -238,6 +250,159 @@ def decode_auxiliary_stream(
     if cursor != len(data):
         raise _error("malformed", cursor, "trailing bytes after declared records")
     return tuple(entries)
+
+
+def _decode_managed_auxiliary_stream(
+    data: bytes,
+    *,
+    expected_header: str,
+    limits: SchAuxiliaryReadLimits | None = None,
+) -> _ManagedAuxiliaryReadResult:
+    """Decode the row prefix selected by Altium's managed SchLib reader."""
+    active_limits = limits or SchAuxiliaryReadLimits()
+    if len(data) > active_limits.max_stream_bytes:
+        raise _error(
+            "limit",
+            0,
+            f"stream length {len(data)} exceeds {active_limits.max_stream_bytes}",
+        )
+    cursor, weight, terminated, diagnostics = _decode_managed_header(
+        data, expected_header, active_limits
+    )
+    selected_count = max(weight, 0)
+    if selected_count > active_limits.max_records_per_stream:
+        raise _error(
+            "limit",
+            4,
+            f"record count exceeds {active_limits.max_records_per_stream}",
+        )
+
+    entries: list[SchAuxiliaryEntry] = []
+    total_decompressed = 0
+    for record_index in range(selected_count):
+        entry, cursor = _decode_entry(
+            data,
+            cursor,
+            record_index,
+            active_limits,
+            total_decompressed,
+        )
+        total_decompressed += len(entry.data)
+        entries.append(entry)
+
+    unread_suffix = data[cursor:]
+    if unread_suffix:
+        diagnostics.append("unread_suffix")
+    return _ManagedAuxiliaryReadResult(
+        entries=tuple(entries),
+        declared_weight=weight,
+        header_terminated=terminated,
+        unread_suffix=unread_suffix,
+        diagnostics=tuple(diagnostics),
+    )
+
+
+def _first_managed_storage_entries(
+    entries: tuple[SchAuxiliaryEntry, ...],
+) -> tuple[SchAuxiliaryEntry, ...]:
+    """Retain the first selected entry for each portable lowercased name."""
+    selected: list[SchAuxiliaryEntry] = []
+    names: set[str] = set()
+    for entry in entries:
+        folded = entry.name.lower()
+        if folded in names:
+            continue
+        names.add(folded)
+        selected.append(entry)
+    return tuple(selected)
+
+
+def _decode_managed_header(
+    data: bytes,
+    expected_header: str,
+    limits: SchAuxiliaryReadLimits,
+) -> tuple[int, int, bool, list[str]]:
+    header_value = _read_u32(data, 0, "header length")
+    mode = header_value >> 24
+    if mode != 0:
+        raise _error("malformed", 0, "auxiliary header is not text mode 0")
+    header_length = header_value & 0x00FF_FFFF
+    if header_length > limits.max_record_bytes:
+        raise _error(
+            "limit",
+            0,
+            f"header length {header_length} exceeds {limits.max_record_bytes}",
+        )
+    _require_available(data, 4, header_length, "header payload")
+    payload = data[4 : 4 + header_length]
+    terminated = bool(payload) and payload[-1] == 0
+    diagnostics = [] if terminated else ["header_not_null_terminated"]
+
+    # The managed reader reserves the final declared byte as its terminator even
+    # when that byte is nonzero. A missing NUL therefore truncates the final
+    # Weight digit instead of exposing the physical count.
+    semantic_payload = payload[:-1] if payload else b""
+    text = decode_compact_acp(semantic_payload)
+    pairs, header_diagnostics = _parse_managed_header_pairs(text)
+    diagnostics.extend(header_diagnostics)
+
+    header = pairs.get("header")
+    if header is None:
+        diagnostics.append("missing_header")
+    elif header != expected_header:
+        diagnostics.append("header_name_mismatch")
+    weight = _managed_weight(pairs, diagnostics)
+    return 4 + header_length, weight, terminated, diagnostics
+
+
+def _managed_weight(pairs: Mapping[str, str], diagnostics: list[str]) -> int:
+    weight_text = pairs.get("weight")
+    if weight_text is None:
+        diagnostics.append("missing_weight")
+        return 0
+    weight = _try_parse_managed_i32(weight_text)
+    if weight is None:
+        diagnostics.append("invalid_weight")
+        return 0
+    if weight < 0:
+        diagnostics.append("negative_weight")
+    return weight
+
+
+def _parse_managed_header_pairs(text: str) -> tuple[dict[str, str], list[str]]:
+    pairs: dict[str, str] = {}
+    diagnostics: list[str] = []
+    for field in text.split("|"):
+        if not field:
+            continue
+        key, separator, value = field.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            diagnostics.append("malformed_header_field")
+            continue
+        normalized_key = key.casefold()
+        if normalized_key in pairs:
+            diagnostics.append("duplicate_header_field")
+            continue
+        pairs[normalized_key] = value.strip()
+    if set(pairs) - {"header", "weight"}:
+        diagnostics.append("extra_header_fields")
+    return pairs, diagnostics
+
+
+_MANAGED_I32_PATTERN = re.compile(r"[+-]?[0-9]+", re.ASCII)
+_MANAGED_NUMERIC_WHITESPACE = " \t\r\n\v\f"
+
+
+def _try_parse_managed_i32(value: str) -> int | None:
+    """Return the invariant subset of managed ``Int32.TryParse`` semantics."""
+    text = value.strip(_MANAGED_NUMERIC_WHITESPACE)
+    if not _MANAGED_I32_PATTERN.fullmatch(text):
+        return None
+    parsed = int(text)
+    if parsed < -(1 << 31) or parsed > (1 << 31) - 1:
+        return None
+    return parsed
 
 
 def _decode_entry(

@@ -2570,18 +2570,14 @@ def test_schlib_library_examples_write_parseable_outputs(
         merge_manifest["merged_symbol_count"]
         == merge_manifest["mergeable_symbol_count"]
     )
-    assert merge_manifest["mergeable_library_count"] == (
-        merge_manifest["input_library_count"] - len(merge_manifest["skipped_libraries"])
+    assert merge_manifest["skipped_libraries"] == []
+    assert (
+        merge_manifest["mergeable_library_count"]
+        == merge_manifest["input_library_count"]
     )
-    assert {
-        Path(item["schlib"]).name for item in merge_manifest["skipped_libraries"]
-    } == {
-        "204-211ST.Schlib",
-        "3FSH9.Schlib",
-        "47346-0001.Schlib",
-        "502.Schlib",
-        "CHS-01TA.Schlib",
-    }
+    assert (
+        merge_manifest["mergeable_symbol_count"] == merge_manifest["input_symbol_count"]
+    )
     assert {"MIMXRT685SFVKB", "R_2P", "L_2P"}.issubset(
         set(merge_manifest["merged_symbols"])
     )

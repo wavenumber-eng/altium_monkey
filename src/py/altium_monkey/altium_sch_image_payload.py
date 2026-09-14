@@ -193,6 +193,17 @@ def decode_sch_embedded_image_payload(data: bytes) -> SchEmbeddedImagePayload:
     )
 
 
+def _validate_schdoc_embedded_image_payload(data: bytes) -> None:
+    """Validate one SchDoc payload, including its exact preview-only fallback."""
+    try:
+        decode_sch_embedded_image_payload(data)
+    except SchEmbeddedImagePayloadError:
+        bmp = parse_bmp_info(data)
+        if bmp is not None and data[bmp.file_size :] == b"\x0bTDibGraphic":
+            return
+        raise
+
+
 def decode_bmp_rgba(data: bytes) -> tuple[int, int, bytes] | None:
     bmp = parse_bmp_info(data)
     if bmp is None or bmp.bits_per_pixel not in (24, 32) or bmp.compression != 0:

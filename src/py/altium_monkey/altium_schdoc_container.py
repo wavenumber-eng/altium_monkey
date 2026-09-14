@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-import struct
 from dataclasses import dataclass
 
 from .altium_serializer import Fields, _read_param_boolean
+from .altium_sch_image_payload import (
+    SchEmbeddedImagePayloadError,
+    _validate_schdoc_embedded_image_payload,
+)
 from .altium_sch_auxiliary_codec import (
     SchAuxiliaryEntry,
     SchAuxiliaryReadLimits,
     SchAuxiliaryStreamError,
-    decode_auxiliary_stream,
+    _decode_managed_auxiliary_stream,
+    _first_managed_storage_entries,
 )
 from .altium_schlib_container import (
     SchLibContainerError,
     _SchLibBudget,
     _SchLibReadLimits,
     _casefold_value,
-    _count_field_pairs,
     _parse_i32,
     _parse_instruction_stream,
     _read_record_frame,
@@ -240,96 +243,27 @@ def _record_uses_additional_owner(record: dict[str, object]) -> bool:
     return _read_param_boolean(record, Fields.OWNER_INDEX_ADDITIONAL_LIST)
 
 
-def _storage_frame_count(
-    data: bytes,
-    cursor: int,
-    budget: _SchDocBudget,
-) -> int:
-    count = 0
-    while cursor < len(data):
-        mode, _, _, cursor, record_offset = _read_record_frame(
-            data, cursor, "Storage", budget.limits
-        )
-        if mode != 1:
-            raise SchDocContainerError(
-                "malformed",
-                "Storage payload records must use binary framing",
-                stream="Storage",
-                byte_offset=record_offset,
-            )
-        count += 1
-        if count > budget.limits.max_records_per_stream - 1:
-            raise SchDocContainerError(
-                "limit", "Storage record count exceeds the reviewed limit"
-            )
-        if count > budget.remaining_records:
-            raise SchDocContainerError(
-                "limit", "Storage exceeds the remaining document record budget"
-            )
-    return count
-
-
-def _storage_weight(pairs: list[bytes]) -> tuple[int | None, int | None]:
-    indexes = [
-        index
-        for index, pair in enumerate(pairs)
-        if pair.partition(b"=")[0].lower() == b"weight"
-    ]
-    if len(indexes) > 1:
-        raise SchDocContainerError(
-            "duplicate", "duplicate Storage Weight", stream="Storage"
-        )
-    if not indexes:
-        return None, None
-    index = indexes[0]
-    _, separator, value = pairs[index].partition(b"=")
-    if not separator or not value.isascii() or not value.isdigit():
-        raise SchDocContainerError(
-            "malformed", "Storage Weight must be a nonnegative signed i32"
-        )
-    weight = int(value)
-    if weight > (1 << 31) - 1:
-        raise SchDocContainerError(
-            "malformed", "Storage Weight must be a nonnegative signed i32"
-        )
-    return index, weight
-
-
 def _preflight_storage_header(
     data: bytes,
     budget: _SchDocBudget,
-) -> tuple[bytes, int, int]:
-    mode, payload, _, end, record_offset = _read_record_frame(
+) -> None:
+    mode, payload, _, _, record_offset = _read_record_frame(
         data, 0, "Storage", budget.limits
     )
     if mode != 0:
         raise SchDocContainerError(
             "malformed", "Storage must begin with an ASCII header", stream="Storage"
         )
-    header_pairs = _count_field_pairs(payload, "Storage", record_offset)
+    semantic_payload = payload[:-1] if payload else b""
+    if semantic_payload.startswith(b"|"):
+        semantic_payload = semantic_payload[1:]
+    header_pairs = (
+        semantic_payload.count(b"|") + (0 if semantic_payload.endswith(b"|") else 1)
+        if semantic_payload
+        else 0
+    )
     budget.consume_record("Storage", 1)
     budget.consume_field_pairs("Storage", header_pairs, header_pairs)
-    return payload, end, header_pairs
-
-
-def _normalize_storage_header(
-    data: bytes,
-    budget: _SchDocBudget,
-    payload: bytes,
-    end: int,
-) -> tuple[bytes, int]:
-    pairs = payload[:-1].split(b"|")
-    weight_index, weight = _storage_weight(pairs)
-    physical_count = _storage_frame_count(data, end, budget)
-    if weight is None and physical_count:
-        raise SchDocContainerError(
-            "malformed", "nonempty Storage is missing Weight", stream="Storage"
-        )
-    if weight_index is None:
-        return data, physical_count
-    pairs[weight_index] = b"Weight=" + str(physical_count).encode("ascii")
-    normalized = b"|".join(pairs) + b"\0"
-    return struct.pack("<I", len(normalized)) + normalized + data[end:], physical_count
 
 
 def _parse_storage(
@@ -338,13 +272,10 @@ def _parse_storage(
 ) -> tuple[SchAuxiliaryEntry, ...]:
     if data is None:
         return ()
-    payload, header_end, _ = _preflight_storage_header(data, budget)
-    normalized, physical_count = _normalize_storage_header(
-        data, budget, payload, header_end
-    )
+    _preflight_storage_header(data, budget)
     try:
-        entries = decode_auxiliary_stream(
-            normalized,
+        result = _decode_managed_auxiliary_stream(
+            data,
             expected_header="Icon storage",
             limits=_auxiliary_limits(budget),
         )
@@ -355,27 +286,52 @@ def _parse_storage(
             stream="Storage",
             byte_offset=exc.offset,
         ) from exc
-    if len(entries) != physical_count:
-        raise SchDocContainerError(
-            "malformed", "Storage physical record count changed during decoding"
-        )
-    total_records = physical_count + 1
-    if total_records > budget.limits.max_records_per_stream:
-        raise SchDocContainerError(
-            "limit",
-            f"records_per_stream limit exceeded by {total_records}",
-            stream="Storage",
-        )
-    budget.consume_stream("Storage", len(entries), 0)
-    budget.consume_decompressed("Storage", tuple(len(entry.data) for entry in entries))
-    return tuple(entries)
+    selected_entries = result.entries
+    budget.consume_stream("Storage", len(selected_entries), 0)
+    budget.consume_decompressed(
+        "Storage", tuple(len(entry.data) for entry in selected_entries)
+    )
+    for index, entry in enumerate(selected_entries, start=1):
+        try:
+            _validate_schdoc_embedded_image_payload(entry.data)
+        except SchEmbeddedImagePayloadError as exc:
+            raise SchDocContainerError(
+                "malformed",
+                str(exc),
+                stream="Storage",
+                record_index=index,
+            ) from exc
+    return _first_managed_storage_entries(selected_entries)
 
 
 def _storage_weight_is_stale(data: bytes, budget: _SchDocBudget) -> bool:
-    payload, end, _ = _preflight_storage_header(data, budget)
-    _, weight = _storage_weight(payload[:-1].split(b"|"))
-    physical_count = _storage_frame_count(data, end, budget)
-    return weight is not None and weight != physical_count
+    _preflight_storage_header(data, budget)
+    try:
+        result = _decode_managed_auxiliary_stream(
+            data,
+            expected_header="Icon storage",
+            limits=_auxiliary_limits(budget),
+        )
+    except SchAuxiliaryStreamError as exc:
+        raise SchDocContainerError(
+            exc.kind,
+            exc.reason,
+            stream="Storage",
+            byte_offset=exc.offset,
+        ) from exc
+    canonicalization_diagnostics = {
+        "duplicate_header_field",
+        "header_not_null_terminated",
+        "invalid_weight",
+        "negative_weight",
+    }
+    unique_entries = _first_managed_storage_entries(result.entries)
+    return bool(
+        result.unread_suffix
+        or result.declared_weight != len(result.entries)
+        or len(unique_entries) != len(result.entries)
+        or canonicalization_diagnostics.intersection(result.diagnostics)
+    )
 
 
 def _auxiliary_limits(budget: _SchDocBudget) -> SchAuxiliaryReadLimits:

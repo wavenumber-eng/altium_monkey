@@ -57,6 +57,19 @@ You can also set `schlib.show_comments_designators = True` before saving.
 For parsed libraries, prefer `AltiumSchLib.get_symbol(...)` and symbol views
 over scanning raw streams.
 
+## Legacy Auxiliary-Stream Compatibility
+
+`AltiumSchLib` accepts bounded legacy `PinTextData` and embedded-image Storage
+streams that Altium itself imports even when their header termination, row
+names, or declared count is noncanonical. Selected rows are still checked for
+valid framing, compression, and payload shape; unrelated corruption remains an
+error. PinTextData aliases apply in source order, including later default rows
+that clear earlier custom settings. Storage validates and budgets every
+selected row, then retains the first case-insensitive name for image lookup.
+An unchanged PinTextData stream is preserved exactly. A semantic
+PinTextData synchronization writes the current canonical zero-based form and
+does not retain source rows that Altium ignored.
+
 ## Extraction From SchDoc
 
 `AltiumSchDoc.extract_schlib(...)` returns an in-memory `AltiumSchLib` built
