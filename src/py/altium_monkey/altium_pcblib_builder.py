@@ -133,6 +133,7 @@ from .altium_record_pcb__text import AltiumPcbText
 from .altium_record_pcb__track import AltiumPcbTrack
 from .altium_record_pcb__via import AltiumPcbVia
 from .altium_record_types import PcbLayer, generate_unique_id
+from .altium_text_codec import decode_altium_ansi, encode_altium_ansi_lossy
 
 _PAD_SUBRECORD2_DEFAULT = b"\x00"
 _PAD_SUBRECORD3_DEFAULT = b"\x04|&|0"
@@ -145,7 +146,7 @@ def _build_library_data(header_bytes: bytes, footprint_names: list[str]) -> byte
     buf.extend(header_bytes)
     buf.extend(struct.pack("<I", len(footprint_names)))
     for name in footprint_names:
-        name_bytes = name.encode("cp1252", errors="replace")
+        name_bytes = name.encode("utf-8", errors="replace")
         subrecord = bytes([len(name_bytes)]) + name_bytes
         buf.extend(struct.pack("<I", len(subrecord)))
         buf.extend(subrecord)
@@ -772,7 +773,7 @@ class PcbLibLibraryData:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "PcbLibLibraryData":
-        text = data.decode("cp1252", errors="replace")
+        text = decode_altium_ansi(data)
         trailing_nul = text.endswith("\x00")
         if trailing_nul:
             text = text[:-1]
@@ -804,7 +805,7 @@ class PcbLibLibraryData:
             text = "|" + text
         if self.trailing_nul:
             text += "\x00"
-        return text.encode("cp1252", errors="replace")
+        return encode_altium_ansi_lossy(text)
 
     def build_stream(self, footprint_names: list[str]) -> bytes:
         return _build_library_data(self.serialize(), footprint_names)

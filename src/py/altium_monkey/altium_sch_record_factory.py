@@ -176,6 +176,87 @@ def get_record_class(object_type: str) -> type[Primitive] | None:
     return OBJECT_TYPE_TO_CLASS.get(normalized)
 
 
+# Map record-type enums to Python classes (module constant so the factory does
+# not rebuild the table on every record instantiation).
+RECORD_TYPE_TO_CLASS: dict[SchRecordType, type[Primitive]] = {
+    # Core records (SchLib + SchDoc)
+    SchRecordType.COMPONENT: AltiumSchComponent,
+    SchRecordType.PIN: AltiumSchPin,
+    SchRecordType.IEEE_SYMBOL: AltiumSchIeeeSymbol,
+    SchRecordType.LABEL: AltiumSchLabel,
+    SchRecordType.PARAMETER: AltiumSchParameter,
+    SchRecordType.DESIGNATOR: AltiumSchDesignator,
+    SchRecordType.TEXT_FRAME: AltiumSchTextFrame,
+    SchRecordType.TEMPLATE: AltiumSchTemplate,
+    SchRecordType.PARAMETER_SET: AltiumSchParameterSet,
+    # Graphical primitives
+    SchRecordType.LINE: AltiumSchLine,
+    SchRecordType.RECTANGLE: AltiumSchRectangle,
+    SchRecordType.ROUND_RECTANGLE: AltiumSchRoundedRectangle,
+    SchRecordType.ELLIPSE: AltiumSchEllipse,
+    SchRecordType.PIECHART: AltiumSchPieChart,
+    SchRecordType.ELLIPTICAL_ARC: AltiumSchEllipticalArc,
+    SchRecordType.ARC: AltiumSchArc,
+    SchRecordType.BEZIER: AltiumSchBezier,
+    SchRecordType.POLYLINE: AltiumSchPolyline,
+    SchRecordType.POLYGON: AltiumSchPolygon,
+    SchRecordType.IMAGE: AltiumSchImage,
+    # SchDoc-specific records
+    SchRecordType.SHEET: AltiumSchSheet,
+    SchRecordType.WIRE: AltiumSchWire,
+    SchRecordType.BUS: AltiumSchBus,
+    SchRecordType.BUS_ENTRY: AltiumSchBusEntry,
+    SchRecordType.NET_LABEL: AltiumSchNetLabel,
+    SchRecordType.POWER_PORT: AltiumSchPowerPort,
+    SchRecordType.JUNCTION: AltiumSchJunction,
+    SchRecordType.PORT: AltiumSchPort,
+    SchRecordType.NO_ERC: AltiumSchNoErc,
+    SchRecordType.SHEET_SYMBOL: AltiumSchSheetSymbol,
+    SchRecordType.SHEET_ENTRY: AltiumSchSheetEntry,
+    # Implementation records
+    SchRecordType.IMPLEMENTATION_LIST: AltiumSchImplementationList,
+    SchRecordType.IMPLEMENTATION: AltiumSchImplementation,
+    SchRecordType.MAP_DEFINER_LIST: AltiumSchMapDefinerList,
+    SchRecordType.MAP_DEFINER: AltiumSchMapDefiner,
+    SchRecordType.IMPL_PARAMS: AltiumSchImplParams,
+    # SchDoc header and metadata
+    SchRecordType.HEADER: AltiumSchHeader,
+    SchRecordType.SHEET_NAME: AltiumSchSheetName,
+    SchRecordType.FILE_NAME: AltiumSchFileName,
+    # Annotations
+    SchRecordType.NOTE: AltiumSchNote,
+    SchRecordType.COMPILE_MASK: AltiumSchCompileMask,
+    SchRecordType.BLANKET: AltiumSchBlanket,
+    SchRecordType.HYPERLINK: AltiumSchHyperlink,
+    SchRecordType.OBJECT_DEFINITION: AltiumSchObjectDefinition,
+    # Harness records
+    SchRecordType.HARNESS_COMPONENT: AltiumSchHarnessComponent,
+    SchRecordType.HARNESS_CONNECTOR: AltiumSchHarnessConnector,
+    SchRecordType.HARNESS_ENTRY: AltiumSchHarnessEntry,
+    SchRecordType.HARNESS_TYPE: AltiumSchHarnessType,
+    SchRecordType.SIGNAL_HARNESS: AltiumSchSignalHarness,
+    SchRecordType.HIGH_LEVEL_CODE_SYMBOL: _AltiumSchHighLevelCodeSymbol,
+    SchRecordType.HIGH_LEVEL_CODE_ENTRY: AltiumSchSheetEntry,
+    SchRecordType.HIGH_LEVEL_CODE_NAME: AltiumSchSheetName,
+    SchRecordType.HIGH_LEVEL_CODE_FILE_NAME: AltiumSchFileName,
+    SchRecordType.HARNESS_SPLICE: AltiumSchHarnessSplice,
+    SchRecordType.HARNESS_LAYOUT_LABEL: AltiumSchHarnessLayoutLabel,
+    SchRecordType.HARNESS_LAYOUT_CONNECTION_POINT: (
+        AltiumSchHarnessLayoutConnectionPoint
+    ),
+    SchRecordType.HARNESS_BUNDLE: AltiumSchHarnessBundle,
+    SchRecordType.HARNESS_LAYOUT_COVERING: AltiumSchHarnessLayoutCovering,
+    SchRecordType.REUSE_BLOCK_IMPLEMENTATION_INFO: (
+        _AltiumSchReuseBlockImplementationInfo
+    ),
+    SchRecordType.RICH_TEXT_DOCUMENT: _AltiumSchRichTextDocument,
+    SchRecordType.RTF_LINK: _AltiumSchRtfLink,
+    SchRecordType.LINE_VIEW: _AltiumSchLineView,
+    SchRecordType.HARNESS_CAVITY: _AltiumSchHarnessCavity,
+    SchRecordType.HARNESS_CAVITY_COMPONENT: _AltiumSchHarnessCavityComponent,
+}
+
+
 def create_record_from_type(record_type: SchRecordType) -> Primitive | None:
     """
     Factory function to create record object from type.
@@ -186,85 +267,7 @@ def create_record_from_type(record_type: SchRecordType) -> Primitive | None:
     Returns:
         New record object or None if type not implemented
     """
-    record_classes = {
-        # Core records (SchLib + SchDoc)
-        SchRecordType.COMPONENT: AltiumSchComponent,
-        SchRecordType.PIN: AltiumSchPin,
-        SchRecordType.IEEE_SYMBOL: AltiumSchIeeeSymbol,
-        SchRecordType.LABEL: AltiumSchLabel,
-        SchRecordType.PARAMETER: AltiumSchParameter,
-        SchRecordType.DESIGNATOR: AltiumSchDesignator,
-        SchRecordType.TEXT_FRAME: AltiumSchTextFrame,
-        SchRecordType.TEMPLATE: AltiumSchTemplate,
-        SchRecordType.PARAMETER_SET: AltiumSchParameterSet,
-        # Graphical primitives
-        SchRecordType.LINE: AltiumSchLine,
-        SchRecordType.RECTANGLE: AltiumSchRectangle,
-        SchRecordType.ROUND_RECTANGLE: AltiumSchRoundedRectangle,
-        SchRecordType.ELLIPSE: AltiumSchEllipse,
-        SchRecordType.PIECHART: AltiumSchPieChart,
-        SchRecordType.ELLIPTICAL_ARC: AltiumSchEllipticalArc,
-        SchRecordType.ARC: AltiumSchArc,
-        SchRecordType.BEZIER: AltiumSchBezier,
-        SchRecordType.POLYLINE: AltiumSchPolyline,
-        SchRecordType.POLYGON: AltiumSchPolygon,
-        SchRecordType.IMAGE: AltiumSchImage,
-        # SchDoc-specific records
-        SchRecordType.SHEET: AltiumSchSheet,
-        SchRecordType.WIRE: AltiumSchWire,
-        SchRecordType.BUS: AltiumSchBus,
-        SchRecordType.BUS_ENTRY: AltiumSchBusEntry,
-        SchRecordType.NET_LABEL: AltiumSchNetLabel,
-        SchRecordType.POWER_PORT: AltiumSchPowerPort,
-        SchRecordType.JUNCTION: AltiumSchJunction,
-        SchRecordType.PORT: AltiumSchPort,
-        SchRecordType.NO_ERC: AltiumSchNoErc,
-        SchRecordType.SHEET_SYMBOL: AltiumSchSheetSymbol,
-        SchRecordType.SHEET_ENTRY: AltiumSchSheetEntry,
-        # Implementation records
-        SchRecordType.IMPLEMENTATION_LIST: AltiumSchImplementationList,
-        SchRecordType.IMPLEMENTATION: AltiumSchImplementation,
-        SchRecordType.MAP_DEFINER_LIST: AltiumSchMapDefinerList,
-        SchRecordType.MAP_DEFINER: AltiumSchMapDefiner,
-        SchRecordType.IMPL_PARAMS: AltiumSchImplParams,
-        # SchDoc header and metadata
-        SchRecordType.HEADER: AltiumSchHeader,
-        SchRecordType.SHEET_NAME: AltiumSchSheetName,
-        SchRecordType.FILE_NAME: AltiumSchFileName,
-        # Annotations
-        SchRecordType.NOTE: AltiumSchNote,
-        SchRecordType.COMPILE_MASK: AltiumSchCompileMask,
-        SchRecordType.BLANKET: AltiumSchBlanket,
-        SchRecordType.HYPERLINK: AltiumSchHyperlink,
-        SchRecordType.OBJECT_DEFINITION: AltiumSchObjectDefinition,
-        # Harness records
-        SchRecordType.HARNESS_COMPONENT: AltiumSchHarnessComponent,
-        SchRecordType.HARNESS_CONNECTOR: AltiumSchHarnessConnector,
-        SchRecordType.HARNESS_ENTRY: AltiumSchHarnessEntry,
-        SchRecordType.HARNESS_TYPE: AltiumSchHarnessType,
-        SchRecordType.SIGNAL_HARNESS: AltiumSchSignalHarness,
-        SchRecordType.HIGH_LEVEL_CODE_SYMBOL: _AltiumSchHighLevelCodeSymbol,
-        SchRecordType.HIGH_LEVEL_CODE_ENTRY: AltiumSchSheetEntry,
-        SchRecordType.HIGH_LEVEL_CODE_NAME: AltiumSchSheetName,
-        SchRecordType.HIGH_LEVEL_CODE_FILE_NAME: AltiumSchFileName,
-        SchRecordType.HARNESS_SPLICE: AltiumSchHarnessSplice,
-        SchRecordType.HARNESS_LAYOUT_LABEL: AltiumSchHarnessLayoutLabel,
-        SchRecordType.HARNESS_LAYOUT_CONNECTION_POINT: (
-            AltiumSchHarnessLayoutConnectionPoint
-        ),
-        SchRecordType.HARNESS_BUNDLE: AltiumSchHarnessBundle,
-        SchRecordType.HARNESS_LAYOUT_COVERING: AltiumSchHarnessLayoutCovering,
-        SchRecordType.REUSE_BLOCK_IMPLEMENTATION_INFO: (
-            _AltiumSchReuseBlockImplementationInfo
-        ),
-        SchRecordType.RICH_TEXT_DOCUMENT: _AltiumSchRichTextDocument,
-        SchRecordType.RTF_LINK: _AltiumSchRtfLink,
-        SchRecordType.LINE_VIEW: _AltiumSchLineView,
-        SchRecordType.HARNESS_CAVITY: _AltiumSchHarnessCavity,
-        SchRecordType.HARNESS_CAVITY_COMPONENT: _AltiumSchHarnessCavityComponent,
-    }
-
-    record_class = record_classes.get(record_type)
+    record_class = RECORD_TYPE_TO_CLASS.get(record_type)
     if record_class:
         return record_class()
     return None

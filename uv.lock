@@ -138,8 +138,6 @@ release = [
     { name = "twine" },
 ]
 test = [
-    { name = "cadquery" },
-    { name = "casadi", marker = "python_full_version >= '3.14' and sys_platform == 'win32'" },
     { name = "jsonschema" },
     { name = "pytest" },
 ]
@@ -148,9 +146,7 @@ test = [
 requires-dist = [
     { name = "build", marker = "extra == 'release'", specifier = ">=1.2" },
     { name = "cadquery", marker = "extra == 'examples'" },
-    { name = "cadquery", marker = "extra == 'test'" },
     { name = "casadi", marker = "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'examples'", specifier = "<3.8" },
-    { name = "casadi", marker = "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'test'", specifier = "<3.8" },
     { name = "freetype-py" },
     { name = "jsonschema", marker = "extra == 'test'", specifier = ">=4.20" },
     { name = "jsonschema-rs", specifier = ">=0.48.1,<0.49" },

@@ -1864,7 +1864,7 @@ class AltiumSchDoc(JsonApplyMixin):
                     # SHEET record (root container)
                     sheet = AltiumSchSheet()
                     sheet.parse_from_record(record)
-                    _as_dynamic(sheet)._record_index = len(self.all_objects)
+                    _as_dynamic(sheet)._record_index = len(self._objects)
                     _as_dynamic(sheet)._raw_record_index = (
                         _idx + 1
                     )  # +1 because we skip header record
@@ -1885,7 +1885,7 @@ class AltiumSchDoc(JsonApplyMixin):
                     # Component instance - parse as OOP object
                     component = AltiumSchComponent()
                     component.parse_from_record(record, font_manager=self.font_manager)
-                    _as_dynamic(component)._record_index = len(self.all_objects)
+                    _as_dynamic(component)._record_index = len(self._objects)
                     _as_dynamic(component)._source_stream = source_stream
                     self._objects.append(component)
 
@@ -1893,28 +1893,28 @@ class AltiumSchDoc(JsonApplyMixin):
                     # PIN instance - parse into AltiumSchPin object
                     pin = AltiumSchPin()
                     pin.parse_from_record(record, font_manager=self.font_manager)
-                    _as_dynamic(pin)._record_index = len(self.all_objects)
+                    _as_dynamic(pin)._record_index = len(self._objects)
                     _as_dynamic(pin)._source_stream = source_stream
                     self._objects.append(pin)
 
                 elif record_type == SchRecordType.WIRE:
                     wire = AltiumSchWire()
                     wire.parse_from_record(record, font_manager=self.font_manager)
-                    _as_dynamic(wire)._record_index = len(self.all_objects)
+                    _as_dynamic(wire)._record_index = len(self._objects)
                     _as_dynamic(wire)._source_stream = source_stream
                     self._objects.append(wire)
 
                 elif record_type == SchRecordType.BUS:
                     bus = AltiumSchBus()
                     bus.parse_from_record(record, font_manager=self.font_manager)
-                    _as_dynamic(bus)._record_index = len(self.all_objects)
+                    _as_dynamic(bus)._record_index = len(self._objects)
                     _as_dynamic(bus)._source_stream = source_stream
                     self._objects.append(bus)
 
                 elif record_type == SchRecordType.IMAGE:
                     image = AltiumSchImage()
                     image.parse_from_record(record, font_manager=self.font_manager)
-                    _as_dynamic(image)._record_index = len(self.all_objects)
+                    _as_dynamic(image)._record_index = len(self._objects)
                     _as_dynamic(image)._source_stream = source_stream
                     # Store raw record for image type classification
                     image._raw_record = record
@@ -1927,7 +1927,7 @@ class AltiumSchDoc(JsonApplyMixin):
                     if obj:
                         # Parse using OOP class with font translation support
                         obj.parse_from_record(record, font_manager=self.font_manager)
-                        _as_dynamic(obj)._record_index = len(self.all_objects)
+                        _as_dynamic(obj)._record_index = len(self._objects)
                         _as_dynamic(obj)._source_stream = source_stream
                         self._objects.append(obj)
 
@@ -4828,24 +4828,28 @@ class AltiumSchDoc(JsonApplyMixin):
                 )
 
     def _source_object_index(self, source_object: object) -> int | None:
+        # Use the authoritative store directly: the all_objects live view
+        # re-filters the whole store on every len()/index access, which made
+        # this per-record helper quadratic across a render (public issue 60).
+        objects = self._objects
         cached_position = self._geometry_source_positions.get(id(source_object))
         if (
             cached_position is not None
-            and 0 <= cached_position < len(self.all_objects)
-            and self.all_objects[cached_position] is source_object
+            and 0 <= cached_position < len(objects)
+            and objects[cached_position] is source_object
         ):
             return cached_position
         record_index = _optional_int(getattr(source_object, "_record_index", None))
         if (
             record_index is not None
-            and 0 <= record_index < len(self.all_objects)
-            and self.all_objects[record_index] is source_object
+            and 0 <= record_index < len(objects)
+            and objects[record_index] is source_object
         ):
             return record_index
         return next(
             (
                 position
-                for position, candidate in enumerate(self.all_objects)
+                for position, candidate in enumerate(objects)
                 if candidate is source_object
             ),
             None,
@@ -7364,12 +7368,15 @@ class AltiumSchDoc(JsonApplyMixin):
         self,
         records: Collection["SchGeometryRecord"],
     ) -> dict[int, "SchGeometryRecord"]:
+        # The authoritative store gives O(1) len/index; the all_objects live
+        # view would rescan the whole store per record (public issue 60).
+        objects = self._objects
         result: dict[int, SchGeometryRecord] = {}
         for record in records:
             source_index = record.source_object_index
-            if source_index is None or not 0 <= source_index < len(self.all_objects):
+            if source_index is None or not 0 <= source_index < len(objects):
                 continue
-            result.setdefault(id(self.all_objects[source_index]), record)
+            result.setdefault(id(objects[source_index]), record)
         return result
 
     def _harness_image_parameter_projections(

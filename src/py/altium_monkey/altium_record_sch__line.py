@@ -76,19 +76,18 @@ class AltiumSchLine(_LineStyleDirtyMixin, CornerMilsMixin, SchGraphicalObject):
 
         # Use serializer for field reading (case-insensitive)
         s = AltiumSerializer()
+        # Read through the indexed case-insensitive copy captured by the base
+        # parse; case-insensitive lookups on the raw dict degrade to key scans.
+        r = self._record
 
         # Parse corner coordinates with presence tracking
-        corner_x, corner_x_frac, self._has_corner_x = s.read_coord(
-            record, "Corner", "X"
-        )
-        corner_y, corner_y_frac, self._has_corner_y = s.read_coord(
-            record, "Corner", "Y"
-        )
+        corner_x, corner_x_frac, self._has_corner_x = s.read_coord(r, "Corner", "X")
+        corner_y, corner_y_frac, self._has_corner_y = s.read_coord(r, "Corner", "Y")
         self.corner = CoordPoint(corner_x, corner_y, corner_x_frac, corner_y_frac)
 
         # Parse line properties
         line_width_val, self._has_line_width = s.read_int(
-            record, Fields.LINE_WIDTH, default=0
+            r, Fields.LINE_WIDTH, default=0
         )
         self.line_width = LineWidth(line_width_val)
 
@@ -102,10 +101,10 @@ class AltiumSchLine(_LineStyleDirtyMixin, CornerMilsMixin, SchGraphicalObject):
             self._has_line_style_ext = False
         else:
             line_style_val, self._has_line_style = s.read_int(
-                record, Fields.LINE_STYLE, default=0
+                r, Fields.LINE_STYLE, default=0
             )
             line_style_ext_val, self._has_line_style_ext = s.read_int(
-                record,
+                r,
                 Fields.LINE_STYLE_EXT,
                 default=0,
             )

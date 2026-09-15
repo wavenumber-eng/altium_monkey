@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import struct
 
+from .altium_text_codec import decode_altium_ansi
+
 
 @dataclass(frozen=True, slots=True)
 class EmbeddedBoardStreamError(ValueError):
@@ -102,12 +104,7 @@ def _parse_embedded_board_record(
         raise EmbeddedBoardStreamError(
             f"record {record_index} has invalid terminator placement"
         )
-    try:
-        text = content.decode("cp1252")
-    except UnicodeDecodeError as exc:
-        raise EmbeddedBoardStreamError(
-            f"record {record_index} is not valid CP1252"
-        ) from exc
+    text = decode_altium_ansi(content)
     fields: list[tuple[str, str]] = []
     seen: set[str] = set()
     for token in text.split("|"):

@@ -29,7 +29,7 @@ import math
 import re
 import struct
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -356,7 +356,9 @@ def read_dynamic_string_field(
     if utf8_value is not None:
         return process_mbcs_string(str(utf8_value)), True, True
 
-    value, present = serializer.read_str(record, field_def, default=default)
+    # record_view mirrors record case-insensitively, so the fallback read goes
+    # through the indexed view instead of scanning the plain record dict.
+    value, present = serializer.read_str(record_view, field_def, default=default)
     return process_mbcs_string(value), present, False
 
 
@@ -752,6 +754,14 @@ class FieldDef:
     canonical: str
     pascal: str
     upper: str
+    _canonical_lower: str = dataclass_field(init=False, repr=False, compare=False)
+    _upper_lower: str = dataclass_field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Precomputed for the case-insensitive lookups in find_in_record,
+        # which runs once per field read on the parse hot path.
+        object.__setattr__(self, "_canonical_lower", self.canonical.lower())
+        object.__setattr__(self, "_upper_lower", self.upper.lower())
 
     @classmethod
     def simple(cls, pascal: str) -> FieldDef:
@@ -782,15 +792,81 @@ class FieldDef:
         Returns:
             (found_key, exists) - the key that was found and whether it exists
         """
-        for key in [self.pascal, self.upper, self.canonical]:
-            if key in record:
-                return key, True
+        # Case-insensitive record dicts index every key by its lowercase
+        # form, so presence resolves in O(1) instead of scanning the keys.
+        # canonical always equals pascal, so two lookups cover all variants
+        # and the containment answers below stay identical.
+        lower_map = getattr(record, "_lower_map", None)
+        if lower_map is not None:
+            if self._canonical_lower in lower_map:
+                return self.pascal, True
+            if self._upper_lower in lower_map:
+                return self.upper, True
+            return self.pascal, False
+        if self.pascal in record:
+            return self.pascal, True
+        if self.upper in record:
+            return self.upper, True
+        if self.canonical in record:
+            return self.canonical, True
         # Check case-insensitive
-        lower = self.canonical.lower()
+        lower = self._canonical_lower
         for key in record:
             if key.lower() == lower:
                 return key, True
         return self.pascal, False
+
+    def find_value_in_record(
+        self, record: Mapping[str, object]
+    ) -> tuple[object | None, bool]:
+        """
+        Find this field's value in a record (case-insensitive).
+
+        Returns:
+            (value, exists) - the stored value (None when absent) and whether
+            the field exists. Callers must branch on the flag, not the value.
+        """
+        # Case-insensitive record dicts map each lowercase name to its stored
+        # key, so one indexed fetch replaces the resolve-key-then-getitem
+        # double lookup (whose __getitem__ lowercases the key a second time).
+        lower_map = getattr(record, "_lower_map", None)
+        if lower_map is not None and isinstance(record, dict):
+            actual = lower_map.get(self._canonical_lower)
+            if actual is None:
+                actual = lower_map.get(self._upper_lower)
+                if actual is None:
+                    return None, False
+            # The stored key indexes the plain-dict storage directly, so the
+            # base fetch skips the case-insensitive __getitem__ override.
+            return dict.__getitem__(record, actual), True
+        key, exists = self.find_in_record(record)
+        if not exists:
+            return None, False
+        return record[key], True
+
+
+# FieldDef instances are immutable, and the field-name vocabulary is fixed by
+# the record formats, so per-name definitions are shared instead of rebuilt on
+# every read call.
+_SIMPLE_FIELD_DEF_CACHE: dict[str, FieldDef] = {}
+_DOTTED_FIELD_DEF_CACHE: dict[tuple[str, str], FieldDef] = {}
+
+
+def _simple_field_def(name: str) -> FieldDef:
+    definition = _SIMPLE_FIELD_DEF_CACHE.get(name)
+    if definition is None:
+        definition = FieldDef.simple(name)
+        _SIMPLE_FIELD_DEF_CACHE[name] = definition
+    return definition
+
+
+def _dotted_field_def(base: str, suffix: str) -> FieldDef:
+    key = (base, suffix)
+    definition = _DOTTED_FIELD_DEF_CACHE.get(key)
+    if definition is None:
+        definition = FieldDef.dotted(base, suffix)
+        _DOTTED_FIELD_DEF_CACHE[key] = definition
+    return definition
 
 
 # =============================================================================
@@ -1014,9 +1090,8 @@ class Fields:
 
 def _read_param_boolean(record: Mapping[str, object], field: FieldDef | str) -> bool:
     """Read exact text Param booleans, retaining typed programmatic inputs."""
-    definition = FieldDef.simple(field) if isinstance(field, str) else field
-    key, present = definition.find_in_record(record)
-    value = record.get(key) if present else None
+    definition = _simple_field_def(field) if isinstance(field, str) else field
+    value, _ = definition.find_value_in_record(record)
     if isinstance(value, (bool, int)):
         return bool(value)
     return isinstance(value, str) and value == "T"
@@ -1067,11 +1142,13 @@ class AltiumSerializer:
             (value, was_present) - the value and whether field was in record
         """
         field_def = self._get_field_def(field)
+        value, exists = field_def.find_value_in_record(record)
+        if not exists:
+            return default, False
         try:
-            return self._read_int_checked(record, field_def, default)
+            return _parse_ascii_integer(value, _I32_MIN, _I32_MAX), True
         except (ValueError, TypeError):
-            key, _ = field_def.find_in_record(record)
-            log.warning(f"Invalid int value for {field_def.canonical}: {record[key]}")
+            log.warning(f"Invalid int value for {field_def.canonical}: {value}")
             return default, True
 
     def _read_int_checked(
@@ -1079,11 +1156,11 @@ class AltiumSerializer:
     ) -> tuple[int, bool]:
         """Read a signed i32 and raise for malformed or out-of-range input."""
         field_def = self._get_field_def(field)
-        key, exists = field_def.find_in_record(record)
+        value, exists = field_def.find_value_in_record(record)
         if not exists:
             return default, False
         try:
-            return _parse_ascii_integer(record[key], _I32_MIN, _I32_MAX), True
+            return _parse_ascii_integer(value, _I32_MIN, _I32_MAX), True
         except (TypeError, ValueError) as error:
             raise ValueError(f"{field_def.canonical}: {error}") from error
 
@@ -1104,10 +1181,9 @@ class AltiumSerializer:
             (value, was_present) - the value and whether field was in record
         """
         field_def = self._get_field_def(field)
-        key, exists = field_def.find_in_record(record)
+        value, exists = field_def.find_value_in_record(record)
 
         if exists:
-            value = record[key]
             if isinstance(value, bool):
                 return value, True
             if isinstance(value, str):
@@ -1118,7 +1194,7 @@ class AltiumSerializer:
         return default, False
 
     def read_str(
-        self, record: dict, field: FieldDef | str, default: str = ""
+        self, record: Mapping[str, object], field: FieldDef | str, default: str = ""
     ) -> tuple[str, bool]:
         """
         Read string field from record.
@@ -1132,10 +1208,10 @@ class AltiumSerializer:
             (value, was_present) - the value and whether field was in record
         """
         field_def = self._get_field_def(field)
-        key, exists = field_def.find_in_record(record)
+        value, exists = field_def.find_value_in_record(record)
 
         if exists:
-            return str(record[key]), True
+            return str(value), True
         return default, False
 
     def read_color(
@@ -1155,11 +1231,11 @@ class AltiumSerializer:
             (value, was_present) - the color int and whether field was in record
         """
         field_def = self._get_field_def(field)
-        key, exists = field_def.find_in_record(record)
+        value, exists = field_def.find_value_in_record(record)
 
         if exists:
             try:
-                return _parse_ascii_integer(record[key], _U32_MIN, _U32_MAX), True
+                return _parse_ascii_integer(value, _U32_MIN, _U32_MAX), True
             except (ValueError, TypeError):
                 return default, True
         return default, False
@@ -1180,11 +1256,11 @@ class AltiumSerializer:
             (value, frac, was_present) - integer part, fractional part, and presence
         """
         if prefix:
-            field_def = FieldDef.dotted(base, prefix)
-            frac_def = FieldDef.dotted(base, f"{prefix}_Frac")
+            field_def = _dotted_field_def(base, prefix)
+            frac_def = _dotted_field_def(base, f"{prefix}_Frac")
         else:
-            field_def = FieldDef.simple(base)
-            frac_def = FieldDef.simple(f"{base}_Frac")
+            field_def = _simple_field_def(base)
+            frac_def = _simple_field_def(f"{base}_Frac")
 
         value, present = self.read_int(record, field_def, default=0)
         if not _I16_MIN <= value <= _I16_MAX:
@@ -1216,11 +1292,11 @@ class AltiumSerializer:
     def _field_violates_width(
         record: dict[str, object], field: FieldDef, minimum: int, maximum: int
     ) -> bool:
-        key, present = field.find_in_record(record)
+        value, present = field.find_value_in_record(record)
         if not present:
             return False
         try:
-            _parse_ascii_integer(record[key], minimum, maximum)
+            _parse_ascii_integer(value, minimum, maximum)
         except (TypeError, ValueError):
             return True
         return False
@@ -1253,11 +1329,11 @@ class AltiumSerializer:
             return
 
         if prefix:
-            field_def = FieldDef.dotted(base, prefix)
-            frac_def = FieldDef.dotted(base, f"{prefix}_Frac")
+            field_def = _dotted_field_def(base, prefix)
+            frac_def = _dotted_field_def(base, f"{prefix}_Frac")
         else:
-            field_def = FieldDef.simple(base)
-            frac_def = FieldDef.simple(f"{base}_Frac")
+            field_def = _simple_field_def(base)
+            frac_def = _simple_field_def(f"{base}_Frac")
         value, frac = require_coordinate_wire_parts(value, frac, field_def.canonical)
         if value != 0:
             self.write_int(record, field_def, value, raw_record, force=force)
@@ -1288,11 +1364,11 @@ class AltiumSerializer:
             (internal_font_id, was_present)
         """
         field_def = self._get_field_def(field)
-        key, exists = field_def.find_in_record(record)
+        value, exists = field_def.find_value_in_record(record)
         if not exists:
             return default, False
         try:
-            raw_id = _parse_ascii_integer(record[key], _I16_MIN, _I16_MAX)
+            raw_id = _parse_ascii_integer(value, _I16_MIN, _I16_MAX)
         except (TypeError, ValueError):
             return default, True
 
@@ -1471,15 +1547,13 @@ class AltiumSerializer:
         Implementation note: serializer parameter implementation ReadFloat
         """
         field_def = self._get_field_def(field)
-        key, exists = field_def.find_in_record(record)
+        value, exists = field_def.find_value_in_record(record)
 
         if exists:
             try:
-                return _parse_ascii_float(record[key], single=True), True
+                return _parse_ascii_float(value, single=True), True
             except (ValueError, TypeError):
-                log.warning(
-                    f"Invalid float value for {field_def.canonical}: {record[key]}"
-                )
+                log.warning(f"Invalid float value for {field_def.canonical}: {value}")
                 return default, True
         return default, False
 
@@ -1504,15 +1578,13 @@ class AltiumSerializer:
         deliberately follows the broader ASCII syntax.
         """
         field_def = self._get_field_def(field)
-        key, exists = field_def.find_in_record(record)
+        value, exists = field_def.find_value_in_record(record)
 
         if exists:
             try:
-                return _parse_ascii_float(record[key], single=False), True
+                return _parse_ascii_float(value, single=False), True
             except (ValueError, TypeError):
-                log.warning(
-                    f"Invalid double value for {field_def.canonical}: {record[key]}"
-                )
+                log.warning(f"Invalid double value for {field_def.canonical}: {value}")
                 return default, True
         return default, False
 
@@ -1533,15 +1605,13 @@ class AltiumSerializer:
         Implementation note: serializer parameter implementation ReadLong
         """
         field_def = self._get_field_def(field)
-        key, exists = field_def.find_in_record(record)
+        value, exists = field_def.find_value_in_record(record)
 
         if exists:
             try:
-                return _parse_ascii_integer(record[key], _I64_MIN, _I64_MAX), True
+                return _parse_ascii_integer(value, _I64_MIN, _I64_MAX), True
             except (ValueError, TypeError):
-                log.warning(
-                    f"Invalid long value for {field_def.canonical}: {record[key]}"
-                )
+                log.warning(f"Invalid long value for {field_def.canonical}: {value}")
                 return default, True
         return default, False
 
@@ -1646,7 +1716,7 @@ class AltiumSerializer:
         """
         if isinstance(field, FieldDef):
             return field
-        return FieldDef.simple(field)
+        return _simple_field_def(field)
 
     def _write_field(
         self,

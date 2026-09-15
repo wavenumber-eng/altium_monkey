@@ -9,6 +9,7 @@ from .altium_record_types import SchPrimitive, SchRecordType
 from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
 from .altium_record_sch__junction import AltiumSchJunction
 from .altium_record_sch__parameter import AltiumSchImageParameter, AltiumSchParameter
+from .altium_serializer import FieldDef, _read_param_boolean
 
 if TYPE_CHECKING:
     from .altium_record_sch__component import AltiumSchComponent
@@ -227,9 +228,10 @@ def _component_object_list_owner(record: SchPrimitive) -> SchPrimitive | None:
     return owner
 
 
-def _record_import_ignores_source(record: object) -> bool:
-    from .altium_serializer import _read_param_boolean
+_IGNORE_ON_LOAD_FIELD = FieldDef.simple("IgnoreOnLoad")
 
+
+def _record_import_ignores_source(record: object) -> bool:
     if not isinstance(record, SchPrimitive) or record.record_type in (
         SchRecordType.PIN,
         SchRecordType.SHEET,
@@ -238,7 +240,7 @@ def _record_import_ignores_source(record: object) -> bool:
         return False
     # Pin and document import bypass ImportDataObject; an opaque key on those
     # families must not acquire semantics merely because the raw model kept it.
-    return _read_param_boolean(record._record, "IgnoreOnLoad")
+    return _read_param_boolean(record._record, _IGNORE_ON_LOAD_FIELD)
 
 
 def _observe_source_ignore_ancestry(

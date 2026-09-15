@@ -15,6 +15,7 @@ from .altium_pcb_stream_helpers import (
     extract_length_prefixed_ascii as _extract_length_prefixed_ascii,
 )
 from .altium_pcb_layer_kind_mapping import PcbLayerKindMapping
+from .altium_text_codec import decode_altium_ansi, encode_altium_ansi_lossy
 
 
 def _parse_pipe_properties(body: str) -> dict[str, str]:
@@ -148,11 +149,7 @@ class PcbLibComponentParamsToc:
             offset += 4
             if offset + chunk_len > len(data):
                 raise ValueError("Invalid ComponentParamsTOC stream")
-            text = (
-                data[offset : offset + chunk_len]
-                .decode("cp1252", errors="replace")
-                .rstrip("\x00")
-            )
+            text = decode_altium_ansi(data[offset : offset + chunk_len]).rstrip("\x00")
             offset += chunk_len
             entries.append(PcbLibComponentParamsTocEntry.from_text(text))
         return cls(entries=tuple(entries))
@@ -160,7 +157,7 @@ class PcbLibComponentParamsToc:
     def to_bytes(self) -> bytes:
         buf = bytearray()
         for entry in self.entries:
-            text_bytes = entry.to_text().encode("cp1252", errors="replace")
+            text_bytes = encode_altium_ansi_lossy(entry.to_text())
             buf.extend(struct.pack("<I", len(text_bytes)))
             buf.extend(text_bytes)
         return bytes(buf)
@@ -315,9 +312,7 @@ class PcbLibSectionKeys:
         if offset + sr_len > len(data) or sr_len < 1:
             raise ValueError("Invalid SectionKeys stream")
         pascal_len = data[offset]
-        value = data[offset + 1 : offset + 1 + pascal_len].decode(
-            "cp1252", errors="replace"
-        )
+        value = decode_altium_ansi(data[offset + 1 : offset + 1 + pascal_len])
         return value, offset + sr_len
 
     def to_bytes(self) -> bytes:
@@ -330,7 +325,7 @@ class PcbLibSectionKeys:
 
     @staticmethod
     def _build_pascal_subrecord(text: str) -> bytes:
-        encoded = text.encode("cp1252", errors="replace")
+        encoded = encode_altium_ansi_lossy(text)
         subrecord = bytearray([len(encoded)]) + encoded
         return struct.pack("<I", len(subrecord)) + subrecord
 

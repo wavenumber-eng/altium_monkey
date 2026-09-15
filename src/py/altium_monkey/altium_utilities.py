@@ -13,6 +13,7 @@ from .altium_sch_auxiliary_codec import (
     decode_auxiliary_stream,
     encode_auxiliary_stream,
 )
+from .altium_text_codec import decode_altium_ansi, encode_altium_ansi_lossy
 
 log = logging.getLogger(__name__)
 
@@ -447,10 +448,7 @@ def decode_byte_array(byte_array: bytes, *, context: str | None = None) -> str:
     utf8_prefix = b"%UTF8%"
 
     if byte_array.startswith(utf8_prefix):
-        try:
-            decoded = byte_array.decode("utf-8")
-        except UnicodeDecodeError as e:
-            raise ValueError(f"Failed to decode UTF-8 content: {e}") from e
+        decoded = byte_array.decode("utf-8", errors="replace")
     else:
         # Process MBCS pipe escape sequences at BYTE level before decoding.
         # native StrUtils.ProcessMBCSString() operates on AnsiString (raw bytes),
@@ -464,19 +462,18 @@ def decode_byte_array(byte_array: bytes, *, context: str | None = None) -> str:
         # bytes form valid UTF-8; valid cp1252 remains authoritative.
         try:
             decoded = processed.decode("cp1252")
-        except UnicodeDecodeError as cp1252_error:
+        except UnicodeDecodeError:
             try:
                 decoded = byte_array.decode("utf-8")
-            except UnicodeDecodeError as utf8_error:
-                raise ValueError(
-                    f"Failed to decode cp1252 content: {cp1252_error}"
-                ) from utf8_error
-            location = f" ({context})" if context else ""
-            log.warning(
-                "Recovered unmarked UTF-8 in Altium text record%s; "
-                "rewrite the file to add a %%UTF8%% sidecar",
-                location,
-            )
+            except UnicodeDecodeError:
+                decoded = decode_altium_ansi(processed)
+            else:
+                location = f" ({context})" if context else ""
+                log.warning(
+                    "Recovered unmarked UTF-8 in Altium text record%s; "
+                    "rewrite the file to add a %%UTF8%% sidecar",
+                    location,
+                )
 
     return decoded
 
@@ -575,7 +572,7 @@ def _encode_altium_pair(key: str, value: str, *, utf8: bool) -> bytes:
     pair = f"|{key}={escaped_value}"
     if utf8:
         return pair.encode("utf-8")
-    return pair.encode("cp1252", errors="replace")
+    return encode_altium_ansi_lossy(pair)
 
 
 def _skip_altium_text_key(key: str, *, skip_private_keys: bool) -> bool:

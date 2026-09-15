@@ -1961,7 +1961,7 @@ class SchGraphicalObject(SchPrimitive):
 
         self._parse_geometry_dynamic_metadata(r)
         self._parse_graphical_location(record, r)
-        self._parse_graphical_colors(record)
+        self._parse_graphical_colors(record, r)
         self._apply_imported_graphical_metadata_defaults()
         self._capture_graphical_source_state()
 
@@ -2036,16 +2036,19 @@ class SchGraphicalObject(SchPrimitive):
             return 0
         return parsed if -(1 << 15) <= parsed <= (1 << 15) - 1 else 0
 
-    def _parse_graphical_colors(self, record: _RecordFields) -> None:
+    def _parse_graphical_colors(
+        self, raw_record: _RecordFields, record: CaseInsensitiveDict
+    ) -> None:
         from .altium_serializer import AltiumSerializer
 
         serializer = AltiumSerializer()
-        self._has_color = "Color" in record or "COLOR" in record
+        # Presence checks deliberately stay exact-case on the raw record.
+        self._has_color = "Color" in raw_record or "COLOR" in raw_record
         color, _ = serializer.read_color(record, "Color", default=0)
         if self._has_color:
             self.color = color
 
-        self._has_area_color = "AreaColor" in record or "AREACOLOR" in record
+        self._has_area_color = "AreaColor" in raw_record or "AREACOLOR" in raw_record
         ignores_area_color = self.record_type in {
             SchRecordType.LINE,
             SchRecordType.ARC,

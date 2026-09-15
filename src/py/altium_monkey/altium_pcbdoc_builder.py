@@ -118,6 +118,7 @@ from .altium_record_pcb__differential_pair import (
 )
 from .altium_pcb_enums import PadShape
 from .altium_record_types import PcbLayer
+from .altium_text_codec import decode_altium_ansi
 from .altium_pcbdoc_builder_nets import (
     build_authored_net,
     build_net_stream,
@@ -882,7 +883,7 @@ def _extract_length_prefixed_ascii_body(data: bytes) -> str:
     length = struct.unpack("<I", data[:4])[0]
     if len(data) < 4 + length:
         raise ValueError("Invalid length-prefixed ASCII stream")
-    return data[4 : 4 + length].decode("cp1252", errors="replace").rstrip("\x00")
+    return decode_altium_ansi(data[4 : 4 + length]).rstrip("\x00")
 
 
 def _extract_length_prefixed_utf16le_body(data: bytes) -> str:
@@ -1856,7 +1857,7 @@ class PcbDocBoardData:
         trailing_nul = body_bytes.endswith(b"\x00")
         if trailing_nul:
             body_bytes = body_bytes[:-1]
-        text = body_bytes.decode("cp1252", errors="replace")
+        text = decode_altium_ansi(body_bytes)
         return cls(
             segments=tuple(
                 PcbDocBoardDataSegment.from_text(part) for part in text.split("\r")
@@ -3102,9 +3103,7 @@ class PcbDocAsciiRecordData(_PcbDocAsciiBoardDataStreamMixin):
         if trailing_nul:
             body_bytes = body_bytes[:-1]
         return cls(
-            record=PcbDocBoardDataSegment.from_text(
-                body_bytes.decode("cp1252", errors="replace")
-            ),
+            record=PcbDocBoardDataSegment.from_text(decode_altium_ansi(body_bytes)),
             trailing_nul=trailing_nul,
         )
 
@@ -3141,9 +3140,7 @@ class PcbDocPadViaLibraryData(_PcbDocAsciiBoardDataStreamMixin):
         if trailing_nul:
             body_bytes = body_bytes[:-1]
         return cls(
-            record=PcbDocBoardDataSegment.from_text(
-                body_bytes.decode("cp1252", errors="replace")
-            ),
+            record=PcbDocBoardDataSegment.from_text(decode_altium_ansi(body_bytes)),
             trailing_nul=trailing_nul,
         )
 
@@ -3257,9 +3254,7 @@ class PcbDocSignalClassesData(_PcbDocAsciiBoardDataStreamMixin):
         if trailing_nul:
             body_bytes = body_bytes[:-1]
         return cls(
-            record=PcbDocBoardDataSegment.from_text(
-                body_bytes.decode("cp1252", errors="replace")
-            ),
+            record=PcbDocBoardDataSegment.from_text(decode_altium_ansi(body_bytes)),
             trailing_nul=trailing_nul,
         )
 
@@ -3730,7 +3725,7 @@ class PcbDocFileVersionInfoData(_PcbDocEntryLookupMixin):
         trailing_nul = body_bytes.endswith(b"\x00")
         if trailing_nul:
             body_bytes = body_bytes[:-1]
-        text = body_bytes.decode("cp1252", errors="replace")
+        text = decode_altium_ansi(body_bytes)
         leading_pipe = text.startswith("|")
         if leading_pipe:
             text = text[1:]

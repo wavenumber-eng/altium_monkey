@@ -42,8 +42,6 @@ release = [
     "twine>=5.0",
 ]
 test = [
-    "cadquery",
-    "casadi<3.8; sys_platform == 'win32' and python_version >= '3.14'",
     "jsonschema>=4.20",
     "pytest>=8.0",
 ]
@@ -64,3 +62,8 @@ packages = ["src/py/altium_monkey"]
 
 [tool.hatch.version]
 path = "src/py/altium_monkey/_version.py"
+
+[tool.pytest.ini_options]
+markers = [
+    "optional_example: example execution that requires the separately installed examples extra",
+]

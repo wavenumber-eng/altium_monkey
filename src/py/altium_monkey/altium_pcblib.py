@@ -123,6 +123,7 @@ from .altium_record_pcb__shapebased_region import AltiumPcbShapeBasedRegion
 from .altium_record_pcb__via import AltiumPcbVia
 from .altium_record_pcb__component_body import AltiumPcbComponentBody
 from .altium_utilities import encode_altium_record
+from .altium_text_codec import decode_altium_ansi
 
 if TYPE_CHECKING:
     from .altium_pcblib_builder import (
@@ -1890,7 +1891,7 @@ def _parse_length_prefixed_properties(data: bytes) -> dict[str, str]:
     if length <= 0 or 4 + length > len(data):
         return {}
 
-    body = data[4 : 4 + length].decode("cp1252", errors="replace").rstrip("\x00")
+    body = decode_altium_ansi(data[4 : 4 + length]).rstrip("\x00")
     result: dict[str, str] = {}
     for pair in body.split("|"):
         if "=" not in pair:
@@ -3068,7 +3069,7 @@ class AltiumPcbLib:
         if len(lib_data) < 4 + header_len:
             return 0
 
-        header_text = lib_data[4 : 4 + header_len].decode("utf-8", errors="replace")
+        header_text = decode_altium_ansi(lib_data[4 : 4 + header_len])
         for pair in header_text.split("|"):
             if "=" in pair:
                 key, val = pair.split("=", 1)

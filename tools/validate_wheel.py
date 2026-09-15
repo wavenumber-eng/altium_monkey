@@ -12,14 +12,14 @@ import tempfile
 import zipfile
 
 
-OPTIONAL_DISTRIBUTIONS = ("cadquery", "cascadio", "trimesh")
+OPTIONAL_DISTRIBUTIONS = ("cadquery", "casadi", "cascadio", "trimesh")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--python", required=True, dest="python_selector")
-    parser.add_argument("--mode", choices=("core", "test"), required=True)
+    parser.add_argument("--mode", choices=("core", "test", "examples"), required=True)
     parser.add_argument("--tests-root", type=Path, default=Path("tests"))
     parser.add_argument("--expected-version", default=None)
     return parser.parse_args(argv)
@@ -47,9 +47,13 @@ def wheel_install_command(
 ) -> list[str]:
     """Return a cache-independent command that prohibits dependency builds."""
 
-    if mode not in {"core", "test"}:
+    if mode not in {"core", "test", "examples"}:
         raise ValueError(f"unsupported wheel validation mode: {mode}")
-    requirement = str(wheel_path) if mode == "core" else f"{wheel_path}[test]"
+    requirement = {
+        "core": str(wheel_path),
+        "test": f"{wheel_path}[test]",
+        "examples": f"{wheel_path}[examples,test]",
+    }[mode]
     return [
         "uv",
         "pip",
@@ -60,6 +64,31 @@ def wheel_install_command(
         "--no-build",
         "--verbose",
         requirement,
+    ]
+
+
+def wheel_pytest_command(
+    python_path: Path,
+    tests_root: Path,
+    *,
+    mode: str,
+) -> list[str]:
+    """Return the exact public-test selection for an installed wheel mode."""
+
+    marker = {
+        "test": "not optional_example",
+        "examples": "optional_example",
+    }.get(mode)
+    if marker is None:
+        raise ValueError(f"mode has no pytest selection: {mode}")
+    return [
+        str(python_path),
+        "-m",
+        "pytest",
+        str(tests_root),
+        "-m",
+        marker,
+        "-q",
     ]
 
 
@@ -185,7 +214,7 @@ def validate_wheel(
     tests_root = tests_root.resolve()
     if not wheel_path.is_file() or wheel_path.suffix != ".whl":
         raise SystemExit(f"wheel does not exist: {wheel_path}")
-    if mode == "test" and not tests_root.is_dir():
+    if mode != "core" and not tests_root.is_dir():
         raise SystemExit(f"public tests directory does not exist: {tests_root}")
 
     digest = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
@@ -243,9 +272,23 @@ def validate_wheel(
                 cwd=validation_root,
                 environment=environment,
             )
+        elif mode == "test":
+            _run(
+                wheel_pytest_command(
+                    python_path,
+                    tests_root,
+                    mode="test",
+                ),
+                cwd=validation_root,
+                environment=environment,
+            )
         else:
             _run(
-                [str(python_path), "-m", "pytest", str(tests_root), "-q"],
+                wheel_pytest_command(
+                    python_path,
+                    tests_root,
+                    mode="examples",
+                ),
                 cwd=validation_root,
                 environment=environment,
             )

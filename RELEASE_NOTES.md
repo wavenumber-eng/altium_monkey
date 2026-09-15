@@ -1,3 +1,46 @@
+# altium-monkey 2026.09.15 Release Notes
+
+Package version: `2026.9.15`
+
+This release fixes record-text compatibility for documents Altium accepts but
+strict decoding rejected, restores dash patterns in default schematic SVG
+output, and makes large-document parsing and rendering substantially faster.
+
+## Changes
+
+- Fixed record-text decoding so PcbDoc, PcbLib, SchDoc, and SchLib files
+  containing the five legacy byte values accepted by Altium's Windows text
+  reader load correctly instead of failing. Writers preserve the same bytes on
+  save, and existing Unicode companion fields are kept intact.
+- Matched Altium's replacement behavior for malformed `%UTF8%`-marked fields
+  while preserving the existing recovery warning for historical unmarked
+  UTF-8 records.
+- Fixed default (onscreen) schematic SVG output dropping dash patterns from
+  pen-carrying primitives (public issue #59). Dashed, dotted, and dash-dot
+  Blanket borders and harness bundle lines now serialize their pen dash style
+  as `stroke-dasharray` in every pen-bearing geometry element. Dash patterns
+  match Altium's on-screen renderer: they scale with the stroke width, and
+  dotted styles render as round dots. Native-parity (`native_altium`) output
+  is unchanged.
+- Fixed a quadratic slowdown in `AltiumSchDoc` parsing and SVG rendering
+  introduced with the live `all_objects` query view, and removed repeated
+  case-insensitive key scans from the record read path (public issue #60).
+  Parsing a large real-world multi-sheet project is over 2x faster than
+  `2026.9.13.post1`; parsed values, round-trip output, and rendering are
+  identical.
+- Removed `SchSvgRenderOptions.bezier_segment_count`. The option had no
+  effect: bezier curves are flattened with a fixed subdivision depth that
+  Altium itself does not expose as a setting, so setting it was silently
+  ignored. Code that passed it should drop the argument; rendering output is
+  unchanged.
+- Reduced clean-install validation cost by moving CadQuery and CasADi from the
+  `test` extra to the `examples` extra. Install `altium-monkey[examples]` when
+  running examples that synthesize STEP geometry.
+
+No compiler, netlist, or compiled-schematic contract changes are included.
+
+---
+
 # altium-monkey 2026.09.13-2 Release Notes
 
 Package version: `2026.9.13.post1`

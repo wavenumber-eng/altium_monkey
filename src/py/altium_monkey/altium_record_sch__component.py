@@ -312,6 +312,9 @@ class AltiumSchComponent(SchGraphicalObject):
     ) -> None:
         super().parse_from_record(record, font_manager)
         s = AltiumSerializer()
+        # Read through the indexed case-insensitive copy captured by the base
+        # parse; case-insensitive lookups on the raw dict degrade to key scans.
+        r = self._record
 
         # Library reference
         self.lib_reference, self._has_lib_reference = self._read_dynamic_field(
@@ -324,34 +327,34 @@ class AltiumSchComponent(SchGraphicalObject):
             self._read_dynamic_field(s, record, Fields.SOURCE_LIBRARY_NAME, "")
         )
         self.component_description, self._has_component_description = s.read_str(
-            record, Fields.COMPONENT_DESCRIPTION, default=""
+            r, Fields.COMPONENT_DESCRIPTION, default=""
         )
         self._library_path_at_parse = self.library_path
         self.utf8_component_description = ""
 
         # Multi-part
         self.part_count, self._has_part_count = s.read_int(
-            record, Fields.PART_COUNT, default=0
+            r, Fields.PART_COUNT, default=0
         )
         _validate_signed_short(self.part_count, "PartCount")
         self.current_part_id, self._has_current_part_id = s.read_int(
-            record,
+            r,
             Fields.CURRENT_PART_ID,
             default=0,
         )
         if not self._has_current_part_id:
             self.current_part_id, self._has_current_part_id = s.read_int(
-                record,
+                r,
                 "CurrentPartID",
                 default=0,
             )
         _validate_signed_short(self.current_part_id, "CurrentPartId")
         self.display_mode, self._has_display_mode = s.read_int(
-            record, Fields.DISPLAY_MODE, default=0
+            r, Fields.DISPLAY_MODE, default=0
         )
         _validate_unsigned_byte(self.display_mode, "DisplayMode")
         self.display_mode_count, self._has_display_mode_count = s.read_int(
-            record, Fields.DISPLAY_MODE_COUNT, default=0
+            r, Fields.DISPLAY_MODE_COUNT, default=0
         )
         _validate_display_mode_count(self.display_mode_count)
         self._part_count_at_parse = self.part_count
@@ -359,48 +362,44 @@ class AltiumSchComponent(SchGraphicalObject):
         self._display_mode_count_at_parse = self.display_mode_count
 
         # Orientation
-        orient_val, self._has_orientation = s.read_int(
-            record, Fields.ORIENTATION, default=0
-        )
+        orient_val, self._has_orientation = s.read_int(r, Fields.ORIENTATION, default=0)
         self.orientation = Rotation90(orient_val)
         self.is_mirrored, self._has_is_mirrored = s.read_bool(
-            record, Fields.IS_MIRRORED, default=False
+            r, Fields.IS_MIRRORED, default=False
         )
 
         # Visibility
         self.show_hidden_pins, self._has_show_hidden_pins = s.read_bool(
-            record, Fields.SHOW_HIDDEN_PINS, default=False
+            r, Fields.SHOW_HIDDEN_PINS, default=False
         )
         self.show_hidden_fields, self._has_show_hidden_fields = s.read_bool(
-            record, Fields.SHOW_HIDDEN_FIELDS, default=False
+            r, Fields.SHOW_HIDDEN_FIELDS, default=False
         )
         self.display_field_names, self._has_display_field_names = s.read_bool(
-            record, Fields.DISPLAY_FIELD_NAMES, default=False
+            r, Fields.DISPLAY_FIELD_NAMES, default=False
         )
 
         # Locking
         self.designator_locked, self._has_designator_locked = s.read_bool(
-            record, Fields.DESIGNATOR_LOCKED, default=False
+            r, Fields.DESIGNATOR_LOCKED, default=False
         )
         self.part_id_locked, self._has_part_id_locked = s.read_bool(
-            record, Fields.PART_ID_LOCKED, default=self.designator_locked
+            r, Fields.PART_ID_LOCKED, default=self.designator_locked
         )
         self._source_part_id_locked = self.part_id_locked
         self.pins_moveable, self._has_pins_moveable = s.read_bool(
-            record, Fields.PINS_MOVEABLE, default=False
+            r, Fields.PINS_MOVEABLE, default=False
         )
 
         # Colors - Local Colors override
         self.override_colors, self._has_override_colors = s.read_bool(
-            record, Fields.OVERRIDE_COLORS, default=False
+            r, Fields.OVERRIDE_COLORS, default=False
         )
-        self.color, self._has_color = s.read_color(record, Fields.COLOR, default=0)
+        self.color, self._has_color = s.read_color(r, Fields.COLOR, default=0)
         self.area_color, self._has_area_color = s.read_color(
-            record, Fields.AREA_COLOR, default=0
+            r, Fields.AREA_COLOR, default=0
         )
-        pin_color, self._has_pin_color = s.read_color(
-            record, Fields.PIN_COLOR, default=0
-        )
+        pin_color, self._has_pin_color = s.read_color(r, Fields.PIN_COLOR, default=0)
         self.pin_color = int(pin_color or 0)
         self._capture_graphical_source_state()
 
@@ -432,7 +431,7 @@ class AltiumSchComponent(SchGraphicalObject):
         self._source_library_name_at_parse = self.source_library_name
         self._database_table_name_at_parse = self.database_table_name
         not_use_db_table_name, has_not_use_db_table_name = s.read_bool(
-            record,
+            r,
             "NotUseDBTableName",
             default=False,
         )
@@ -441,12 +440,12 @@ class AltiumSchComponent(SchGraphicalObject):
             self._has_use_db_table_name = True
         else:
             self.use_db_table_name, self._has_use_db_table_name = s.read_bool(
-                record,
+                r,
                 Fields.USE_DB_TABLE_NAME,
                 default=True,
             )
         not_use_library_name, has_not_use_library_name = s.read_bool(
-            record,
+            r,
             "NotUseLibraryName",
             default=False,
         )
@@ -455,7 +454,7 @@ class AltiumSchComponent(SchGraphicalObject):
             self._has_use_library_name = True
         else:
             self.use_library_name, self._has_use_library_name = s.read_bool(
-                record,
+                r,
                 Fields.USE_LIBRARY_NAME,
                 default=True,
             )
@@ -517,7 +516,7 @@ class AltiumSchComponent(SchGraphicalObject):
         (
             self.has_only_current_part_info,
             self._has_has_only_current_part_info,
-        ) = s.read_bool(record, "HasOnlyCurrentPartInfo", default=False)
+        ) = s.read_bool(r, "HasOnlyCurrentPartInfo", default=False)
         self.key_component_unique_id, self._has_key_component_unique_id = (
             self._read_dynamic_field(s, record, "KeyComponentUniqueId", "")
         )
@@ -532,13 +531,13 @@ class AltiumSchComponent(SchGraphicalObject):
 
         # Pin count
         self.all_pin_count, self._has_all_pin_count = s.read_int(
-            record, Fields.ALL_PIN_COUNT, default=0
+            r, Fields.ALL_PIN_COUNT, default=0
         )
         _validate_signed_short(self.all_pin_count, "AllPinCount")
 
         # Footprint
         self.footprint, self._has_footprint = s.read_str(
-            record, Fields.FOOTPRINT, default=""
+            r, Fields.FOOTPRINT, default=""
         )
         self._footprint_at_parse = self.footprint
         self._capture_component_source_state()

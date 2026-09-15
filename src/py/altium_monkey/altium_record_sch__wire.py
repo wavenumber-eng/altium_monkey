@@ -170,17 +170,20 @@ class AltiumSchWire(SchGraphicalObject):
 
         # Use serializer for field reading (case-insensitive)
         s = AltiumSerializer()
+        # Read through the indexed case-insensitive copy captured by the base
+        # parse; case-insensitive lookups on the raw dict degrade to key scans.
+        r = self._record
 
         # Parse line width
         line_width_val, self._has_line_width = s.read_int(
-            record, Fields.LINE_WIDTH, default=0
+            r, Fields.LINE_WIDTH, default=0
         )
         self.line_width = LineWidth(line_width_val)
         # Note: Wire does NOT support LineStyle, IsSolid, Transparent - ignore if present
 
         # Wire-specific fields (per native file format implementation)
         underline_val, self._has_underline_color = s.read_color(
-            record, Fields.UNDERLINE_COLOR, default=0
+            r, Fields.UNDERLINE_COLOR, default=0
         )
         self.underline_color = int(underline_val or 0)
         (
@@ -188,20 +191,20 @@ class AltiumSchWire(SchGraphicalObject):
             self._has_assigned_interface,
             self._used_utf8_assigned_interface,
         ) = read_dynamic_string_field(
-            s, record, self._record, Fields.ASSIGNED_INTERFACE, default=""
+            s, record, r, Fields.ASSIGNED_INTERFACE, default=""
         )
         (
             self.assigned_interface_signal,
             self._has_assigned_interface_signal,
             self._used_utf8_assigned_interface_signal,
         ) = read_dynamic_string_field(
-            s, record, self._record, Fields.ASSIGNED_INTERFACE_SIGNAL, default=""
+            s, record, r, Fields.ASSIGNED_INTERFACE_SIGNAL, default=""
         )
-        self._parse_family_dynamic_unique_id(s, record)
+        self._parse_family_dynamic_unique_id(s, r)
 
         # Parse points
-        point_count, _ = s.read_int(record, Fields.LOCATION_COUNT, default=0)
-        extra_point_count, _ = s.read_int(record, "EXTRALOCATIONCOUNT", default=0)
+        point_count, _ = s.read_int(r, Fields.LOCATION_COUNT, default=0)
+        extra_point_count, _ = s.read_int(r, "EXTRALOCATIONCOUNT", default=0)
         _validate_schematic_vertex_counts(point_count, extra_point_count)
         self.points = []
 
@@ -209,21 +212,22 @@ class AltiumSchWire(SchGraphicalObject):
             # Managed SchDataVertices accepts extended points even when the
             # primary count is zero.
             for i in range(point_count):
-                x, x_frac = read_indexed_coord(record, f"X{i + 1}")
-                y, y_frac = read_indexed_coord(record, f"Y{i + 1}")
+                x, x_frac = read_indexed_coord(r, f"X{i + 1}")
+                y, y_frac = read_indexed_coord(r, f"Y{i + 1}")
                 self.points.append(CoordPoint(x, y, x_frac, y_frac))
 
             for i in range(point_count + 1, point_count + extra_point_count + 1):
-                x, x_frac = read_indexed_coord(record, f"EX{i}")
-                y, y_frac = read_indexed_coord(record, f"EY{i}")
+                x, x_frac = read_indexed_coord(r, f"EX{i}")
+                y, y_frac = read_indexed_coord(r, f"EY{i}")
                 self.points.append(CoordPoint(x, y, x_frac, y_frac))
         else:
             # No LocationCount - count X/Y fields manually
+            # (membership stays exact-case on the raw record, as before)
             i = 1
             while f"X{i}" in record or f"Y{i}" in record:
                 _validate_schematic_vertex_total(i)
-                x, x_frac = read_indexed_coord(record, f"X{i}")
-                y, y_frac = read_indexed_coord(record, f"Y{i}")
+                x, x_frac = read_indexed_coord(r, f"X{i}")
+                y, y_frac = read_indexed_coord(r, f"Y{i}")
                 self.points.append(CoordPoint(x, y, x_frac, y_frac))
                 i += 1
 

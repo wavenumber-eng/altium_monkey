@@ -145,23 +145,26 @@ class AltiumSchParameter(SingleFontBindableRecordMixin, SchPrimitive):
         self._font_manager = font_manager
         self._public_font_spec = None
         s = AltiumSerializer()
-        r = self._record  # Case-insensitive view (still needed for UTF8 handling)
-        self._parse_family_dynamic_unique_id(s, record)
+        # Read through the indexed case-insensitive copy captured by the base
+        # parse; the raw record argument may be a plain dict whose
+        # case-insensitive lookups degrade to full key scans.
+        r = self._record
+        self._parse_family_dynamic_unique_id(s, r)
         if self.owner_part_id is None:
             self.owner_part_id = 0
 
         # Location (SchDoc uses TitleCase, SchLib uses UPPERCASE)
-        x, x_frac, self._has_location_x = s.read_coord(record, "Location", "X")
-        y, y_frac, self._has_location_y = s.read_coord(record, "Location", "Y")
+        x, x_frac, self._has_location_x = s.read_coord(r, "Location", "X")
+        y, y_frac, self._has_location_y = s.read_coord(r, "Location", "Y")
         self.location = CoordPoint(x, y, x_frac, y_frac)
 
         # Name and Text
-        self.name, self._has_name = s.read_str(record, Fields.NAME, default="")
+        self.name, self._has_name = s.read_str(r, Fields.NAME, default="")
         # Prefer %UTF8%Text for Unicode support (Greek letters like Omega, +/- , micro, deg, etc.)
         # Fall back to Text/TEXT for ASCII-only content
         self.text, self._has_text, self._used_utf8_text = read_dynamic_string_field(
             s,
-            record,
+            r,
             r,
             Fields.TEXT,
             default="",
@@ -169,38 +172,38 @@ class AltiumSchParameter(SingleFontBindableRecordMixin, SchPrimitive):
 
         # Use read_font_id for translation support
         self.font_id, self._has_font_id = s.read_font_id(
-            record, Fields.FONT_ID, font_manager, default=1
+            r, Fields.FONT_ID, font_manager, default=1
         )
         orientation_val, self._has_orientation = s.read_int(
-            record, Fields.ORIENTATION, default=0
+            r, Fields.ORIENTATION, default=0
         )
         self.orientation = TextOrientation(orientation_val)
         justification_val, self._has_justification = s.read_int(
-            record, Fields.JUSTIFICATION, default=0
+            r, Fields.JUSTIFICATION, default=0
         )
         self.justification = TextJustification(justification_val)
 
         self.is_hidden, self._has_is_hidden = s.read_bool(
-            record, Fields.IS_HIDDEN, default=False
+            r, Fields.IS_HIDDEN, default=False
         )
         self.is_mirrored, self._has_is_mirrored = s.read_bool(
-            record, Fields.IS_MIRRORED, default=False
+            r, Fields.IS_MIRRORED, default=False
         )
 
         # Color field
-        color_val, self._has_color = s.read_color(record, Fields.COLOR, default=0)
+        color_val, self._has_color = s.read_color(r, Fields.COLOR, default=0)
         self.color = color_val
 
         self.param_type, self._has_param_type = s.read_int(
-            record, Fields.PARAM_TYPE, default=0
+            r, Fields.PARAM_TYPE, default=0
         )
         self.show_name, self._has_show_name = s.read_bool(
-            record, Fields.SHOW_NAME, default=False
+            r, Fields.SHOW_NAME, default=False
         )
 
         # ReadOnlyState (0=None, 1=Name, 2=Value, 3=NameAndValue)
         ro_val, self._has_read_only_state = s.read_int(
-            record, Fields.READ_ONLY_STATE, default=0
+            r, Fields.READ_ONLY_STATE, default=0
         )
         if self._has_read_only_state:
             self.read_only_state = ReadOnlyState(ro_val)
@@ -211,45 +214,45 @@ class AltiumSchParameter(SingleFontBindableRecordMixin, SchPrimitive):
             self._used_utf8_description,
         ) = read_dynamic_string_field(
             s,
-            record,
+            r,
             r,
             Fields.DESCRIPTION,
             default="",
         )
 
         not_allow_library_sync, self._has_allow_library_synchronize = s.read_bool(
-            record,
+            r,
             Fields.NOT_ALLOW_LIBRARY_SYNCHRONIZE,
             default=False,
         )
         self.allow_library_synchronize = not not_allow_library_sync
 
         not_allow_database_sync, self._has_allow_database_synchronize = s.read_bool(
-            record,
+            r,
             Fields.NOT_ALLOW_DATABASE_SYNCHRONIZE,
             default=False,
         )
         self.allow_database_synchronize = not not_allow_database_sync
 
         not_auto_position, self._has_auto_position = s.read_bool(
-            record,
+            r,
             Fields.NOT_AUTO_POSITION,
             default=False,
         )
         self.auto_position = not not_auto_position
 
         self.text_horz_anchor, self._has_text_horz_anchor = s.read_int(
-            record,
+            r,
             Fields.TEXT_HORZ_ANCHOR,
             default=0,
         )
         self.text_vert_anchor, self._has_text_vert_anchor = s.read_int(
-            record,
+            r,
             Fields.TEXT_VERT_ANCHOR,
             default=0,
         )
         self.is_image_parameter, self._has_is_image_parameter = s.read_bool(
-            record,
+            r,
             Fields.IS_IMAGE_PARAMETER,
             default=False,
         )

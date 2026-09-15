@@ -6,6 +6,13 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: python-314-wheel-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     name: Build and validate Python 3.14 wheel
@@ -55,6 +62,17 @@ jobs:
           fi
           wheel="${wheels[0]}"
           uv run --locked --python 3.14 python tools/validate_wheel.py --mode core --python 3.14 --wheel "${wheel}" --tests-root tests
+
+      - name: Validate optional example dependencies and examples
+        shell: bash
+        run: |
+          mapfile -d '' wheels < <(find dist -maxdepth 1 -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "Expected exactly one wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          uv run --locked --python 3.14 python tools/validate_wheel.py --mode examples --python 3.14 --wheel "${wheel}" --tests-root tests
 
       - name: Validate Python 3.12 package imports
         shell: bash

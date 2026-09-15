@@ -132,10 +132,6 @@ class SchSvgRenderOptions:
     # False = use SVG cubic bezier path commands (default, visually identical)
     bezier_as_lines: bool = False
 
-    # Number of line segments when bezier_as_lines=True
-    # Default 32 matches native Altium SVG export (GDI+ flattening)
-    bezier_segment_count: int = 32
-
     # Parameter substitution mode
     # True = substitute =PARAM_NAME with resolved values
     # False = keep parameter names as-is

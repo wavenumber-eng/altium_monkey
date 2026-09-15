@@ -643,10 +643,13 @@ class AltiumSchPolyline(_LineStyleDirtyMixin, SchGraphicalObject):
 
         # Use serializer for field reading (case-insensitive)
         s = AltiumSerializer()
+        # Read through the indexed case-insensitive copy captured by the base
+        # parse; case-insensitive lookups on the raw dict degrade to key scans.
+        r = self._record
 
         # Parse line properties
         line_width_val, self._has_line_width = s.read_int(
-            record, Fields.LINE_WIDTH, default=0
+            r, Fields.LINE_WIDTH, default=0
         )
         self.line_width = LineWidth(line_width_val)
         self._apply_imported_color_defaults(area_color=False)
@@ -654,10 +657,10 @@ class AltiumSchPolyline(_LineStyleDirtyMixin, SchGraphicalObject):
 
         # LineStyle vs LineStyleExt: prefer LineStyleExt if LineStyle is 0
         line_style_val, self._has_line_style = s.read_int(
-            record, Fields.LINE_STYLE, default=0
+            r, Fields.LINE_STYLE, default=0
         )
         self.line_style_ext, self._has_line_style_ext = s.read_int(
-            record, Fields.LINE_STYLE_EXT, default=0
+            r, Fields.LINE_STYLE_EXT, default=0
         )
         self.line_style = LineStyle(max(line_style_val, self.line_style_ext))
         self._source_line_style = self.line_style
@@ -665,10 +668,10 @@ class AltiumSchPolyline(_LineStyleDirtyMixin, SchGraphicalObject):
 
         # Parse line shape (endings)
         start_shape_val, self._has_start_line_shape = s.read_int(
-            record, Fields.START_LINE_SHAPE, default=0
+            r, Fields.START_LINE_SHAPE, default=0
         )
         end_shape_val, self._has_end_line_shape = s.read_int(
-            record, Fields.END_LINE_SHAPE, default=0
+            r, Fields.END_LINE_SHAPE, default=0
         )
         self.start_line_shape = (
             LineShape(start_shape_val) if start_shape_val <= 6 else LineShape.NONE
@@ -677,7 +680,7 @@ class AltiumSchPolyline(_LineStyleDirtyMixin, SchGraphicalObject):
             LineShape(end_shape_val) if end_shape_val <= 6 else LineShape.NONE
         )
         line_shape_size_val, self._has_line_shape_size = s.read_int(
-            record, Fields.LINE_SHAPE_SIZE, default=0
+            r, Fields.LINE_SHAPE_SIZE, default=0
         )
         self.line_shape_size = (
             LineWidth(line_shape_size_val)
@@ -686,29 +689,29 @@ class AltiumSchPolyline(_LineStyleDirtyMixin, SchGraphicalObject):
         )
 
         # Parse vertices (vertex count + coordinates)
-        vertex_count, _ = s.read_int(record, Fields.LOCATION_COUNT, default=0)
-        extra_vertex_count, _ = s.read_int(record, "EXTRALOCATIONCOUNT", default=0)
+        vertex_count, _ = s.read_int(r, Fields.LOCATION_COUNT, default=0)
+        extra_vertex_count, _ = s.read_int(r, "EXTRALOCATIONCOUNT", default=0)
         _validate_schematic_vertex_counts(vertex_count, extra_vertex_count)
         self.vertices = []
         self._source_has_invalid_vertex_wire_value = False
 
         for i in range(vertex_count):
             # Vertices use indexed field names: X1, Y1, X2, Y2, etc.
-            x, x_frac = read_indexed_coord(record, f"X{i + 1}")
-            y, y_frac = read_indexed_coord(record, f"Y{i + 1}")
+            x, x_frac = read_indexed_coord(r, f"X{i + 1}")
+            y, y_frac = read_indexed_coord(r, f"Y{i + 1}")
             self.vertices.append(CoordPoint(x, y, x_frac, y_frac))
             self._source_has_invalid_vertex_wire_value |= (
-                indexed_coord_has_invalid_wire_value(record, f"X{i + 1}")
-                or indexed_coord_has_invalid_wire_value(record, f"Y{i + 1}")
+                indexed_coord_has_invalid_wire_value(r, f"X{i + 1}")
+                or indexed_coord_has_invalid_wire_value(r, f"Y{i + 1}")
             )
 
         for i in range(vertex_count + 1, vertex_count + extra_vertex_count + 1):
-            x, x_frac = read_indexed_coord(record, f"EX{i}")
-            y, y_frac = read_indexed_coord(record, f"EY{i}")
+            x, x_frac = read_indexed_coord(r, f"EX{i}")
+            y, y_frac = read_indexed_coord(r, f"EY{i}")
             self.vertices.append(CoordPoint(x, y, x_frac, y_frac))
             self._source_has_invalid_vertex_wire_value |= (
-                indexed_coord_has_invalid_wire_value(record, f"EX{i}")
-                or indexed_coord_has_invalid_wire_value(record, f"EY{i}")
+                indexed_coord_has_invalid_wire_value(r, f"EX{i}")
+                or indexed_coord_has_invalid_wire_value(r, f"EY{i}")
             )
         self._source_vertices = tuple(self.vertices)
 

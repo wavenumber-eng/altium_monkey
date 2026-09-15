@@ -215,6 +215,43 @@ def _stroke_opacity_attr(pen: dict[str, object]) -> str:
     return f' stroke-opacity="{alpha / 255.0}"'
 
 
+# Onscreen dash patterns follow the screen renderer's built-in dash styles,
+# which are defined in multiples of the stroke width with the pattern unit
+# floored at the 1px minimum pen width. Dots are zero-length dashes made
+# visible by the round line cap. Every pen-bearing op kind must consume this
+# map so dash pens survive serialization.
+_PEN_DASH_PATTERNS = {
+    "pdsDash": (2.0, 2.0),
+    "pdsDot": (0.0, 2.0),
+    "pdsDashDot": (2.0, 2.0, 0.0, 2.0),
+    "pdsDashDotDot": (2.0, 2.0, 0.0, 2.0, 0.0, 2.0),
+}
+
+# Native (metafile-parity) SVG export keeps the fixed legacy dash arrays for
+# shape pens; metafile line dashes are pre-segmented upstream, so this map
+# never applies to exploded line segments.
+_PEN_DASH_ARRAYS_NATIVE = {
+    "pdsDash": "4",
+    "pdsDot": "2",
+    "pdsDashDot": "4 2",
+}
+
+
+def _pen_dasharray(
+    pen: dict[str, object] | None, stroke_width: float, *, native: bool = False
+) -> str | None:
+    if not pen:
+        return None
+    dash_style = str(pen.get("dash_style", "") or "")
+    if native:
+        return _PEN_DASH_ARRAYS_NATIVE.get(dash_style)
+    pattern = _PEN_DASH_PATTERNS.get(dash_style)
+    if pattern is None:
+        return None
+    unit = max(stroke_width, 1.0)
+    return " ".join(_fmt_num(value * unit) for value in pattern)
+
+
 @dataclass(frozen=True)
 class SchGeometrySvgRenderOptions:
     """Rendering options for SVG generated from schematic geometry IR."""
@@ -239,6 +276,10 @@ class SchGeometrySvgRenderer:
         self._pattern_counter = 0
         self._painted_bundled_font_faces: set[_BundledFontFaceKey] = set()
         self._font_face_candidates: list[FontDiagnosticPayload] = []
+
+    @property
+    def _native_dash(self) -> bool:
+        return self.options.text_mode == "native_svg_export"
 
     def _next_clip_rect_id(self) -> str:
         self._clip_rect_counter += 1
@@ -1515,13 +1556,7 @@ class SchGeometrySvgRenderer:
                 attrs.append(f'stroke-opacity="{alpha / 255.0}"')
             stroke_width = _pen_width_to_svg(pen, units_per_px=units_per_px)
             attrs.append(f'stroke-width="{_fmt_num(stroke_width)}px"')
-            dash_style = str(pen.get("dash_style", "") or "")
-            dash_map = {
-                "pdsDash": "4",
-                "pdsDot": "2",
-                "pdsDashDot": "4 2",
-            }
-            dasharray = dash_map.get(dash_style)
+            dasharray = _pen_dasharray(pen, stroke_width, native=self._native_dash)
             if dasharray:
                 attrs.append(f'stroke-dasharray="{dasharray}"')
             if stroke_width <= 0.5 + 1e-9:
@@ -1557,6 +1592,8 @@ class SchGeometrySvgRenderer:
         stroke = pen.get("color_hex", "#000000")
         stroke_width = _pen_width_to_svg(pen, units_per_px=units_per_px)
         stroke_opacity = _stroke_opacity_attr(pen)
+        dasharray = _pen_dasharray(pen, stroke_width, native=self._native_dash)
+        dash_attr = f' stroke-dasharray="{dasharray}"' if dasharray else ""
         vector_effect = (
             ' vector-effect="non-scaling-stroke"' if stroke_width <= 0.5 + 1e-9 else ""
         )
@@ -1566,7 +1603,7 @@ class SchGeometrySvgRenderer:
                 f'<line x1="{_fmt_num(x1)}" y1="{_fmt_num(y1)}" '
                 f'x2="{_fmt_num(x2)}" y2="{_fmt_num(y2)}" '
                 f'stroke="{stroke}" stroke-width="{_fmt_num(stroke_width)}px"'
-                f"{stroke_opacity}{vector_effect}/>"
+                f"{stroke_opacity}{dash_attr}{vector_effect}/>"
             ]
 
         rendered: list[str] = []
@@ -1575,7 +1612,7 @@ class SchGeometrySvgRenderer:
                 f'<line x1="{_fmt_num(start[0])}" y1="{_fmt_num(start[1])}" '
                 f'x2="{_fmt_num(end[0])}" y2="{_fmt_num(end[1])}" '
                 f'stroke="{stroke}" stroke-width="{_fmt_num(stroke_width)}px"'
-                f"{stroke_opacity}{vector_effect}/>"
+                f"{stroke_opacity}{dash_attr}{vector_effect}/>"
             )
         return rendered
 
@@ -1613,6 +1650,7 @@ class SchGeometrySvgRenderer:
             else None
         )
         vector_effect = "non-scaling-stroke" if stroke_width <= 0.5 + 1e-9 else None
+        dasharray = _pen_dasharray(pen, stroke_width, native=self._native_dash)
 
         angle_diff = end_angle - start_angle
         if angle_diff < 0:
@@ -1630,6 +1668,7 @@ class SchGeometrySvgRenderer:
                     stroke_width=stroke_width,
                     fill=None,
                     stroke_opacity=stroke_opacity,
+                    stroke_dasharray=dasharray,
                     vector_effect=vector_effect,
                 )
             ]
@@ -1646,6 +1685,7 @@ class SchGeometrySvgRenderer:
                 stroke_width=stroke_width,
                 fill=None,
                 stroke_opacity=stroke_opacity,
+                stroke_dasharray=dasharray,
                 vector_effect=vector_effect,
             )
         ]
@@ -1930,6 +1970,9 @@ class SchGeometrySvgRenderer:
             attrs.append(f'stroke-opacity="{alpha / 255.0}"')
         stroke_width = _pen_width_to_svg(pen, units_per_px=units_per_px)
         attrs.append(f'stroke-width="{_fmt_num(stroke_width)}px"')
+        dasharray = _pen_dasharray(pen, stroke_width, native=self._native_dash)
+        if dasharray:
+            attrs.append(f'stroke-dasharray="{dasharray}"')
         if stroke_width <= 0.5 + 1e-9:
             attrs.append('vector-effect="non-scaling-stroke"')
         return attrs

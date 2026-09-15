@@ -89,21 +89,7 @@ def _get_case_insensitive(
     return default
 
 
-def _get_case_insensitive_str(
-    record: dict[str, object],
-    key: str,
-    default: str = "",
-) -> str:
-    value = _get_case_insensitive(record, key, default)
-    return default if value is None else str(value)
-
-
-def _get_case_insensitive_int(
-    record: dict[str, object],
-    key: str,
-    default: int = 0,
-) -> int:
-    value = _get_case_insensitive(record, key, default)
+def _coerce_case_insensitive_int(value: object | None, default: int = 0) -> int:
     if value is None:
         return default
     if not isinstance(value, int | float | str):
@@ -111,12 +97,40 @@ def _get_case_insensitive_int(
     return int(value)
 
 
-def _has_case_insensitive(record: dict[str, object], key: str) -> bool:
+class _FoldedRecordView:
     """
-    Check if key exists in record with case-insensitive lookup.
+    Casefolded first-match index over one record for repeated field reads.
+
+    Lookups mirror _get_case_insensitive / _has_case_insensitive exactly: an
+    exact (record-native) hit wins, then the first case-insensitive match in
+    record iteration order. Build only after record mutation is finished; the
+    index does not track later changes.
     """
-    normalized = key.casefold()
-    return any(actual_key.casefold() == normalized for actual_key in record)
+
+    __slots__ = ("record", "folded")
+
+    def __init__(self, record: dict[str, object]) -> None:
+        self.record = record
+        folded: dict[str, object] = {}
+        for actual_key, value in record.items():
+            folded.setdefault(actual_key.casefold(), value)
+        self.folded = folded
+
+    def has(self, key: str) -> bool:
+        return key in self.record or key.casefold() in self.folded
+
+    def get(self, key: str, default: object | None = None) -> object | None:
+        record = self.record
+        if key in record:
+            return record[key]
+        return self.folded.get(key.casefold(), default)
+
+    def get_int(self, key: str, default: int = 0) -> int:
+        return _coerce_case_insensitive_int(self.get(key, default), default)
+
+    def get_str(self, key: str, default: str = "") -> str:
+        value = self.get(key, default)
+        return default if value is None else str(value)
 
 
 def _remove_case_insensitive(record: dict[str, object], *fields: str) -> None:
@@ -197,7 +211,28 @@ def _checked_i32(value: int, field: str) -> int:
     return value
 
 
-def _validate_pin_text_numeric_fields(record: dict[str, object]) -> None:
+def _folded_validated_int(
+    record: dict[str, object],
+    folded: dict[str, object],
+    field: str,
+) -> int | None:
+    """
+    Coerced int for a present field, or None when the field is absent.
+
+    Present fields never yield None: a stored None coerces to the 0 default,
+    matching _get_case_insensitive_int. Exact keys win over the first
+    case-insensitive match, matching _get_case_insensitive.
+    """
+    if field in record:
+        return _coerce_case_insensitive_int(record[field])
+    normalized = field.casefold()
+    if normalized not in folded:
+        return None
+    return _coerce_case_insensitive_int(folded[normalized])
+
+
+def _validate_pin_text_numeric_fields(view: _FoldedRecordView) -> None:
+    record = view.record
     field_groups = (
         (
             (
@@ -230,10 +265,14 @@ def _validate_pin_text_numeric_fields(record: dict[str, object]) -> None:
             _checked_i16,
         ),
     )
+    # The shared casefolded first-value view replaces a full key scan per
+    # checked field while keeping the first match like the scan it replaces.
+    folded = view.folded
     for fields, validator in field_groups:
         for field in fields:
-            if _has_case_insensitive(record, field):
-                validator(_get_case_insensitive_int(record, field), field)
+            present = _folded_validated_int(record, folded, field)
+            if present is not None:
+                validator(present, field)
     for field in (
         "OwnerPartDisplayMode",
         "FormalType",
@@ -247,17 +286,16 @@ def _validate_pin_text_numeric_fields(record: dict[str, object]) -> None:
         "PinName_PositionConglomerate",
         "PinDesignator_PositionConglomerate",
     ):
-        if _has_case_insensitive(record, field):
-            _checked_u8(_get_case_insensitive_int(record, field), field)
-    if _has_case_insensitive(record, "Color"):
-        _checked_unsigned(
-            _get_case_insensitive_int(record, "Color"), 0xFFFF_FFFF, "Color"
-        )
+        present = _folded_validated_int(record, folded, field)
+        if present is not None:
+            _checked_u8(present, field)
+    color = _folded_validated_int(record, folded, "Color")
+    if color is not None:
+        _checked_unsigned(color, 0xFFFF_FFFF, "Color")
     for field in ("Name_CustomColor", "Designator_CustomColor"):
-        if _has_case_insensitive(record, field):
-            _checked_unsigned(
-                _get_case_insensitive_int(record, field), 0x7FFF_FFFF, field
-            )
+        present = _folded_validated_int(record, folded, field)
+        if present is not None:
+            _checked_unsigned(present, 0x7FFF_FFFF, field)
 
 
 def _append_pascal_cp1252(data: bytearray, value: str, field: str) -> None:
@@ -710,11 +748,11 @@ def _apply_constructor_text_settings(
 
 
 def _parse_pin_visibility_flags(
-    record: dict[str, Any], pin_conglomerate: int
+    view: _FoldedRecordView, pin_conglomerate: int
 ) -> tuple[bool, bool, bool, bool]:
     def _flag(field_name: str, bit_mask: int) -> bool:
-        if _has_case_insensitive(record, field_name):
-            return parse_bool(_get_case_insensitive(record, field_name))
+        if view.has(field_name):
+            return parse_bool(view.get(field_name))
         return (pin_conglomerate & bit_mask) != 0
 
     return (
@@ -763,12 +801,12 @@ def _apply_pin_text_position_conglomerate(
 
 
 def _read_optional_pin_text_value(
-    record: dict[str, Any],
+    view: _FoldedRecordView,
     *field_names: str,
 ) -> Any:
     for field_name in field_names:
-        if _has_case_insensitive(record, field_name):
-            value = _get_case_insensitive(record, field_name)
+        if view.has(field_name):
+            value = view.get(field_name)
             if isinstance(value, str):
                 try:
                     return int(value)
@@ -779,7 +817,7 @@ def _read_optional_pin_text_value(
 
 
 def _parse_pin_text_settings_from_record(
-    record: dict[str, Any],
+    view: _FoldedRecordView,
     *,
     settings: PinTextSettings,
     prefix: str,
@@ -788,61 +826,59 @@ def _parse_pin_text_settings_from_record(
     legacy_prefix = f"{prefix}_"
     _apply_pin_text_position_conglomerate(
         settings,
-        value=_read_optional_pin_text_value(
-            record, f"Pin{prefix}_PositionConglomerate"
-        ),
+        value=_read_optional_pin_text_value(view, f"Pin{prefix}_PositionConglomerate"),
     )
 
-    font_mode = _read_optional_pin_text_value(record, f"{prefix}FontMode")
+    font_mode = _read_optional_pin_text_value(view, f"{prefix}FontMode")
     if font_mode is not None:
         settings.font_mode = PinItemMode(int(font_mode))
-    position_mode = _read_optional_pin_text_value(record, f"{prefix}PositionMode")
+    position_mode = _read_optional_pin_text_value(view, f"{prefix}PositionMode")
     if position_mode is not None:
         settings.position_mode = PinItemMode(int(position_mode))
     rotation_relative = _read_optional_pin_text_value(
-        record, f"{prefix}CustomRotationRelative"
+        view, f"{prefix}CustomRotationRelative"
     )
     if rotation_relative is not None:
         settings.rotation = Rotation90(int(rotation_relative))
     rotation_anchor = _read_optional_pin_text_value(
-        record, f"{prefix}CustomRotationAnchor"
+        view, f"{prefix}CustomRotationAnchor"
     )
     if rotation_anchor is not None:
         settings.rotation_anchor = PinTextAnchor(int(rotation_anchor))
 
     position_margin = _read_optional_pin_text_value(
-        record,
+        view,
         f"{legacy_prefix}CustomPosition_Margin",
         f"{prefix}CustomPositionMargin",
     )
     if position_margin is not None:
         settings.position_margin = int(position_margin)
     position_margin_frac = _read_optional_pin_text_value(
-        record,
+        view,
         f"{legacy_prefix}CustomPosition_Margin_Frac",
         f"{prefix}CustomPositionMarginFrac",
     )
     if position_margin_frac is not None:
         settings.position_margin_frac = int(position_margin_frac)
     vertical_margin = _read_optional_pin_text_value(
-        record, f"{prefix}_CustomPosition_VerticalMargin"
+        view, f"{prefix}_CustomPosition_VerticalMargin"
     )
     if vertical_margin is not None:
         settings.position_vertical_margin = int(vertical_margin)
     vertical_margin_frac = _read_optional_pin_text_value(
-        record, f"{prefix}_CustomPosition_VerticalMargin_Frac"
+        view, f"{prefix}_CustomPosition_VerticalMargin_Frac"
     )
     if vertical_margin_frac is not None:
         settings.position_vertical_margin_frac = int(vertical_margin_frac)
     font_id = _read_optional_pin_text_value(
-        record,
+        view,
         f"{legacy_prefix}CustomFontID",
         f"{prefix}CustomFontID",
     )
     if font_id is not None:
         settings.font_id = _translate_pin_font_id(font_manager, int(font_id))
     color = _read_optional_pin_text_value(
-        record,
+        view,
         f"{legacy_prefix}CustomColor",
         f"{prefix}CustomColor",
     )
@@ -1418,28 +1454,29 @@ class AltiumSchPin(SchPrimitive):
                 Note: Altium files may have UPPERCASE keys (older exports) or MixedCase
                 keys (newer exports). All lookups use case-insensitive helpers.
         """
-        _validate_pin_text_numeric_fields(record)
+        # The parse below never mutates the record, so one shared casefolded
+        # view serves validation and every optional-field read.
+        view = _FoldedRecordView(record)
+        _validate_pin_text_numeric_fields(view)
 
         # Location - use case-insensitive lookup for LOCATION.X vs Location.X
         self.location = CoordPoint(
-            _get_case_insensitive_int(record, "Location.X", 0),
-            _get_case_insensitive_int(record, "Location.Y", 0),
+            view.get_int("Location.X", 0),
+            view.get_int("Location.Y", 0),
         )
 
         # Fractional precision (legacy Altium format, sub-10000 precision)
         # Only set if present in original record (use None = not present)
-        if _has_case_insensitive(record, "Location.X_Frac"):
-            frac_val = _get_case_insensitive_int(record, "Location.X_Frac", 0)
+        if view.has("Location.X_Frac"):
+            frac_val = view.get_int("Location.X_Frac", 0)
             self.location_x_frac = frac_val
             self.location.x_frac = frac_val
-        if _has_case_insensitive(record, "Location.Y_Frac"):
-            frac_val = _get_case_insensitive_int(record, "Location.Y_Frac", 0)
+        if view.has("Location.Y_Frac"):
+            frac_val = view.get_int("Location.Y_Frac", 0)
             self.location_y_frac = frac_val
             self.location.y_frac = frac_val
-        if _has_case_insensitive(record, "PinLength_Frac"):
-            self.pin_length_frac = _get_case_insensitive_int(
-                record, "PinLength_Frac", 0
-            )
+        if view.has("PinLength_Frac"):
+            self.pin_length_frac = view.get_int("PinLength_Frac", 0)
 
         # Basic properties
         # Note: Altium omits Name/Designator fields when they're empty strings.
@@ -1472,7 +1509,7 @@ class AltiumSchPin(SchPrimitive):
         )
 
         # Length - default to 0 because Altium omits PinLength field when length=0
-        self.length = _get_case_insensitive_int(record, "PinLength", 0)
+        self.length = view.get_int("PinLength", 0)
 
         # Compute _length_mils at parse time from the whole and fractional fields.
         # Formula: length is in 10-mil units, pin_length_frac is in DXP units (1/10000 mil)
@@ -1482,37 +1519,31 @@ class AltiumSchPin(SchPrimitive):
 
         # Orientation - can come from 'Orientation' field OR from PinConglomerate bits 0-1
         # In SchDoc text records, orientation is stored in PinConglomerate, not a separate field
-        if _has_case_insensitive(record, "Orientation"):
-            self.orientation = Rotation90(
-                _get_case_insensitive_int(record, "Orientation") & 0x03
-            )
+        if view.has("Orientation"):
+            self.orientation = Rotation90(view.get_int("Orientation") & 0x03)
         else:
             # Extract from PinConglomerate (bits 0-1)
-            pin_conglomerate = _get_case_insensitive_int(record, "PinConglomerate", 0)
+            pin_conglomerate = view.get_int("PinConglomerate", 0)
             self.orientation = Rotation90(pin_conglomerate & 0x03)
 
         # Electrical type
-        self.electrical = _import_pin_electrical(
-            _get_case_insensitive_int(record, "Electrical", 0)
-        )
+        self.electrical = _import_pin_electrical(view.get_int("Electrical", 0))
 
         # FormalType native JSON field
-        self.formal_type = StdLogicState(
-            _get_case_insensitive_int(record, "FormalType", 0)
-        )
+        self.formal_type = StdLogicState(view.get_int("FormalType", 0))
 
-        pin_conglomerate = _get_case_insensitive_int(record, "PinConglomerate", 0)
+        pin_conglomerate = view.get_int("PinConglomerate", 0)
         (
             self.is_hidden,
             self.show_name,
             self.show_designator,
             self.is_not_accessible,
-        ) = _parse_pin_visibility_flags(record, pin_conglomerate)
+        ) = _parse_pin_visibility_flags(view, pin_conglomerate)
         # ImportPin intentionally clears the persisted conglomerate lock bit.
         self.graphically_locked = False
 
         # Color
-        self.color = _get_case_insensitive_int(record, "Color", 0)
+        self.color = view.get_int("Color", 0)
 
         (
             self.symbol_inner,
@@ -1523,17 +1554,17 @@ class AltiumSchPin(SchPrimitive):
         ) = _parse_pin_symbol_fields(self._record)
 
         # Owner tracking
-        if _has_case_insensitive(record, "OwnerIndex"):
-            self.owner_index = _get_case_insensitive_int(record, "OwnerIndex")
-        if _has_case_insensitive(record, "OwnerIndexForSaveAdditionalList"):
+        if view.has("OwnerIndex"):
+            self.owner_index = view.get_int("OwnerIndex")
+        if view.has("OwnerIndexForSaveAdditionalList"):
             self.owner_index_additional_list = parse_bool(
-                _get_case_insensitive(record, "OwnerIndexForSaveAdditionalList")
+                view.get("OwnerIndexForSaveAdditionalList")
             )
 
         # Swap IDs
         # SwapIdPin is for individual pin ID
-        self.swap_id_pin = _get_case_insensitive_str(record, "SwapIdPin", "")
-        self.swap_id_pair = _get_case_insensitive_str(record, "SwapIdPair", "")
+        self.swap_id_pin = view.get_str("SwapIdPin", "")
+        self.swap_id_pair = view.get_str("SwapIdPair", "")
         # SwapIDPart stores part/sequence mapping (e.g., "|&|" or "part|&|seq").
         # Native import reads this through MBCS processing, so escaped pipe
         # sentinels such as 0xA6 must become literal separators before binary
@@ -1560,34 +1591,32 @@ class AltiumSchPin(SchPrimitive):
             "DefaultValue",
             default="",
         )
-        self.pin_package_length = _get_case_insensitive_int(
-            record, "PinPackageLength", 0
-        ) * 100000 + _get_case_insensitive_int(record, "PinPackageLength_Frac", 0)
-        self.propagation_delay = _parse_pin_delay(
-            _get_case_insensitive(record, "PinPropagationDelay", 0.0)
-        )
+        self.pin_package_length = view.get_int(
+            "PinPackageLength", 0
+        ) * 100000 + view.get_int("PinPackageLength_Frac", 0)
+        self.propagation_delay = _parse_pin_delay(view.get("PinPropagationDelay", 0.0))
         self.hide_name_as_function = parse_bool(
-            _get_case_insensitive(record, "HidePinNameAsFunction", False)
+            view.get("HidePinNameAsFunction", False)
         )
         self.selected_functions = self._parse_alternate_pin_functions(
-            record, "PinSelectedFunctionsCount", "PinSelectedFunction"
+            view, "PinSelectedFunctionsCount", "PinSelectedFunction"
         )
         self.defined_functions = self._parse_alternate_pin_functions(
-            record, "PinDefinedFunctionsCount", "PinDefinedFunction"
+            view, "PinDefinedFunctionsCount", "PinDefinedFunction"
         )
-        self.symbolic_name = _get_case_insensitive_str(record, "PinSymbolicName", "")
+        self.symbolic_name = view.get_str("PinSymbolicName", "")
         self.show_symbolic_name_as_function = parse_bool(
-            _get_case_insensitive(record, "ShowPinSymbolicNameAsFunction", False)
+            view.get("ShowPinSymbolicNameAsFunction", False)
         )
 
         _parse_pin_text_settings_from_record(
-            record,
+            view,
             settings=self.name_settings,
             prefix="Name",
             font_manager=self._font_manager,
         )
         _parse_pin_text_settings_from_record(
-            record,
+            view,
             settings=self.designator_settings,
             prefix="Designator",
             font_manager=self._font_manager,
@@ -1613,23 +1642,17 @@ class AltiumSchPin(SchPrimitive):
                 self._designator_custom_position_margin,
                 self._designator_margin_mils,
             ) = _cache_pin_text_margin(self.designator_settings)
-        self.owner_part_id = _get_case_insensitive_int(record, "OwnerPartId", -1)
-        self.owner_part_display_mode = _get_case_insensitive_int(
-            record, "OwnerPartDisplayMode", 0
-        )
+        self.owner_part_id = view.get_int("OwnerPartId", -1)
+        self.owner_part_display_mode = view.get_int("OwnerPartDisplayMode", 0)
         self._capture_primitive_source_state()
         self._capture_pin_text_source_state()
-        self._raw_pin_conglomerate = _get_case_insensitive_int(
-            record, "PinConglomerate", 0
-        )
+        self._raw_pin_conglomerate = view.get_int("PinConglomerate", 0)
 
     @staticmethod
     def _parse_alternate_pin_functions(
-        record: dict[str, object], count_field: str, item_prefix: str
+        view: _FoldedRecordView, count_field: str, item_prefix: str
     ) -> list[str]:
-        count = _checked_i32(
-            _get_case_insensitive_int(record, count_field, 0), count_field
-        )
+        count = _checked_i32(view.get_int(count_field, 0), count_field)
         if count < 0:
             return []
         if count > MAX_INDEXED_ITEMS_PER_RECORD:
@@ -1637,8 +1660,7 @@ class AltiumSchPin(SchPrimitive):
                 f"{count_field} exceeds {MAX_INDEXED_ITEMS_PER_RECORD} entries"
             )
         return [
-            _get_case_insensitive_str(record, f"{item_prefix}{index}", "")
-            for index in range(1, count + 1)
+            view.get_str(f"{item_prefix}{index}", "") for index in range(1, count + 1)
         ]
 
     def _parse_binary(self, binary_data: bytes) -> None:

@@ -87,6 +87,7 @@ from .altium_record_types import (
     parse_bool,
 )
 from .altium_sch_binding import SchematicBindingContext
+from .altium_text_codec import decode_altium_ansi, encode_altium_ansi_lossy
 from .altium_sch_implementation_helpers import (
     build_footprint_implementation_payload,
     clean_implementation_child_record_fields,
@@ -420,12 +421,16 @@ def _cp1252_fallback(value: str) -> str:
     """
     Return a Windows-1252-safe fallback for an Altium text-record value.
     """
-    return value.encode("cp1252", errors="replace").decode("cp1252")
+    return decode_altium_ansi(encode_altium_ansi_lossy(value))
 
 
 def _needs_utf8_field(value: str) -> bool:
     """
-    Return True when a value cannot be represented in native cp1252 fields.
+    Return True when the existing companion policy requires authoritative UTF-8.
+
+    This intentionally uses Python's strict cp1252 repertoire. The managed
+    writer can preserve the five C1 compatibility values in the ordinary field,
+    but current Monkey behavior still emits their UTF-8 companions.
     """
     try:
         value.encode("cp1252")

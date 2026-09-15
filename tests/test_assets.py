@@ -68,6 +68,20 @@ def _as_str_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _example_test_cases() -> list[object]:
+    cases: list[object] = []
+    for example in _load_examples():
+        identifier = str(example.get("id", "<unknown>"))
+        requires_extra = _as_str_list(example.get("requires_extra"))
+        if "examples" in requires_extra:
+            cases.append(
+                pytest.param(example, id=identifier, marks=pytest.mark.optional_example)
+            )
+        else:
+            cases.append(pytest.param(example, id=identifier))
+    return cases
+
+
 def _requirement_name(requirement: str) -> str:
     match = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
     if match is None:
@@ -404,6 +418,10 @@ def test_public_python_and_dependency_metadata_contract() -> None:
         "cadquery",
         "casadi",
     }
+    assert _dependency_names(project["optional-dependencies"]["test"]) == {
+        "jsonschema",
+        "pytest",
+    }
     assert any(
         requirement.startswith("casadi<3.8;")
         for requirement in project["optional-dependencies"]["examples"]
@@ -440,6 +458,9 @@ def test_python_314_workflows_build_before_installed_wheel_tests() -> None:
     )
     assert "validate_wheel.py --mode core" in validation
     assert "--mode core --python 3.12" in validation
+    assert "--mode examples --python 3.14" in validation
+    assert "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24" in validation
+    assert "cancel-in-progress: true" in validation
 
     assert "release:" in release
     assert "types: [published]" in release
@@ -453,6 +474,9 @@ def test_python_314_workflows_build_before_installed_wheel_tests() -> None:
     )
     assert "validate_wheel.py --mode core" in release
     assert "--mode core --python 3.12" in release
+    assert "--mode examples" not in release
+    assert "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24" in release
+    assert "cancel-in-progress: false" in release
 
 
 def test_manifest_inputs_and_assets_do_not_use_ignored_output_dirs() -> None:
@@ -1174,8 +1198,7 @@ def _assert_mechanical_kind_manifest(manifest: dict[str, object]) -> None:
 
 @pytest.mark.parametrize(
     "example",
-    _load_examples(),
-    ids=lambda example: str(example["id"]),
+    _example_test_cases(),
 )
 def test_asset_example_runs_and_writes_declared_outputs(
     example: dict[str, object],
@@ -6564,6 +6587,7 @@ def test_pcbdoc_public_shared_primitive_option_roundtrip(tmp_path: Path) -> None
     assert parsed.shapebased_regions[0].properties["ISBOARDCUTOUT"] == "TRUE"
 
 
+@pytest.mark.optional_example
 def test_pcblib_power_resistor_synthesis_writes_parseable_libraries(
     check_examples_root: Path,
 ) -> None:

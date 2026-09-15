@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import struct
 
+from .altium_text_codec import decode_altium_ansi, encode_altium_ansi_lossy
+
 
 def build_length_prefixed_ascii(body: str) -> bytes:
     """Encode a Windows-MBCS body as `[uint32 len][payload]`.
@@ -14,7 +16,7 @@ def build_length_prefixed_ascii(body: str) -> bytes:
     Altium's native serializer (matches the schematic-side precedent in
     `altium_record_sch__pin.py`).
     """
-    body_bytes = body.encode("cp1252", errors="replace")
+    body_bytes = encode_altium_ansi_lossy(body)
     return struct.pack("<I", len(body_bytes)) + body_bytes
 
 
@@ -31,7 +33,7 @@ def extract_length_prefixed_ascii(data: bytes) -> str:
     length = struct.unpack("<I", data[:4])[0]
     if len(data) < 4 + length:
         raise ValueError("Invalid length-prefixed stream")
-    return data[4 : 4 + length].decode("cp1252", errors="replace").rstrip("\x00")
+    return decode_altium_ansi(data[4 : 4 + length]).rstrip("\x00")
 
 
 def count_length_prefixed_records(data: bytes | None) -> int:
