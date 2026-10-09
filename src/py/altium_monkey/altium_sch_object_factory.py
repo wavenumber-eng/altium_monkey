@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, cast
 
 from .altium_record_sch__arc import AltiumSchArc
@@ -359,6 +360,8 @@ def make_sch_pin(
     swap_id_part: str = "",
     swap_id_sequence: str = "",
     default_value: str = "",
+    defined_functions: Sequence[str] = (),
+    selected_functions: Sequence[str] = (),
     symbol_inner: IeeeSymbol = IeeeSymbol.NONE,
     symbol_outer: IeeeSymbol = IeeeSymbol.NONE,
     symbol_inner_edge: IeeeSymbol = IeeeSymbol.NONE,
@@ -402,6 +405,8 @@ def make_sch_pin(
         swap_id_part: Part swap-group identifier.
         swap_id_sequence: Swap sequence identifier.
         default_value: Optional simulation/default logic value.
+        defined_functions: Alternate functions defined for this pin.
+        selected_functions: Alternate functions selected for this pin.
         symbol_inner: IEEE symbol drawn inside the component body.
         symbol_outer: IEEE symbol drawn outside the component body.
         symbol_inner_edge: IEEE symbol drawn at the inner edge.
@@ -482,6 +487,8 @@ def make_sch_pin(
         swap_id_part=swap_id_part,
         swap_id_sequence=swap_id_sequence,
         default_value=default_value,
+        defined_functions=defined_functions,
+        selected_functions=selected_functions,
         symbol_inner=_validate_ieee_symbol_enum("symbol_inner", symbol_inner),
         symbol_outer=_validate_ieee_symbol_enum("symbol_outer", symbol_outer),
         symbol_inner_edge=_validate_ieee_symbol_enum(

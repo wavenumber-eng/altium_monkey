@@ -60,11 +60,14 @@ from .altium_extractable_assets import (
 )
 from .altium_font_manager import FontIDManager
 from .altium_sch_auxiliary_codec import (
+    decode_auxiliary_stream,
+    encode_auxiliary_stream,
     SchAuxiliaryReadLimits,
     SchAuxiliaryStreamError,
     _decode_managed_auxiliary_stream,
     _first_managed_storage_entries,
 )
+from .altium_pin_functions import decode_function_payload, encode_function_payload
 from .altium_json_apply_helpers import (
     JsonBlobBudget,
     JsonApplyMixin,
@@ -312,81 +315,6 @@ def _queue_schlib_svg_output(
     pending_output.append((destination / filename, svg))
 
 
-def _parse_pinfunctiondata_from_ole(
-    ole: Any, symbol_storage: str
-) -> dict[str, Any] | None:
-    """
-    Parse PinFunctionData from OLE stream for a symbol.
-
-    PinFunctionData contains alternate function definitions for multi-functional
-    pins (e.g., GPIO/UART/SPI modes).
-
-    Note: migrated from the older altium_pin_parser.py implementation.
-    PinFunctionData is only used during SchLib parsing, so it belongs here.
-
-    Args:
-        ole: AltiumOleFile object
-        symbol_storage: Symbol storage name (truncated to 31 chars if longer!)
-
-    Returns:
-        Dict with 'functions' key containing list of alternate function names,
-        or None if no alternate functions defined
-    """
-    stream_path = f"{symbol_storage}/PinFunctionData"
-
-    # Check if PinFunctionData exists
-    if not ole.exists(stream_path):
-        return None
-
-    try:
-        # Read OLE stream
-        records = get_records_in_section(ole, stream_path)
-
-        # Find binary record
-        binary_data = None
-        for rec in records:
-            if rec.get("__BINARY_RECORD__"):
-                binary_data = rec["__BINARY_DATA__"]
-                break
-
-        if binary_data is None:
-            return None
-
-        # Find zlib compressed data (starts with 0x78 0x9C)
-        compressed_offset = None
-        for i in range(len(binary_data) - 1):
-            if binary_data[i : i + 2] == b"\x78\x9c":
-                compressed_offset = i
-                break
-
-        if compressed_offset is None:
-            return None
-
-        # Decompress
-        decompressed = zlib.decompress(binary_data[compressed_offset:])
-
-        # Decode as UTF-16 LE (skip first 2 bytes - likely BOM or padding)
-        text = decompressed[2:].decode("utf-16-le", errors="replace")
-
-        # Parse pipe-delimited format
-        # Format: |PINDEFINEDFUNCTIONSCOUNT=N|PINDEFINEDFUNCTION1=name|PINDEFINEDFUNCTION2=name|...
-        parts = text.split("|")
-        functions = []
-        count = 0
-
-        for part in parts:
-            if "=" in part:
-                key, value = part.split("=", 1)
-                if key == "PINDEFINEDFUNCTIONSCOUNT":
-                    count = int(value)
-                elif key.startswith("PINDEFINEDFUNCTION"):
-                    functions.append(value)
-
-        return {"count": count, "functions": functions}
-
-    except Exception as e:
-        log.debug(f"Error parsing PinFunctionData: {e}")
-        return None
 
 
 def _create_record_object(record: dict[str, Any]) -> Any | None:
@@ -3915,17 +3843,34 @@ class AltiumSchLib(JsonApplyMixin):
             pin.pin_parameters.extend(param_list)
 
     def _apply_pin_functions(
-        self,
-        ole: AltiumOleFile,
-        symbol_name: str,
-        symbol: AltiumSymbol,
+        self, symbol_name: str, symbol: AltiumSymbol, budget: _SchLibBudget
     ) -> None:
-        """
-        Apply alternate pin functions from PinFunctionData when present.
-        """
-        pin_functions = _parse_pinfunctiondata_from_ole(ole, symbol_name)
-        if pin_functions and pin_functions["functions"] and symbol.pins:
-            _as_dynamic(symbol.pins[0]).alternate_names = pin_functions["functions"]
+        canonical = f"{symbol_name}/PinFunctionData"
+        path = self._source_stream_paths_by_fold.get(canonical.casefold())
+        if path is None:
+            return
+        try:
+            entries = decode_auxiliary_stream(
+                self._source_streams[path],
+                expected_header="PinFunctionData",
+                limits=self._auxiliary_limits(budget),
+            )
+            budget.consume_stream(path, len(entries), 0)
+            budget.consume_decompressed(path, tuple(len(entry.data) for entry in entries))
+            for entry in entries:
+                if not entry.name.isascii() or not entry.name.isdigit():
+                    raise SchAuxiliaryStreamError("malformed", entry.offset, "invalid pin index")
+                index = int(entry.name)
+                if not 0 <= index < len(symbol.pins):
+                    raise SchAuxiliaryStreamError("malformed", entry.offset, "pin index out of range")
+                defined, selected = decode_function_payload(entry.data)
+                pin = symbol.pins[index]
+                pin.defined_functions = defined
+                pin.selected_functions = selected
+        except SchAuxiliaryStreamError as exc:
+            raise SchLibContainerError(
+                exc.kind, exc.reason, stream=path, byte_offset=exc.offset
+            ) from exc
 
     def _apply_pin_position_settings(
         self,
@@ -4335,6 +4280,7 @@ class AltiumSchLib(JsonApplyMixin):
         self._validate_symbol_owners(symbol, stream)
 
         self._attach_pin_parameters(symbol)
+        self._apply_pin_functions(symbol_name, symbol, budget)
         self._apply_pintextdata(ole, symbol_name, symbol, budget)
         self._apply_pin_vertical_margin_data(symbol_name, symbol, budget)
         self._preserve_symbol_streams(symbol_name, symbol)
@@ -5277,6 +5223,43 @@ class AltiumSchLib(JsonApplyMixin):
             [cast(AltiumSchPin, pin) for pin in symbol.pins]
         )
 
+    def _build_pinfunctiondata_stream_for_symbol(
+        self, symbol: AltiumSymbol
+    ) -> bytes | None:
+        entries = []
+        for index, pin in enumerate(symbol.pins):
+            payload = encode_function_payload(pin.defined_functions, pin.selected_functions)
+            if pin.defined_functions or pin.selected_functions:
+                entries.append((str(index), payload))
+        return encode_auxiliary_stream("PinFunctionData", entries) if entries else None
+
+    def _sync_pin_function_stream(
+        self, ole_writer: AltiumOleWriter, symbol: AltiumSymbol
+    ) -> None:
+        payload = self._build_pinfunctiondata_stream_for_symbol(symbol)
+        existing = [
+            path for path in ole_writer._streams
+            if path.casefold() == f"{symbol.name}/PinFunctionData".casefold()
+        ]
+        # Preserve native compression and bytes when the live per-pin state
+        # still matches the stream, including pin indices after reordering.
+        if payload is not None and len(existing) == 1:
+            old_entries = decode_auxiliary_stream(
+                ole_writer._streams[existing[0]], expected_header="PinFunctionData"
+            )
+            old_state = {entry.name: decode_function_payload(entry.data) for entry in old_entries}
+            live_state = {
+                str(index): (list(pin.defined_functions), list(pin.selected_functions))
+                for index, pin in enumerate(symbol.pins)
+                if pin.defined_functions or pin.selected_functions
+            }
+            if old_state == live_state:
+                return
+        for path in existing:
+            ole_writer._remove_stream(path)
+        if payload is not None:
+            ole_writer.editEntry(f"{symbol.name}/PinFunctionData", data=payload)
+
     def _copy_original_ole_structure(
         self,
         ole_writer: AltiumOleWriter,
@@ -5357,7 +5340,10 @@ class AltiumSchLib(JsonApplyMixin):
         symbol: AltiumSymbol,
         original_streams: dict[str, bytes],
     ) -> None:
-        for stream_name in ("PinTextData", "PinVerticalMarginData"):
+        for stream_name in (
+            "PinTextData",
+            "PinVerticalMarginData",
+        ):
             canonical_path = f"{symbol.name}/{stream_name}"
             stream_path = self._source_stream_paths_by_fold.get(
                 canonical_path.casefold()
@@ -5458,6 +5444,7 @@ class AltiumSchLib(JsonApplyMixin):
             action="Wrote",
         )
 
+
         pinfrac = self._build_pinfrac_stream_for_symbol(symbol)
         if pinfrac is None:
             return
@@ -5550,6 +5537,7 @@ class AltiumSchLib(JsonApplyMixin):
             symbol,
             skip_synced_pin_streams=sync_pin_text_data,
         )
+        self._sync_pin_function_stream(ole_writer, symbol)
         if symbol._sync_additional_to_raw_records():
             stream_name = next(
                 (

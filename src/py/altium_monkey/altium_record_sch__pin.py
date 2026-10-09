@@ -3,6 +3,7 @@
 import math
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from dataclasses import dataclass
 from struct import pack
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,7 @@ from .altium_record_types import (
     rgb_to_win32_color,
 )
 from .altium_sch_compact_acp import decode_compact_acp, encode_compact_acp
+from .altium_pin_functions import validate_functions
 from .altium_sch_svg_renderer import (
     PIN_LINE_WIDTH,
     SchSvgRenderContext,
@@ -185,6 +187,14 @@ def _parse_pin_delay(value: object) -> float:
     if not math.isfinite(parsed):
         raise ValueError("PinPropagationDelay must be finite")
     return parsed
+
+
+def _normalize_alternate_functions(
+    value: Sequence[str] | None, field_name: str
+) -> list[str]:
+    if value is None:
+        return []
+    return validate_functions(value, field_name)
 
 
 def _checked_unsigned(value: int, maximum: int, field: str) -> int:
@@ -1036,6 +1046,8 @@ class AltiumSchPin(SchPrimitive):
         swap_id_part: str = "",
         swap_id_sequence: str = "",
         default_value: str = "",
+        defined_functions: Sequence[str] | None = None,
+        selected_functions: Sequence[str] | None = None,
         # IEEE symbols
         symbol_inner: IeeeSymbol | int = IeeeSymbol.NONE,
         symbol_outer: IeeeSymbol | int = IeeeSymbol.NONE,
@@ -1084,6 +1096,8 @@ class AltiumSchPin(SchPrimitive):
             swap_id_part: Swap ID part identifier.
             swap_id_sequence: Swap ID sequence.
             default_value: Default logic value for simulation.
+            defined_functions: Alternate functions defined for this pin.
+            selected_functions: Alternate functions selected for this pin.
             symbol_inner: IEEE symbol inside component body.
             symbol_outer: IEEE symbol outside component body.
             symbol_inner_edge: IEEE symbol at inner edge (e.g., clock).
@@ -1206,8 +1220,12 @@ class AltiumSchPin(SchPrimitive):
         self.designator_settings = PinTextSettings()
 
         # Multi-function pin support
-        self.defined_functions: list[str] = []
-        self.selected_functions: list[str] = []
+        self.defined_functions = _normalize_alternate_functions(
+            defined_functions, "defined_functions"
+        )
+        self.selected_functions = _normalize_alternate_functions(
+            selected_functions, "selected_functions"
+        )
         self.hide_name_as_function: bool = False
         self.symbolic_name: str = ""
         self.show_symbolic_name_as_function: bool = False
