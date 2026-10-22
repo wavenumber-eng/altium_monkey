@@ -1817,6 +1817,7 @@ class AltiumSchDoc(JsonApplyMixin):
             SchRecordType.HARNESS_BUNDLE,
             SchRecordType.HARNESS_LAYOUT_COVERING,
             SchRecordType.HARNESS_CAVITY_COMPONENT,
+            SchRecordType.NOTE,
         } or isinstance(obj, AltiumSchImageParameter)
 
     def _remember_object_definition(
