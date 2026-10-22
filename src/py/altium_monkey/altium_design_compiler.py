@@ -6417,6 +6417,21 @@ def _annotate_existing_typed_harness_member(
 ) -> bool:
     member_values = _resolved_harness_member_values(member)
     endpoint_name = ".".join((interface.name, *member_values))
+    endpoint_key = altium_name_key(endpoint_name)
+    named_nets = sum(
+        1
+        for net in getattr(local_netlist, "nets", ())
+        if net is not excluded_net
+        and any(
+            str(getattr(endpoint, "role", "") or "") == "harness_entry"
+            and altium_name_key(str(getattr(endpoint, "name", "") or ""))
+            == endpoint_key
+            for endpoint in getattr(net, "endpoints", ())
+        )
+    )
+    if named_nets > 1:
+        # The name is not unique on this sheet; signal-harness geometry joins it.
+        return False
     matches = tuple(
         net
         for net in getattr(local_netlist, "nets", ())
