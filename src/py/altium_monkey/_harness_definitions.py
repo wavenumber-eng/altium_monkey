@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from .altium_text_semantics import (
@@ -62,16 +62,28 @@ class ResolvedHarnessDefinition:
 def resolve_harness_definitions(
     candidates: Iterable[HarnessDefinitionCandidate],
     *,
+    nested_definitions: Mapping[str, ResolvedHarnessDefinition] | None = None,
     max_depth: int = 64,
     max_members_per_definition: int = 65_536,
     max_total_members: int = 1_000_000,
 ) -> dict[str, ResolvedHarnessDefinition]:
-    """Merge and unwind project definitions using managed ordering rules."""
+    """Merge and unwind definitions using managed ordering rules.
+
+    ``nested_definitions`` resolves nested types the candidates do not define,
+    such as project-wide types used by a sheet-local definition.
+    """
     if max_depth < 1 or max_members_per_definition < 1 or max_total_members < 1:
         raise ValueError("harness definition limits must be positive")
     merged = _merge_candidates(tuple(candidates))
     return _resolve_merged_definitions(
         merged,
+        unwind_definitions={
+            **{
+                key: (definition.type_name, definition.entries)
+                for key, definition in (nested_definitions or {}).items()
+            },
+            **merged,
+        },
         max_depth=max_depth,
         max_members_per_definition=max_members_per_definition,
         max_total_members=max_total_members,
@@ -102,6 +114,8 @@ def resolve_project_harness_definitions(
 def _resolve_merged_definitions(
     merged: dict[str, tuple[str, tuple[HarnessDefinitionEntry, ...]]],
     *,
+    unwind_definitions: dict[str, tuple[str, tuple[HarnessDefinitionEntry, ...]]]
+    | None = None,
     max_depth: int,
     max_members_per_definition: int,
     max_total_members: int,
@@ -111,7 +125,7 @@ def _resolve_merged_definitions(
     for key, (type_name, entries) in merged.items():
         members = _unwind_definition(
             key,
-            merged,
+            merged if unwind_definitions is None else unwind_definitions,
             max_depth=max_depth,
             max_members=max_members_per_definition,
         )
