@@ -93,6 +93,7 @@ from .altium_compiled_design_support import (
     _parse_entry_repeat,
     _point_on_signal_harness,
     _signal_harness_ids,
+    _signal_harnesses_touch,
     apply_channel_pattern,
     find_harness_bundle_info,
     find_harness_port_name,
@@ -2595,6 +2596,7 @@ def _compiled_endpoint_for_physical(
         _harness_type_name=endpoint._harness_type_name,
         _harness_interface_name=endpoint._harness_interface_name,
         _harness_type_inferred=endpoint._harness_type_inferred,
+        _harness_scope_key=endpoint._harness_scope_key,
     )
 
 
@@ -6686,6 +6688,256 @@ def _compiled_harness_wire_nets(
     return tuple(rows)
 
 
+_HarnessBundleNode = tuple[object, ...]
+
+
+def _harness_bundle_anchors(
+    schdoc: "AltiumSchDoc",
+) -> list[tuple[_HarnessBundleNode, RootPoint]]:
+    """Return every harness bundle anchor on the sheet with its connection point."""
+    anchors: list[tuple[_HarnessBundleNode, RootPoint]] = []
+    for connector in getattr(schdoc, "harness_connectors", ()) or ():
+        connector_id = str(getattr(connector, "unique_id", "") or "")
+        if not connector_id:
+            continue
+        node = ("connector", connector_id)
+        anchors.append((node, _harness_connector_master_entry_point(connector)))
+        for entry in _compiler_harness_entries(schdoc, connector):
+            entry_name = str(getattr(entry, "name", "") or "")
+            if entry_name:
+                anchors.append(
+                    (
+                        (*node, altium_name_key(entry_name)),
+                        _harness_entry_connection_point(connector, entry),
+                    )
+                )
+    for port in schdoc.get_ports():
+        port_id = str(getattr(port, "unique_id", "") or "")
+        for point in tuple(getattr(port, "_precise_connection_points", ()) or ()):
+            if port_id:
+                anchors.append((("port", port_id), point))
+    for symbol in _compiler_sheet_symbol_sources(schdoc):
+        for entry in symbol.entries:
+            if getattr(entry, "unique_id", ""):
+                anchors.append(
+                    (
+                        ("sheet_entry", str(entry.unique_id)),
+                        _sheet_entry_precise_connection_point(symbol, entry),
+                    )
+                )
+    for label in schdoc.get_net_labels():
+        if getattr(label.record, "parent", None) is None and label.unique_id:
+            anchors.append(
+                (
+                    ("net_label", str(getattr(label, "unique_id", "") or "")),
+                    cast(RootPoint, getattr(label, "_precise_connection_point")),
+                )
+            )
+    return anchors
+
+
+def _harness_bundle_name_nodes(
+    schdoc: "AltiumSchDoc",
+) -> list[tuple[_HarnessBundleNode, _HarnessBundleNode]]:
+    """Ports and net labels with the same name connect on one sheet."""
+    return [
+        *(
+            (
+                ("port", str(getattr(port, "unique_id", "") or "")),
+                ("name", altium_name_key(str(getattr(port, "name", "") or ""))),
+            )
+            for port in schdoc.get_ports()
+            if getattr(port, "name", "") and getattr(port, "unique_id", "")
+        ),
+        *(
+            (
+                ("net_label", str(getattr(label, "unique_id", "") or "")),
+                ("name", altium_name_key(str(getattr(label, "text", "") or ""))),
+            )
+            for label in schdoc.get_net_labels()
+            if getattr(label.record, "parent", None) is None
+            and getattr(label, "text", "")
+            and getattr(label, "unique_id", "")
+        ),
+    ]
+
+
+def _harness_endpoint_bundle_node(
+    endpoint: AltiumCompiledNetEndpoint,
+    entry_nodes: Mapping[str, _HarnessBundleNode],
+) -> _HarnessBundleNode | None:
+    if endpoint.role != "harness_entry" or endpoint._bus_signal_index is not None:
+        return None
+    entry_node = entry_nodes.get(endpoint.object_id)
+    if entry_node is not None:
+        return entry_node
+    path = endpoint._harness_entries_path
+    occurrence = endpoint._source_occurrence_id
+    if not path or not endpoint.object_id:
+        return None
+    if occurrence.startswith("port:"):
+        anchor: _HarnessBundleNode = ("port", endpoint.object_id)
+    elif occurrence.startswith("sheet_symbol:"):
+        anchor = ("sheet_entry", endpoint.object_id)
+    else:
+        return None
+    return (*anchor, *(altium_name_key(segment) for segment in reversed(path)))
+
+
+def _harness_bundle_classes(
+    schdoc: "AltiumSchDoc",
+    anchors: Sequence[tuple[_HarnessBundleNode, RootPoint]],
+    member_nodes: Iterable[_HarnessBundleNode],
+) -> "UnionFind[_HarnessBundleNode]":
+    """Group bundle nodes joined by signal harnesses, then close over member paths."""
+    from .altium_netlist_model import UnionFind
+
+    display_unit = int(getattr(getattr(schdoc, "sheet", None), "display_unit", 0))
+    tolerance = altium_internal_tolerance_for_display_unit(display_unit)
+    harnesses = [
+        harness
+        for harness in getattr(schdoc, "signal_harnesses", ()) or ()
+        if len(getattr(harness, "points", ()) or ()) >= 2
+    ]
+    classes: UnionFind[_HarnessBundleNode] = UnionFind()
+    for index, harness in enumerate(harnesses):
+        for other_index in range(index):
+            if _signal_harnesses_touch(harness, harnesses[other_index], tolerance):
+                classes.union(("signal_harness", index), ("signal_harness", other_index))
+    nodes_by_point: defaultdict[RootPoint, list[_HarnessBundleNode]] = defaultdict(list)
+    for node, point in anchors:
+        classes.add_root(node)
+        nodes_by_point[point].append(node)
+        for index, harness in enumerate(harnesses):
+            if _point_on_signal_harness(point, harness, tolerance):
+                classes.union(node, ("signal_harness", index))
+    for touching in nodes_by_point.values():
+        for node in touching[1:]:
+            classes.union(touching[0], node)
+    for node, name_node in _harness_bundle_name_nodes(schdoc):
+        classes.union(node, name_node)
+
+    nodes: set[_HarnessBundleNode] = {node for node, _point in anchors}
+    for node in member_nodes:
+        nodes.update(node[:length] for length in range(2, len(node) + 1))
+    # X ~ Y implies X.member ~ Y.member, which may join new parents.
+    child_nodes = sorted((node for node in nodes if len(node) > 2), key=repr)
+    changed = True
+    while changed:
+        changed = False
+        first_by_member: dict[tuple[_HarnessBundleNode, object], _HarnessBundleNode] = {}
+        for node in child_nodes:
+            member = (classes.find(node[:-1]), node[-1])
+            first = first_by_member.setdefault(member, node)
+            if classes.find(first) != classes.find(node):
+                classes.union(first, node)
+                changed = True
+    return classes
+
+
+def _attach_pin_contact_harness_entries(
+    schdoc: "AltiumSchDoc",
+    rows: Sequence[AltiumCompiledNet],
+) -> list[AltiumCompiledNet]:
+    """Attach harness entries touched directly by an unwired pin's hot spot."""
+    entries_by_point: dict[tuple[int, int, int, int], tuple[object, object]] = {}
+    for connector in getattr(schdoc, "harness_connectors", ()) or ():
+        for entry in _compiler_harness_entries(schdoc, connector):
+            if getattr(entry, "unique_id", "") and getattr(entry, "name", ""):
+                point = _harness_entry_connection_point(connector, entry)
+                entries_by_point[point] = (connector, entry)
+    if not entries_by_point:
+        return list(rows)
+    hot_spots: dict[str, tuple[int, int, int, int]] = {}
+    for component in schdoc.get_components():
+        for pin in component.pins:
+            hot_spot = pin.get_hot_spot()
+            hot_spots[str(pin.unique_id)] = (
+                int(hot_spot.x),
+                int(hot_spot.y),
+                int(getattr(hot_spot, "x_frac", 0) or 0),
+                int(getattr(hot_spot, "y_frac", 0) or 0),
+            )
+    result: list[AltiumCompiledNet] = []
+    for row in rows:
+        touched = (
+            entries_by_point.get(hot_spots.get(row.terminals[0]._source_pin_uid, ()))
+            if row.single_pin
+            and len(row.terminals) == 1
+            and not any(endpoint.role == "harness_entry" for endpoint in row.endpoints)
+            else None
+        )
+        if touched is None:
+            result.append(row)
+            continue
+        connector, entry = touched
+        entry_id = str(getattr(entry, "unique_id", ""))
+        endpoint = AltiumCompiledNetEndpoint(
+            id=f"{row.id}:endpoint:{len(row.endpoints)}:harness_entry:{entry_id}",
+            role="harness_entry",
+            element_id=entry_id,
+            object_id=entry_id,
+            name=str(getattr(entry, "name", "")),
+            connection_point=_harness_entry_connection_point(connector, entry)[:2],
+        )
+        result.append(
+            replace(
+                row,
+                endpoint_ids=(*row.endpoint_ids, endpoint.id),
+                endpoints=(*row.endpoints, endpoint),
+                item_ids=(*row.item_ids, endpoint.id),
+                items=(*row.items, _compiled_item_from_endpoint(endpoint)),
+            )
+        )
+    return result
+
+
+def _annotate_harness_scope_keys(
+    schdoc: "AltiumSchDoc",
+    rows: Sequence[AltiumCompiledNet],
+) -> list[AltiumCompiledNet]:
+    """Key harness-member endpoints by the signal-harness bundle they belong to."""
+    if not getattr(schdoc, "harness_connectors", None) and not getattr(
+        schdoc, "signal_harnesses", None
+    ):
+        return list(rows)
+    anchors = _harness_bundle_anchors(schdoc)
+    entry_nodes = {
+        str(getattr(entry, "unique_id", "") or ""): (
+            "connector",
+            str(getattr(connector, "unique_id", "") or ""),
+            altium_name_key(str(getattr(entry, "name", "") or "")),
+        )
+        for connector in getattr(schdoc, "harness_connectors", ()) or ()
+        for entry in _compiler_harness_entries(schdoc, connector)
+        if getattr(entry, "unique_id", "") and getattr(entry, "name", "")
+    }
+    nodes_by_row = [
+        [_harness_endpoint_bundle_node(endpoint, entry_nodes) for endpoint in row.endpoints]
+        for row in rows
+    ]
+    member_nodes = [node for nodes in nodes_by_row for node in nodes if node]
+    if not member_nodes:
+        return list(rows)
+    classes = _harness_bundle_classes(schdoc, anchors, member_nodes)
+    result: list[AltiumCompiledNet] = []
+    for row, nodes in zip(rows, nodes_by_row, strict=True):
+        if not any(nodes):
+            result.append(row)
+            continue
+        endpoints = tuple(
+            endpoint
+            if node is None
+            else replace(
+                endpoint,
+                _harness_scope_key=f"\x00harness:{classes.find(node)!r}",
+            )
+            for endpoint, node in zip(row.endpoints, nodes, strict=True)
+        )
+        result.append(replace(row, endpoints=endpoints))
+    return result
+
+
 def _sheet_entry_connection_point(
     sheet_symbol: "SchSheetSymbolInfo",
     entry: object,
@@ -10445,7 +10697,9 @@ def _compile_local_connectivity(
     harness_candidate_groups = _project_harness_definition_candidate_groups(schdocs)
     harness_definitions = resolve_project_harness_definitions(harness_candidate_groups)
     local_harness_definitions = {
-        id(schdoc): resolve_harness_definitions(group)
+        id(schdoc): resolve_harness_definitions(
+            group, nested_definitions=harness_definitions
+        )
         for schdoc, group in zip(schdocs, harness_candidate_groups, strict=True)
     }
     inferred_port_harness_types = _project_inferred_port_harness_types(
@@ -10704,6 +10958,10 @@ def _compile_local_connectivity(
         document_net_rows.extend(synthetic_harness_nets)
         document_net_rows.extend(synthetic_typed_harness_nets)
         document_net_rows.extend(synthetic_sheet_entry_nets)
+        document_net_rows = _attach_pin_contact_harness_entries(
+            schdoc, document_net_rows
+        )
+        document_net_rows = _annotate_harness_scope_keys(schdoc, document_net_rows)
         document_net_rows.sort(key=cmp_to_key(_compiled_managed_local_net_compare))
         net_rows.extend(
             _rewrite_compiled_local_net_identity(
@@ -13189,7 +13447,9 @@ def _build_inter_sheet_link_nets(
     harness_candidate_groups = _project_harness_definition_candidate_groups(schdocs)
     harness_definitions = resolve_project_harness_definitions(harness_candidate_groups)
     local_harness_definitions = {
-        id(schdoc): resolve_harness_definitions(group)
+        id(schdoc): resolve_harness_definitions(
+            group, nested_definitions=harness_definitions
+        )
         for schdoc, group in zip(schdocs, harness_candidate_groups, strict=True)
     }
     inferred_port_harness_types = _project_inferred_port_harness_types(
@@ -15252,17 +15512,32 @@ def _compiled_scoped_harness_entry_merge_pairs(
     harness_entry_roots: dict[tuple[str, tuple[str, ...]], str] = {}
     pairs: list[tuple[str, str]] = []
     for physical_net in physical_by_id.values():
-        for harness_entry_name in _compiled_net_harness_entry_names(physical_net):
-            harness_key = (
-                _compiled_case_insensitive_key(harness_entry_name),
-                tuple(physical_net.physical_document_ids),
-            )
+        for scope_key in _compiled_net_harness_scope_keys(physical_net):
+            harness_key = (scope_key, tuple(physical_net.physical_document_ids))
             existing_root = harness_entry_roots.get(harness_key)
             if existing_root is None:
                 harness_entry_roots[harness_key] = physical_net.id
-            else:
+            elif existing_root != physical_net.id:
                 pairs.append((existing_root, physical_net.id))
     return pairs
+
+
+def _compiled_net_harness_scope_keys(net: AltiumCompiledNet) -> tuple[str, ...]:
+    """Return geometry scope keys, falling back to names for unscoped entries."""
+    scoped_names: set[str] = set()
+    keys: list[str] = []
+    for endpoint in net.endpoints:
+        if endpoint.role != "harness_entry" or not endpoint.name:
+            continue
+        if endpoint._harness_scope_key:
+            scoped_names.add(endpoint.name)
+            keys.append(endpoint._harness_scope_key)
+    keys.extend(
+        _compiled_case_insensitive_key(name)
+        for name in _compiled_net_harness_entry_names(net)
+        if name not in scoped_names
+    )
+    return tuple(dict.fromkeys(keys))
 
 
 def _compiled_scoped_bus_member_label_merge_pairs(
