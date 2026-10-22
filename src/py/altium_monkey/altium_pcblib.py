@@ -2331,7 +2331,7 @@ def _plan_pcblib_storage_names(
 class _PcbLibReadLimits:
     max_container_bytes: int = 256 * 1024 * 1024
     max_stream_bytes: int = 64 * 1024 * 1024
-    max_streams: int = 4096
+    max_streams: int = 65536
     max_directory_entries: int = 8192
     max_directory_depth: int = 16
 
