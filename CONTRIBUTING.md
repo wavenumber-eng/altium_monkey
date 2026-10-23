@@ -61,6 +61,29 @@ If a file cannot be shared publicly, describe how it was created and which
 objects or settings are involved. Synthetic cases are preferred when they can
 reproduce the same behavior.
 
+## Certificate And Build Tool Prerequisites
+
+After the [eMudhra / emSign CA incident](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576),
+use a verified uv >=0.13.4 and current operating-system CA certificates before
+installing dependencies. The release extra requires Certifi >=2026.10.19;
+the committed lock records the reviewed version. Any separately used pip must
+be >=26.2.2. Follow the incident notice's checksum-pinned bootstrap when
+starting from affected tools. Existing virtual environments need updating too.
+
+```powershell
+uv sync --locked --extra release --extra test --python 3.14
+uv lock --check
+uv run pytest -m "not optional_example" -q
+uv run python -m build --installer uv
+uv run twine check dist/*
+```
+
+Using uv for isolated builds avoids a separately seeded old pip CA bundle.
+CI also refreshes Linux certificates and pins the verified fixed publisher
+revision. Keep these tooling changes in sync with the upstream source so
+future public mirror updates retain them. This patch changes release tooling;
+the core runtime dependency set and package version remain unchanged.
+
 ## Release Notes
 
 User-visible changes are documented in `RELEASE_NOTES.md`. Public API changes,

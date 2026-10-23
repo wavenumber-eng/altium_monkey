@@ -37,6 +37,13 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.13.4"
+
+      - name: Refresh Linux CA certificates
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates
 
       - name: Prove selected interpreter
         run: |
@@ -79,7 +86,7 @@ jobs:
           grep -F "Package version: \`${version}\`" RELEASE_NOTES.md
 
       - name: Build distributions
-        run: uv run --locked --python 3.14 --with build python -m build
+        run: uv run --locked --python 3.14 --with build python -m build --installer uv
 
       - name: Check distributions
         run: uv run --locked --python 3.14 --with twine python -m twine check dist/*
@@ -118,4 +125,4 @@ jobs:
           uv run --locked --python 3.14 python tools/validate_wheel.py --mode core --python 3.12 --wheel "${wheel}" --tests-root tests
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1; fixed certifi and sigstore
