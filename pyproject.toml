@@ -37,6 +37,7 @@ examples = [
     "casadi<3.8; sys_platform == 'win32' and python_version >= '3.14'",
 ]
 release = [
+    "certifi>=2026.10.19",
     "build>=1.2",
     "pytest>=8.0",
     "twine>=5.0",
@@ -62,6 +63,9 @@ packages = ["src/py/altium_monkey"]
 
 [tool.hatch.version]
 path = "src/py/altium_monkey/_version.py"
+
+[tool.uv]
+required-version = ">=0.13.4"
 
 [tool.pytest.ini_options]
 markers = [

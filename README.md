@@ -89,6 +89,10 @@ Tracked reports: [#33](https://github.com/wavenumber-eng/altium_monkey/issues/33
 Normal GIL-enabled CPython 3.12 through Python 3.14 are supported. Free-threaded
 Python builds are not currently part of the support contract.
 
+Keep OS CA certificates current and use pip >=26.2.2 (or uv >=0.13.4).
+For secure upgrades from affected tools, follow the
+[CA incident notice](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576).
+
 ```powershell
 pip install altium-monkey
 ```
