@@ -5545,8 +5545,11 @@ def _build_indexed_stack_layers(
         display_name = _text(fields.get("NAME")) or f"Layer {index}"
         layer_id = _parse_int_token(fields.get("LAYERID"))
         legacy_layer_id = _legacy_layer_id_from_v7_save_id(layer_id)
-        copper_thickness = _float_token(fields.get("COPTHICK"))
-        dielectric_height = _float_token(fields.get("DIELHEIGHT"))
+        # Altium writes each length in whatever unit the author typed — one
+        # .stackup mixes "3.3098mil" and "0.127mm" — so parse the unit instead
+        # of assuming mil (_float_token returned None for an mm value).
+        copper_thickness = _length_value_to_mils(fields.get("COPTHICK"))
+        dielectric_height = _length_value_to_mils(fields.get("DIELHEIGHT"))
         stackupx_properties = _stackupx_properties_from_indexed_fields(fields)
         advanced_family = _advanced_layer_family(fields)
         surface_finish = advanced_family == "surface_finish"
