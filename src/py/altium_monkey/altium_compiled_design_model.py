@@ -557,6 +557,8 @@ class AltiumCompiledNetEndpoint:
     _harness_type_name: str = field(default="", repr=False, compare=False)
     _harness_interface_name: str = field(default="", repr=False, compare=False)
     _harness_type_inferred: bool = field(default=False, repr=False, compare=False)
+    # Same key on one sheet means the same harness member, by signal-harness geometry.
+    _harness_scope_key: str = field(default="", repr=False, compare=False)
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible endpoint record."""
