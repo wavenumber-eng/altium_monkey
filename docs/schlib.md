@@ -62,6 +62,29 @@ schlib = AltiumSchLib(show_comments_designators=True)
 
 You can also set `schlib.show_comments_designators = True` before saving.
 
+## Alternate pin functions
+
+Pins can carry the alternate functions used by multifunctional MCU symbols.
+Pass `defined_functions` and, when needed, `selected_functions` to
+`make_sch_pin(...)`:
+
+```python
+pin = make_sch_pin(
+    designator="15",
+    name="PB0",
+    location_mils=SchPointMils.from_mils(0, 0),
+    defined_functions=["SPI1_NSS", "I2S1_WS", "TIM3_CH3"],
+    selected_functions=["SPI1_NSS"],
+)
+symbol.add_pin(pin)
+schlib.save("mcu.SchLib")
+```
+
+The library stores these values in Altium's per-pin `PinFunctionData` stream.
+When modifying a parsed library, ordinary `save()` persists function changes
+and removes stale function records. Unchanged function streams retain their bytes.
+The function lists preserve their input order.
+
 For parsed libraries, prefer `AltiumSchLib.get_symbol(...)` and symbol views
 over scanning raw streams.
 
