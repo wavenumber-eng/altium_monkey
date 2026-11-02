@@ -884,7 +884,13 @@ class AltiumBoard:
         Returns:
             Position in mils (e.g., 27514.9995)
         """
-        return float(str(s).strip("mil"))
+        # str.strip("mil") removes the characters m/i/l, so "0.127mm" read as
+        # 0.127 (mil). Altium writes lengths in the unit the author typed.
+        text = str(s).strip().lower()
+        for unit, to_mils in (("mil", 1.0), ("mm", 1 / 0.0254), ("um", 1 / 25.4)):
+            if text.endswith(unit):
+                return float(text[: -len(unit)]) * to_mils
+        return float(text)
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "AltiumBoard":
