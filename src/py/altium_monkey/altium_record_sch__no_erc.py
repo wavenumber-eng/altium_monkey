@@ -332,10 +332,11 @@ class AltiumSchNoErc(RotatedLocalPointMixin, SchGraphicalObject):
 
         self.is_active, _ = s.read_bool(record, Fields.IS_ACTIVE, default=True)
         self.suppress_all, _ = s.read_bool(record, Fields.SUPPRESS_ALL, default=True)
+        # A specific marker without the field suppresses no error kinds.
         self.error_kind_set_to_suppress, _ = s.read_str(
             record,
             "ErrorKindSetToSuppress",
-            default=_DEFAULT_ERROR_KIND_SET,
+            default=_DEFAULT_ERROR_KIND_SET if self.suppress_all else "",
         )
         self.connection_pairs_to_suppress, _ = s.read_str(
             record,
