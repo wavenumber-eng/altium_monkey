@@ -45,6 +45,7 @@ from .altium_pcb_custom_shapes import (
     attach_custom_pad_shape,
     build_pcblib_custom_pad_extended_info,
     build_pcblib_custom_pad_region_properties,
+    pcblib_native_pad_index,
 )
 from .altium_pcb_model_checksum import compute_altium_model_checksum
 from .altium_pcblib import (
@@ -3444,7 +3445,10 @@ class PcbLibBuilder:
                 field_name="paste_mask_expansion",
             ),
         )
-        native_pad_index = len(footprint.pads)
+        # PcbLib PADINDEX is the anchor's 1-based position among all primitives of
+        # the footprint Data stream; the custom shape keeps the pad ordinal.
+        pad_ordinal = len(footprint.pads) - 1
+        native_pad_index = pcblib_native_pad_index(footprint, pad)
         region_pad_index = native_pad_index if pad_index is None else int(pad_index)
 
         offset_x_iu = self._mil_to_internal_units(offset_x_mil)
@@ -3522,7 +3526,7 @@ class PcbLibBuilder:
             source="builder",
             region=region,
             shape_region=shape_region,
-            pad_index=region_pad_index - 1,
+            pad_index=pad_ordinal,
             shape_kind=int(PadShape.CUSTOM),
         )
         region.properties = build_pcblib_custom_pad_region_properties(

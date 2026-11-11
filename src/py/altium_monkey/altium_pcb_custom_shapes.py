@@ -422,6 +422,35 @@ def _region_pad_index_zero_based(region: object) -> int | None:
     return int(pad_index) - 1
 
 
+def pcblib_native_pad_index(footprint: object, pad: object) -> int:
+    """
+    Return the native 1-based `PADINDEX` of a PcbLib footprint pad.
+
+    A PcbLib footprint stores every primitive in one `Data` stream, and Altium
+    resolves a custom-pad region's `PADINDEX` as the position of its anchor pad in
+    that stream, not as the ordinal among pads. Falls back to the pad ordinal when
+    the footprint has no recorded primitive order.
+    """
+    for index, primitive in enumerate(getattr(footprint, "_record_order", None) or []):
+        if primitive is pad:
+            return index + 1
+    for index, candidate in enumerate(getattr(footprint, "pads", None) or []):
+        if candidate is pad:
+            return index + 1
+    raise ValueError("pad does not belong to this footprint")
+
+
+def _pcblib_pads_by_native_index(
+    footprint: object, pads: list[object]
+) -> list[object | None] | None:
+    """Pads by zero-based `Data` stream position (None for other primitives)."""
+    order = list(getattr(footprint, "_record_order", None) or [])
+    if not order:
+        return None
+    pad_ids = {id(pad) for pad in pads}
+    return [primitive if id(primitive) in pad_ids else None for primitive in order]
+
+
 def _attach_explicit_padindex_regions(
     *,
     pads: list[object],
@@ -429,12 +458,24 @@ def _attach_explicit_padindex_regions(
     shape_regions: list[object] | None,
     source: str,
     include_inner_multilayer: bool = False,
+    pads_by_native_index: list[object | None] | None = None,
 ) -> None:
+    """
+    Attach regions that name their anchor pad by `PADINDEX`.
+
+    `pads_by_native_index` maps native indexes to pads when they count all
+    primitives (PcbLib `Data` stream); without it they count pads (PcbDoc `Pads6`).
+    """
+    ordinal_by_pad = {id(pad): index for index, pad in enumerate(pads)}
+    lookup = pads if pads_by_native_index is None else pads_by_native_index
     for region in regions:
-        pad_index = _region_pad_index_zero_based(region)
-        if pad_index is None or not (0 <= pad_index < len(pads)):
+        native_index = _region_pad_index_zero_based(region)
+        if native_index is None or not (0 <= native_index < len(lookup)):
             continue
-        pad = pads[pad_index]
+        pad = lookup[native_index]
+        if pad is None:
+            continue
+        pad_index = ordinal_by_pad[id(pad)]
         layer = _coerce_layer_id(getattr(region, "layer", None))
         shape_region = None
         if shape_regions:
@@ -592,6 +633,7 @@ def resolve_pcblib_custom_pad_shapes(footprint: object) -> None:
         regions=regions,
         shape_regions=None,
         source="pcblib_inferred",
+        pads_by_native_index=_pcblib_pads_by_native_index(footprint, pads),
     )
     _attach_derived_layer_regions(
         pads=pads,
