@@ -75,6 +75,7 @@ from .altium_pcb_custom_shapes import (
     build_pcblib_custom_pad_region_properties,
     find_best_pad_region,
     parse_custom_shapes_stream,
+    pcblib_native_pad_index,
     resolve_pcbdoc_custom_pad_shapes,
     serialize_custom_shapes_stream,
 )
@@ -863,7 +864,7 @@ def _localize_custom_pad_contract(
             local_region.properties = build_pcblib_custom_pad_region_properties(
                 region=local_region,
                 shape_region=local_shape_region,
-                pad_index=local_pad_index + 1,
+                pad_index=pcblib_native_pad_index(footprint, local_pad),
                 include_pad_index=include_pad_index,
             )
         elif include_pad_index:
@@ -873,7 +874,9 @@ def _localize_custom_pad_contract(
                     getattr(local_region, "properties", {}) or {}
                 ).items()
             }
-            local_region.properties["PADINDEX"] = str(local_pad_index + 1)
+            local_region.properties["PADINDEX"] = str(
+                pcblib_native_pad_index(footprint, local_pad)
+            )
         else:
             local_region.properties = {
                 str(key): str(value).replace("\x00", "")
